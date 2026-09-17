@@ -1,0 +1,31 @@
+# Downloaded models and third-party repositories
+/FuXi/
+/FuXi_EC/
+/fuxi-2.1/
+/Sample_Data/
+
+# Local datasets and generated output
+/.playwright-cli/
+/output/
+*.pbf
+*.nc
+*.onnx
+*.zip
+*.sqlite
+*.sqlite3
+*.db
+
+# Dependencies, caches, and build artifacts
+**/node_modules/
+**/dist/
+**/__pycache__/
+**/.pytest_cache/
+**/.venv/
+*.py[cod]
+*.tsbuildinfo
+/Web/frontend/public/mapvthree/
+
+# Local credentials
+**/.env
+**/.env.*
+!**/.env.example

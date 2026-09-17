@@ -1,0 +1,5 @@
+node_modules/
+dist/
+public/mapvthree/
+.env.local
+.env.*.local
