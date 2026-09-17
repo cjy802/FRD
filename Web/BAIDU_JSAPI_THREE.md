@@ -6,7 +6,9 @@
 `http://127.0.0.1:5173/baidu-preview.html` 可核对 JSAPI Three 地图。
 预览页和航线工作台相互独立，填入 AK 不会自动替换航线工作台中的地图。
 
-依赖已经安装：`@baidumap/mapv-three@1.7.2` 与 `three@0.186.0`。运行
+依赖已经安装：`@baidumap/mapv-three@1.7.2` 与 `three@0.179.1`。当前项目中使用
+`three@0.186.0` 时，浏览器虽然能渲染建筑，但地图文字和 POI 图标不显示；
+改用 `three@0.179.1` 后已验证这些标注正常显示，因此这里固定 Three.js 版本。运行
 `npm run dev` 或 `npm run build` 时，`scripts/copy-mapv-three-assets.mjs` 会将包的
 `dist/assets` 自动复制到 `public/mapvthree/assets`。预览页在引擎加载前设置
 `window.MAPV_BASE_URL = '/mapvthree/'`，并在有 AK 时调用 `Engine` 初始化百度矢量地图。
