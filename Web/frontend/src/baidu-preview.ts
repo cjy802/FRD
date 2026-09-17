@@ -16,7 +16,10 @@ if (!ak) {
     mapvthree.BaiduMapConfig.ak = ak
     const engine = new mapvthree.Engine(container, {
       map: {
-        provider: new mapvthree.BaiduVectorTileProvider({ ak }),
+        provider: new mapvthree.BaiduVectorTileProvider({
+          ak,
+          displayOptions: { poi: true },
+        }),
         center: [116.404, 39.915],
         heading: 0,
         pitch: 45,
