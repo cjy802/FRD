@@ -18,6 +18,7 @@
 - `prepare_fuxi1_input.py`：读取全球 ERA5 气压层、地面风温压和逐小时降水，按 FuXi-1.0 的顺序生成70通道输入。降水按前6小时求和、米转毫米，处理方式与原版 `make_era5_input.py` 一致。
 - `run_fuxi1_short.py`：调用现有 `FuXi/FuXi-main/fuxi.py` 和 `FuXi_EC/short.onnx`；检查CUDA已启用，禁止失败时静默回退到CPU。
 - `download_era5_pressure.py`：按起报日期分批申请气压层数据，默认只预览请求。
+- `extract_era5_point.py`：从四份全球ERA5文件抽取31.5°N、119.5°E一个网格点，输出逐小时地面表和气压层表到 `point_data/`。表中同时保留原始单位与明确标注的衍生列；原始全球文件不变。
 
 两份新脚本接受命令行文件路径，不会改动 ERA5 原始文件或 FuXi 权重；若目标结果文件已存在，会拒绝覆盖。由于本机的 NetCDF4 库不能正常打开包含中文的路径，实际运行时使用 `%TEMP%` 下指向原目录的英文目录链接；数据本身仍保存在 `D:\低空经济\app`。
 
