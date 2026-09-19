@@ -5,17 +5,24 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$appRoot = $PSScriptRoot
+$projectRoot = Split-Path -Parent $appRoot
 $aliasSpecs = @(
-    @{ Name = 'FuXiCodeData'; Target = 'D:\低空经济\FuXi\FuXi-main' },
-    @{ Name = 'FuXiApp'; Target = 'D:\低空经济\app' },
-    @{ Name = 'FuXiEC'; Target = 'D:\低空经济\FuXi_EC' }
+    @{ Name = 'FuXiCodeData'; Target = (Join-Path $projectRoot 'FuXi\FuXi-main') },
+    @{ Name = 'FuXiApp'; Target = $appRoot },
+    @{ Name = 'FuXiEC'; Target = (Join-Path $projectRoot 'FuXi_EC') }
 )
 
 foreach ($spec in $aliasSpecs) {
     $aliasPath = Join-Path $env:TEMP $spec.Name
+    if (-not (Test-Path -LiteralPath $spec.Target -PathType Container)) {
+        throw "Junction target does not exist: $($spec.Target)"
+    }
     if (Test-Path -LiteralPath $aliasPath) {
         $existing = Get-Item -LiteralPath $aliasPath -Force
-        if ($existing.LinkType -ne 'Junction' -or $existing.Target -ne $spec.Target) {
+        $actualTarget = [System.IO.Path]::GetFullPath([string]$existing.Target).TrimEnd('\')
+        $expectedTarget = [System.IO.Path]::GetFullPath([string]$spec.Target).TrimEnd('\')
+        if ($existing.LinkType -ne 'Junction' -or $actualTarget -ne $expectedTarget) {
             throw "Existing path is not the expected junction: $aliasPath"
         }
     } else {

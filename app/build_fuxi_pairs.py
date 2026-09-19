@@ -20,6 +20,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
+import netCDF4 as nc
 import onnxruntime as ort
 import pandas as pd
 import xarray as xr
@@ -95,6 +96,71 @@ def load_observations(path: Path, latitude: float, longitude: float) -> pd.DataF
     if observations.index.has_duplicates:
         raise ValueError("Observation table contains duplicate valid times")
     return observations
+
+
+def source_time_index(path: Path) -> tuple[set[int], str, str]:
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    with nc.Dataset(path) as dataset:
+        coordinate = dataset.variables["valid_time"]
+        values = {int(value) for value in np.asarray(coordinate[:]).reshape(-1)}
+        units = str(coordinate.units)
+        calendar = str(getattr(coordinate, "calendar", "standard"))
+    return values, units, calendar
+
+
+def numeric_time(when: datetime, info: tuple[set[int], str, str]) -> int:
+    _, units, calendar = info
+    return int(nc.date2num(when, units=units, calendar=calendar))
+
+
+def classify_pending(
+    pending: list[tuple[date, Path]],
+    args: argparse.Namespace,
+    observations: pd.DataFrame,
+) -> tuple[list[tuple[date, Path]], list[tuple[date, str]]]:
+    source_times = {
+        "surface": source_time_index(args.surface),
+        "wind": source_time_index(args.wind),
+        "precip": source_time_index(args.precip),
+    }
+    runnable: list[tuple[date, Path]] = []
+    blocked: list[tuple[date, str]] = []
+    for day, pressure_zip in pending:
+        valid_time = datetime(day.year, day.month, day.day, 12, tzinfo=timezone.utc)
+        reasons: list[str] = []
+        if valid_time not in observations.index:
+            reasons.append(f"missing point ERA5 at {valid_time.isoformat()}")
+
+        prepared = args.prepared_dir / f"input_{day:%Y%m%d}_06.nc" if args.prepared_dir else None
+        if prepared is None or not prepared.is_file():
+            frames = (
+                datetime(day.year, day.month, day.day, 0),
+                datetime(day.year, day.month, day.day, 6),
+            )
+            for kind in ("surface", "wind"):
+                available = source_times[kind][0]
+                missing = [when for when in frames if numeric_time(when, source_times[kind]) not in available]
+                if missing:
+                    reasons.append(f"missing {kind}: {', '.join(when.isoformat() for when in missing)}")
+            required_precip = sorted(
+                {frame - timedelta(hours=hours_back) for frame in frames for hours_back in range(5, -1, -1)}
+            )
+            precip_available = source_times["precip"][0]
+            missing_precip = [
+                when for when in required_precip
+                if numeric_time(when, source_times["precip"]) not in precip_available
+            ]
+            if missing_precip:
+                preview = ", ".join(when.isoformat() for when in missing_precip[:3])
+                suffix = "..." if len(missing_precip) > 3 else ""
+                reasons.append(f"missing precip: {preview}{suffix}")
+
+        if reasons:
+            blocked.append((day, "; ".join(reasons)))
+        else:
+            runnable.append((day, pressure_zip))
+    return runnable, blocked
 
 
 def time_embedding(init_time: datetime) -> np.ndarray:
@@ -267,27 +333,29 @@ def main() -> None:
     selected_dates = {date.fromisoformat(text) for text in (args.date or [])}
     candidates = discover_pressure_zips(args.pressure_dir, selected_dates)
     completed = existing_keys(args.output)
-    pending = [
+    unpaired = [
         (day, path) for day, path in candidates
         if (f"{day:%Y-%m-%d}T06:00:00Z", 6) not in completed
     ]
-    print(f"Pressure ZIPs: {len(candidates)}; already paired: {len(candidates) - len(pending)}; pending: {len(pending)}")
+    observations = load_observations(args.observations, args.latitude, args.longitude)
+    pending, blocked = classify_pending(unpaired, args, observations)
+    print(
+        f"Pressure ZIPs: {len(candidates)}; already paired: {len(candidates) - len(unpaired)}; "
+        f"runnable: {len(pending)}; blocked: {len(blocked)}"
+    )
+    for day, reason in blocked:
+        print(f"  BLOCKED {day.isoformat()}: {reason}")
     for day, path in pending:
         print(f"  {day.isoformat()} 06:00 UTC -> {path.name}")
     if not args.run:
         print("PREVIEW ONLY. Add --run to execute FuXi; no model was loaded.")
         return
     if not pending:
-        print("Nothing to do.")
+        print("Nothing runnable to do.")
         return
     if args.max_runs < 1 or len(pending) > args.max_runs:
         parser.error(f"{len(pending)} pending runs exceed --max-runs {args.max_runs}")
 
-    observations = load_observations(args.observations, args.latitude, args.longitude)
-    for day, _ in pending:
-        valid_time = datetime(day.year, day.month, day.day, 12, tzinfo=timezone.utc)
-        if valid_time not in observations.index:
-            parser.error(f"No ERA5 point reference for {valid_time.isoformat()}")
     handles = prepare_cuda_libraries()
     session = make_session(args.model_dir)
     for day, pressure_zip in pending:
