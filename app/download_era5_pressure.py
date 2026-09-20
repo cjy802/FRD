@@ -10,9 +10,11 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 import zipfile
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Callable
 
 
 DATASET = "reanalysis-era5-pressure-levels"
@@ -29,6 +31,10 @@ PRESSURE_LEVELS = [
 ]
 TIMES = ["00:00", "06:00"]
 DEFAULT_OUTPUT = Path("D:/DATASET/FuXi_ERA5/pressure")
+
+
+class InvalidDownloadError(RuntimeError):
+    """The CDS request returned without producing a valid ZIP archive."""
 
 
 def parse_dates(args: argparse.Namespace) -> list[date]:
@@ -70,6 +76,47 @@ def build_request(day: date) -> dict[str, list[str] | str]:
     }
 
 
+def target_path(output_dir: Path, day: date) -> Path:
+    return output_dir / f"era5_pressure_{day:%Y%m%d}_00_06.zip"
+
+
+def download_with_retries(
+    day: date,
+    target: Path,
+    client_factory: Callable[[], object],
+    request_error: type[BaseException],
+    attempts: int,
+    retry_delay_seconds: float,
+) -> None:
+    """Download one day atomically, retrying transient request failures."""
+    partial = target.with_name(f"{target.name}.part")
+    transient_errors = (request_error, InvalidDownloadError)
+
+    for attempt in range(1, attempts + 1):
+        if partial.exists():
+            partial.unlink()
+        try:
+            client = client_factory()
+            client.retrieve(DATASET, build_request(day), str(partial))
+            if not partial.is_file() or not zipfile.is_zipfile(partial):
+                raise InvalidDownloadError(f"CDS output is missing or not a ZIP: {partial}")
+            partial.replace(target)
+            return
+        except transient_errors as exc:
+            if partial.exists():
+                partial.unlink()
+            if attempt == attempts:
+                raise
+            delay = min(retry_delay_seconds * (2 ** (attempt - 1)), 300.0)
+            print(
+                f"Transient failure for {day.isoformat()} on attempt {attempt}/{attempts}: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            print(f"Retrying this date in {delay:g} seconds...", file=sys.stderr)
+            time.sleep(delay)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="FuXi-1.0 ERA5 global pressure levels, 00/06 UTC; dry-run by default"
@@ -84,6 +131,14 @@ def main() -> int:
         "--max-downloads", type=int, default=1,
         help="safety cap on number of requests in one run (default: 1)",
     )
+    parser.add_argument(
+        "--retry-attempts", type=int, default=5,
+        help="total attempts for a date after transient network/download errors (default: 5)",
+    )
+    parser.add_argument(
+        "--retry-delay-seconds", type=float, default=30.0,
+        help="initial retry delay; doubles up to 300 seconds (default: 30)",
+    )
     args = parser.parse_args()
 
     try:
@@ -92,6 +147,23 @@ def main() -> int:
         parser.error(str(exc))
     if not dates:
         parser.error("no dates selected")
+    if args.max_downloads < 1:
+        parser.error("--max-downloads must be at least 1")
+    if args.retry_attempts < 1:
+        parser.error("--retry-attempts must be at least 1")
+    if args.retry_delay_seconds < 0:
+        parser.error("--retry-delay-seconds must not be negative")
+
+    existing: list[tuple[date, Path]] = []
+    pending: list[tuple[date, Path]] = []
+    for day in dates:
+        target = target_path(args.output_dir, day)
+        if not target.exists():
+            pending.append((day, target))
+        elif zipfile.is_zipfile(target):
+            existing.append((day, target))
+        else:
+            parser.error(f"existing file is not a valid ZIP; inspect it manually: {target}")
 
     # 5 variables x 13 pressure levels x 2 times = 130 fields per date.
     print(f"Selected {len(dates)} date(s), {len(VARIABLES) * len(PRESSURE_LEVELS) * len(TIMES)} fields/date")
@@ -99,8 +171,10 @@ def main() -> int:
     print("This script does NOT request FuXi's five surface fields or hourly precipitation.")
     print(f"Output: {args.output_dir}")
 
-    for day in dates:
-        target = args.output_dir / f"era5_pressure_{day:%Y%m%d}_00_06.zip"
+    for day, target in existing:
+        print(f"\n{day.isoformat()} -> {target}")
+        print("Existing valid ZIP; will skip.")
+    for day, target in pending:
         print(f"\n{day.isoformat()} -> {target}")
         if not args.download:
             print(json.dumps(build_request(day), ensure_ascii=False, indent=2))
@@ -109,32 +183,48 @@ def main() -> int:
         print("\nDRY RUN: no CDS requests were submitted. Add --download to submit.")
         return 0
 
-    if len(dates) > args.max_downloads:
+    if len(pending) > args.max_downloads:
         parser.error(
-            f"{len(dates)} requests exceed --max-downloads {args.max_downloads}; "
+            f"{len(pending)} pending requests exceed --max-downloads {args.max_downloads}; "
             "raise the cap explicitly only after checking storage and network cost"
         )
 
     try:
         import cdsapi
+        import requests
     except ImportError:
         print('Install CDS API in this environment: python -m pip install "cdsapi>=0.7.7"', file=sys.stderr)
         return 2
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    client = cdsapi.Client()
-    for day in dates:
-        target = args.output_dir / f"era5_pressure_{day:%Y%m%d}_00_06.zip"
-        if target.exists():
-            if zipfile.is_zipfile(target):
-                print(f"Skipping existing ZIP: {target}")
-                continue
-            raise RuntimeError(f"Existing file is not a valid ZIP; inspect it manually: {target}")
+    failures: list[tuple[date, BaseException]] = []
+    for day, target in pending:
         print(f"Submitting {day.isoformat()} to CDS...")
-        client.retrieve(DATASET, build_request(day), str(target))
-        if not target.is_file() or not zipfile.is_zipfile(target):
-            raise RuntimeError(f"CDS output is missing or not a ZIP: {target}")
+        try:
+            download_with_retries(
+                day=day,
+                target=target,
+                client_factory=cdsapi.Client,
+                request_error=requests.exceptions.RequestException,
+                attempts=args.retry_attempts,
+                retry_delay_seconds=args.retry_delay_seconds,
+            )
+        except (requests.exceptions.RequestException, InvalidDownloadError) as exc:
+            failures.append((day, exc))
+            print(
+                f"FAILED {day.isoformat()} after {args.retry_attempts} attempts; "
+                "continuing with the next date.",
+                file=sys.stderr,
+            )
+            continue
         print(f"Saved {target} ({target.stat().st_size:,} bytes)")
+
+    if failures:
+        print("\nSome dates failed and remain safe to retry:", file=sys.stderr)
+        for day, exc in failures:
+            print(f"  {day.isoformat()}: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print("Re-run the same command; valid ZIP files will be skipped.", file=sys.stderr)
+        return 1
     return 0
 
 
