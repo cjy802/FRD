@@ -329,6 +329,7 @@ def process_month(
         return
 
     if args.execute:
+        args.batch_root.mkdir(parents=True, exist_ok=True)
         free_gb = shutil.disk_usage(args.batch_root).free / 1e9
         if free_gb < args.min_free_gb:
             raise RuntimeError(
@@ -478,6 +479,8 @@ def main() -> int:
         try:
             process_month(args.year, month, args, client_factory, request_error)
         except Exception as exc:  # noqa: BLE001 - stop the run at the first failure
+            import traceback
+            traceback.print_exc()
             print(f"FAILED {args.year}-{month:02d}: {type(exc).__name__}: {exc}", file=sys.stderr)
             print("Fix the cause and re-run; completed work is kept.", file=sys.stderr)
             return 1
