@@ -7,22 +7,32 @@ param(
 $ErrorActionPreference = 'Stop'
 $appRoot = $PSScriptRoot
 $projectRoot = Split-Path -Parent $appRoot
+$aliasRoot = 'D:\DATASET\FuXi_RuntimeLinks'
 $aliasSpecs = @(
     @{ Name = 'FuXiCodeData'; Target = (Join-Path $projectRoot 'FuXi\FuXi-main') },
     @{ Name = 'FuXiApp'; Target = $appRoot },
     @{ Name = 'FuXiEC'; Target = (Join-Path $projectRoot 'FuXi_EC') }
 )
 
+New-Item -ItemType Directory -Path $aliasRoot -Force | Out-Null
 foreach ($spec in $aliasSpecs) {
-    $aliasPath = Join-Path $env:TEMP $spec.Name
+    $aliasPath = Join-Path $aliasRoot $spec.Name
     if (-not (Test-Path -LiteralPath $spec.Target -PathType Container)) {
         throw "Junction target does not exist: $($spec.Target)"
     }
     if (Test-Path -LiteralPath $aliasPath) {
         $existing = Get-Item -LiteralPath $aliasPath -Force
-        $actualTarget = [System.IO.Path]::GetFullPath([string]$existing.Target).TrimEnd('\')
+        $targetValues = @(
+            $existing.Target | Where-Object {
+                -not [string]::IsNullOrWhiteSpace([string]$_)
+            }
+        )
+        if ($existing.LinkType -ne 'Junction' -or $targetValues.Count -ne 1) {
+            throw "Existing path is not the expected junction: $aliasPath"
+        }
+        $actualTarget = [System.IO.Path]::GetFullPath([string]$targetValues[0]).TrimEnd('\')
         $expectedTarget = [System.IO.Path]::GetFullPath([string]$spec.Target).TrimEnd('\')
-        if ($existing.LinkType -ne 'Junction' -or $actualTarget -ne $expectedTarget) {
+        if ($actualTarget -ne $expectedTarget) {
             throw "Existing path is not the expected junction: $aliasPath"
         }
     } else {
@@ -35,9 +45,9 @@ if (-not (Test-Path -LiteralPath $pythonExe)) {
     throw "Python environment not found: $pythonExe"
 }
 
-$code = Join-Path $env:TEMP 'FuXiCodeData'
-$app = Join-Path $env:TEMP 'FuXiApp'
-$model = Join-Path $env:TEMP 'FuXiEC'
+$code = Join-Path $aliasRoot 'FuXiCodeData'
+$app = Join-Path $aliasRoot 'FuXiApp'
+$model = Join-Path $aliasRoot 'FuXiEC'
 $batchArgs = @(
     (Join-Path $PSScriptRoot 'build_fuxi_pairs.py'),
     '--pressure-dir', 'D:\DATASET\FuXi_ERA5\pressure',
@@ -45,9 +55,9 @@ $batchArgs = @(
     '--wind', (Join-Path $code '1cb39f095b03722d7030da272927ff99\data_stream-oper_stepType-instant.nc'),
     '--precip', (Join-Path $code '62bebd9af378805411e61a14abeaa385\data_stream-oper_stepType-accum.nc'),
     '--model-dir', $model,
-    '--observations', (Join-Path $app 'point_data\era5_surface_point_31p5N_119p5E_2026.csv'),
+    '--observations', (Join-Path $appRoot 'point_data\era5_surface_point_31p5N_119p5E_2026.csv'),
     '--prepared-dir', (Join-Path $app 'prepared'),
-    '--output', (Join-Path $app 'point_data\fuxi_era5_pairs_6h.csv')
+    '--output', (Join-Path $appRoot 'point_data\fuxi_era5_pairs_6h.csv')
 )
 
 foreach ($day in $Dates) {
