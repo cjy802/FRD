@@ -50,6 +50,14 @@ SURFACE_VARIABLES = ["2m_temperature", "mean_sea_level_pressure"]
 WIND_VARIABLES = ["10m_u_component_of_wind", "10m_v_component_of_wind"]
 PRECIP_VARIABLES = ["total_precipitation"]
 REQUIRED_OBSERVATIONS = ["t2m_K", "u10_m_s", "v10_m_s", "msl_Pa", "tp_6h_mm"]
+# CDS request names -> NetCDF variable names inside the delivered files.
+NC_VARIABLE_NAMES = {
+    "2m_temperature": "t2m",
+    "mean_sea_level_pressure": "msl",
+    "10m_u_component_of_wind": "u10",
+    "10m_v_component_of_wind": "v10",
+    "total_precipitation": "tp",
+}
 INSTANT_TIMES = ["00:00", "06:00", "12:00"]
 HOURLY_TIMES = [f"{hour:02d}:00" for hour in range(24)]
 EVENING_TIMES = [f"{hour:02d}:00" for hour in range(18, 24)]
@@ -154,7 +162,14 @@ def file_is_finite(nc_path: Path, variables: list[str]) -> bool:
         return False
     with nc.Dataset(nc_path) as dataset:
         for name in variables:
-            variable = dataset.variables[name]
+            nc_name = NC_VARIABLE_NAMES.get(name, name)
+            if nc_name not in dataset.variables:
+                print(
+                    f"WARNING: {nc_path.name} lacks variable {nc_name}",
+                    file=sys.stderr,
+                )
+                return False
+            variable = dataset.variables[nc_name]
             for index in range(variable.shape[0]):
                 frame = np.ma.filled(variable[index], np.nan)
                 if not np.isfinite(frame).all():
