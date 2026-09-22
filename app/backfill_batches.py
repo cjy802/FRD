@@ -49,6 +49,7 @@ SINGLE_DATASET = "reanalysis-era5-single-levels"
 SURFACE_VARIABLES = ["2m_temperature", "mean_sea_level_pressure"]
 WIND_VARIABLES = ["10m_u_component_of_wind", "10m_v_component_of_wind"]
 PRECIP_VARIABLES = ["total_precipitation"]
+REQUIRED_OBSERVATIONS = ["t2m_K", "u10_m_s", "v10_m_s", "msl_Pa", "tp_6h_mm"]
 INSTANT_TIMES = ["00:00", "06:00", "12:00"]
 HOURLY_TIMES = [f"{hour:02d}:00" for hour in range(24)]
 EVENING_TIMES = [f"{hour:02d}:00" for hour in range(18, 24)]
@@ -145,30 +146,63 @@ def extract_single_nc(archive_path: Path, target: Path) -> None:
             shutil.copyfileobj(source, destination, length=8 * 1024 * 1024)
 
 
+def file_is_finite(nc_path: Path, variables: list[str]) -> bool:
+    """True when every frame of every variable is finite (no NaN/fill values)."""
+    import netCDF4 as nc
+
+    if not nc_path.is_file():
+        return False
+    with nc.Dataset(nc_path) as dataset:
+        for name in variables:
+            variable = dataset.variables[name]
+            for index in range(variable.shape[0]):
+                frame = np.ma.filled(variable[index], np.nan)
+                if not np.isfinite(frame).all():
+                    print(
+                        f"WARNING: {nc_path.name} has non-finite {name} values "
+                        f"at frame {index}",
+                        file=sys.stderr,
+                    )
+                    return False
+    return True
+
+
 def download_and_extract(
     request: dict[str, list[str] | str],
     target_nc: Path,
+    variables: list[str],
     args: argparse.Namespace,
     client_factory,
     request_error: type[BaseException],
 ) -> None:
-    """Download one single-level ZIP next to the target and extract the NetCDF."""
-    if target_nc.is_file():
-        print("Existing NetCDF; will skip:", target_nc.name)
-        return
-    target_zip = target_nc.with_suffix(".zip")
-    download_with_retries(
-        SINGLE_DATASET,
-        request,
-        target_zip,
-        client_factory,
-        request_error,
-        args.retry_attempts,
-        args.retry_delay_seconds,
-    )
-    print(f"Saved {target_zip} ({target_zip.stat().st_size:,} bytes)")
-    extract_single_nc(target_zip, target_nc)
-    target_zip.unlink()
+    """Download one single-level ZIP next to the target and extract the NetCDF.
+
+    CDS occasionally delivers NetCDF files whose time axis is complete but
+    whose fields are all NaN for part of the period, so the result is
+    validated frame by frame and re-downloaded once if it is not finite.
+    """
+    for attempt in (1, 2):
+        if file_is_finite(target_nc, variables):
+            if attempt == 1:
+                print("Existing NetCDF; will skip:", target_nc.name)
+            return
+        if target_nc.exists():
+            print(f"Discarding non-finite NetCDF: {target_nc.name}", file=sys.stderr)
+            target_nc.unlink()
+        target_zip = target_nc.with_suffix(".zip")
+        download_with_retries(
+            SINGLE_DATASET,
+            request,
+            target_zip,
+            client_factory,
+            request_error,
+            args.retry_attempts,
+            args.retry_delay_seconds,
+        )
+        print(f"Saved {target_zip} ({target_zip.stat().st_size:,} bytes)")
+        extract_single_nc(target_zip, target_nc)
+        target_zip.unlink()
+    raise RuntimeError(f"NetCDF still non-finite after re-download: {target_nc}")
 
 
 def merge_precip(previous_nc: Path, month_nc: Path, target: Path) -> None:
@@ -358,35 +392,44 @@ def process_month(
         precip_nc = batch_dir / f"precip_{year}{month:02d}.nc"
         download_and_extract(
             single_level_request(year, month, days, SURFACE_VARIABLES, INSTANT_TIMES),
-            surface_nc, args, client_factory, request_error,
+            surface_nc, SURFACE_VARIABLES, args, client_factory, request_error,
         )
         download_and_extract(
             single_level_request(year, month, days, WIND_VARIABLES, INSTANT_TIMES),
-            wind_nc, args, client_factory, request_error,
+            wind_nc, WIND_VARIABLES, args, client_factory, request_error,
         )
-        if not precip_nc.is_file():
-            previous_day = date(year, month, 1) - timedelta(days=1)
-            previous_nc = batch_dir / f"precip_prev_{previous_day:%Y%m%d}.nc"
-            month_only_nc = batch_dir / f"precip_month_{year}{month:02d}.nc"
-            if not previous_nc.is_file():
-                download_and_extract(
-                    single_level_request(
-                        previous_day.year,
-                        previous_day.month,
-                        [previous_day],
-                        PRECIP_VARIABLES,
-                        EVENING_TIMES,
-                    ),
-                    previous_nc, args, client_factory, request_error,
-                )
-            if not month_only_nc.is_file():
-                download_and_extract(
-                    single_level_request(year, month, days, PRECIP_VARIABLES, HOURLY_TIMES),
-                    month_only_nc, args, client_factory, request_error,
-                )
+        previous_day = date(year, month, 1) - timedelta(days=1)
+        previous_nc = batch_dir / f"precip_prev_{previous_day:%Y%m%d}.nc"
+        month_only_nc = batch_dir / f"precip_month_{year}{month:02d}.nc"
+        for attempt in (1, 2):
+            if file_is_finite(precip_nc, PRECIP_VARIABLES):
+                break
+            if precip_nc.exists():
+                print(f"Discarding non-finite NetCDF: {precip_nc.name}", file=sys.stderr)
+                precip_nc.unlink()
+            if attempt == 2:
+                raise RuntimeError(f"precip still non-finite after re-download: {precip_nc}")
+            if not file_is_finite(previous_nc, PRECIP_VARIABLES) and previous_nc.exists():
+                previous_nc.unlink()
+            download_and_extract(
+                single_level_request(
+                    previous_day.year,
+                    previous_day.month,
+                    [previous_day],
+                    PRECIP_VARIABLES,
+                    EVENING_TIMES,
+                ),
+                previous_nc, PRECIP_VARIABLES, args, client_factory, request_error,
+            )
+            if not file_is_finite(month_only_nc, PRECIP_VARIABLES) and month_only_nc.exists():
+                month_only_nc.unlink()
+            download_and_extract(
+                single_level_request(year, month, days, PRECIP_VARIABLES, HOURLY_TIMES),
+                month_only_nc, PRECIP_VARIABLES, args, client_factory, request_error,
+            )
             merge_precip(previous_nc, month_only_nc, precip_nc)
-            previous_nc.unlink()
-            month_only_nc.unlink()
+        previous_nc.unlink(missing_ok=True)
+        month_only_nc.unlink(missing_ok=True)
 
         month_table = month_observations(
             surface_nc, wind_nc, precip_nc, args.latitude, args.longitude, year, month
@@ -397,6 +440,12 @@ def process_month(
         ))
         if absent:
             raise RuntimeError(f"Observation CSV rows missing for: {absent}")
+        incomplete = noon[noon[REQUIRED_OBSERVATIONS].isna().any(axis=1)]
+        if len(incomplete):
+            raise RuntimeError(
+                "Observation rows with missing values at 12:00 UTC: "
+                f"{incomplete['valid_time_utc'].tolist()}"
+            )
         merge_observations(args.obs_csv, month_table)
 
         run_pairing(batch_dir, surface_nc, wind_nc, precip_nc, args.obs_csv, args, len(missing))
