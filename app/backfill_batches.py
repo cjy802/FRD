@@ -154,31 +154,57 @@ def extract_single_nc(archive_path: Path, target: Path) -> None:
             shutil.copyfileobj(source, destination, length=8 * 1024 * 1024)
 
 
-def file_is_finite(nc_path: Path, variables: list[str]) -> bool:
-    """True when every frame of every variable is finite (no NaN/fill values)."""
+def file_is_finite(
+    nc_path: Path,
+    variables: list[str],
+    expected_frames: int | None = None,
+) -> bool:
+    """True when every frame of every variable is finite and the frame count matches.
+
+    CDS occasionally delivers NetCDF files that are empty, partially filled
+    with NaN fields, or truncated, so the time axis length is checked against
+    the request as well.
+    """
     import netCDF4 as nc
 
     if not nc_path.is_file():
         return False
-    with nc.Dataset(nc_path) as dataset:
-        for name in variables:
-            nc_name = NC_VARIABLE_NAMES.get(name, name)
-            if nc_name not in dataset.variables:
-                print(
-                    f"WARNING: {nc_path.name} lacks variable {nc_name}",
-                    file=sys.stderr,
-                )
-                return False
-            variable = dataset.variables[nc_name]
-            for index in range(variable.shape[0]):
-                frame = np.ma.filled(variable[index], np.nan)
-                if not np.isfinite(frame).all():
+    try:
+        with nc.Dataset(nc_path) as dataset:
+            for name in variables:
+                nc_name = NC_VARIABLE_NAMES.get(name, name)
+                if nc_name not in dataset.variables:
                     print(
-                        f"WARNING: {nc_path.name} has non-finite {name} values "
-                        f"at frame {index}",
+                        f"WARNING: {nc_path.name} lacks variable {nc_name}",
                         file=sys.stderr,
                     )
                     return False
+                variable = dataset.variables[nc_name]
+                if variable.shape[0] == 0:
+                    print(
+                        f"WARNING: {nc_path.name} has zero frames for {nc_name}",
+                        file=sys.stderr,
+                    )
+                    return False
+                if expected_frames is not None and variable.shape[0] != expected_frames:
+                    print(
+                        f"WARNING: {nc_path.name} has {variable.shape[0]} {nc_name} frames; "
+                        f"expected {expected_frames}",
+                        file=sys.stderr,
+                    )
+                    return False
+                for index in range(variable.shape[0]):
+                    frame = np.ma.filled(variable[index], np.nan)
+                    if not np.isfinite(frame).all():
+                        print(
+                            f"WARNING: {nc_path.name} has non-finite {nc_name} values "
+                            f"at frame {index}",
+                            file=sys.stderr,
+                        )
+                        return False
+    except OSError as exc:
+        print(f"WARNING: {nc_path.name} cannot be opened: {exc}", file=sys.stderr)
+        return False
     return True
 
 
@@ -189,15 +215,17 @@ def download_and_extract(
     args: argparse.Namespace,
     client_factory,
     request_error: type[BaseException],
+    expected_frames: int | None = None,
 ) -> None:
     """Download one single-level ZIP next to the target and extract the NetCDF.
 
     CDS occasionally delivers NetCDF files whose time axis is complete but
-    whose fields are all NaN for part of the period, so the result is
-    validated frame by frame and re-downloaded once if it is not finite.
+    whose fields are all NaN for part of the period (or empty entirely), so
+    the result is validated frame by frame and re-downloaded once if it does
+    not match the request.
     """
     for attempt in (1, 2):
-        if file_is_finite(target_nc, variables):
+        if file_is_finite(target_nc, variables, expected_frames):
             if attempt == 1:
                 print("Existing NetCDF; will skip:", target_nc.name)
             return
@@ -408,22 +436,25 @@ def process_month(
         download_and_extract(
             single_level_request(year, month, days, SURFACE_VARIABLES, INSTANT_TIMES),
             surface_nc, SURFACE_VARIABLES, args, client_factory, request_error,
+            expected_frames=len(days) * len(INSTANT_TIMES),
         )
         download_and_extract(
             single_level_request(year, month, days, WIND_VARIABLES, INSTANT_TIMES),
             wind_nc, WIND_VARIABLES, args, client_factory, request_error,
+            expected_frames=len(days) * len(INSTANT_TIMES),
         )
         previous_day = date(year, month, 1) - timedelta(days=1)
         previous_nc = batch_dir / f"precip_prev_{previous_day:%Y%m%d}.nc"
         month_only_nc = batch_dir / f"precip_month_{year}{month:02d}.nc"
+        merged_frames = len(days) * len(HOURLY_TIMES) + len(EVENING_TIMES)
         for attempt in (1, 2):
-            if file_is_finite(precip_nc, PRECIP_VARIABLES):
+            if file_is_finite(precip_nc, PRECIP_VARIABLES, merged_frames):
                 break
             if precip_nc.exists():
                 print(f"Discarding non-finite NetCDF: {precip_nc.name}", file=sys.stderr)
                 precip_nc.unlink()
             if attempt == 2:
-                raise RuntimeError(f"precip still non-finite after re-download: {precip_nc}")
+                raise RuntimeError(f"precip still invalid after re-download: {precip_nc}")
             if not file_is_finite(previous_nc, PRECIP_VARIABLES) and previous_nc.exists():
                 previous_nc.unlink()
             download_and_extract(
@@ -435,12 +466,14 @@ def process_month(
                     EVENING_TIMES,
                 ),
                 previous_nc, PRECIP_VARIABLES, args, client_factory, request_error,
+                expected_frames=len(EVENING_TIMES),
             )
             if not file_is_finite(month_only_nc, PRECIP_VARIABLES) and month_only_nc.exists():
                 month_only_nc.unlink()
             download_and_extract(
                 single_level_request(year, month, days, PRECIP_VARIABLES, HOURLY_TIMES),
                 month_only_nc, PRECIP_VARIABLES, args, client_factory, request_error,
+                expected_frames=len(days) * len(HOURLY_TIMES),
             )
             merge_precip(previous_nc, month_only_nc, precip_nc)
         previous_nc.unlink(missing_ok=True)
