@@ -29,7 +29,7 @@ from prepare_fuxi1_input import CHANNELS, build_input
 from run_fuxi1_short import prepare_cuda_libraries
 
 
-PRESSURE_ZIP_NAME = re.compile(r"era5_pressure_(\d{8})_00_06\.zip$")
+PRESSURE_ZIP_NAME = re.compile(r"era5_pressure_(\d{8})_00_06(?:_12_18)?\.zip$")
 FIELD_MAP = (
     ("t2m_K", "T2M", "t2m_K"),
     ("u10_m_s", "U10", "u10_m_s"),

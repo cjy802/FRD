@@ -17,12 +17,14 @@
 
 - `prepare_fuxi1_input.py`：读取全球 ERA5 气压层、地面风温压和逐小时降水，按 FuXi-1.0 的顺序生成70通道输入。降水按前6小时求和、米转毫米，处理方式与原版 `make_era5_input.py` 一致。
 - `run_fuxi1_short.py`：调用现有 `FuXi/FuXi-main/fuxi.py` 和 `FuXi_EC/short.onnx`；检查CUDA已启用，禁止失败时静默回退到CPU。
-- `download_era5_pressure.py`：按起报日期分批申请气压层数据，默认只预览请求；有效ZIP会自动跳过，临时网络错误默认重试5次并继续处理后续日期。
+- `download_era5_pressure.py`：按起报日期分批申请气压层数据，默认只预览请求；支持 `--times 00:00 06:00 12:00 18:00`，有效ZIP会自动跳过，临时网络错误默认重试5次并继续处理后续日期。
 - `extract_era5_point.py`：从四份全球ERA5文件抽取31.5°N、119.5°E一个网格点，输出逐小时地面表和气压层表到 `point_data/`。表中同时保留原始单位与明确标注的衍生列；原始全球文件不变。
 - `build_fuxi_pairs.py`：扫描已下载的全球气压层ZIP，用冻结的 `short` 模型做 `+6h` 预测，直接抽取目标点，与同时间的ERA5参考值配对写入 `point_data/fuxi_era5_pairs_6h.csv`；不保存每次的全球预测文件。
 - `run_fuxi_pairs.ps1`：为本机现有目录预设路径并创建稳定的英文目录链接，提供一个简短、安全的运行入口。
 
 下载中若出现临时 TLS/连接错误，可直接重新运行原命令。脚本用 `.part` 临时文件下载，验证为有效ZIP后才改成正式文件名；重跑时跳过已经完成的有效ZIP。重试次数和初始等待时间可分别用 `--retry-attempts`、`--retry-delay-seconds` 调整。
+
+`backfill_batches.py` 默认按月下载四个气压层快照 `00/06/12/18 UTC`，并仍只执行现有的 `06:00 -> 12:00` 配对。若只想下载并保留四时刻输入、不启动GPU配对，可使用 `--execute --download-only`；全年任务建议按月串行运行，单月会在校验通过后保留在 `D:\DATASET\FuXi_ERA5\backfill`。
 
 配对脚本默认只预览，不加载模型。PowerShell中运行：
 

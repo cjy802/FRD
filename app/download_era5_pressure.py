@@ -1,7 +1,8 @@
 """Download only the global pressure-level frames needed for FuXi-1.0.
 
 Default behaviour is a dry run. Each selected date creates one CDS request for
-00:00 and 06:00 UTC, suitable for a FuXi initialization at 06:00 UTC.
+the requested snapshots (00:00 and 06:00 UTC by default). Use ``--times`` to
+request another set, such as all four six-hourly snapshots.
 Surface-level data (including precipitation) must be requested separately.
 """
 
@@ -14,6 +15,7 @@ import time
 import zipfile
 from datetime import date, timedelta
 from pathlib import Path
+import re
 from typing import Callable
 
 
@@ -29,7 +31,10 @@ PRESSURE_LEVELS = [
     "50", "100", "150", "200", "250", "300", "400",
     "500", "600", "700", "850", "925", "1000",
 ]
-TIMES = ["00:00", "06:00"]
+DEFAULT_TIMES = ["00:00", "06:00"]
+FOUR_TIMES = ["00:00", "06:00", "12:00", "18:00"]
+# Backward-compatible alias for callers that imported the old constant.
+TIMES = DEFAULT_TIMES
 DEFAULT_OUTPUT = Path("D:/DATASET/FuXi_ERA5/pressure")
 
 
@@ -62,22 +67,53 @@ def parse_dates(args: argparse.Namespace) -> list[date]:
     return dates
 
 
-def build_request(day: date) -> dict[str, list[str] | str]:
+def normalize_times(values: list[str] | None) -> list[str]:
+    """Validate and sort requested hourly snapshots."""
+    selected = list(values or DEFAULT_TIMES)
+    if not selected:
+        raise ValueError("at least one pressure time is required")
+    parsed: list[tuple[int, str]] = []
+    for text in selected:
+        if re.fullmatch(r"\d{2}:00", text) is None:
+            raise ValueError(f"pressure times must use HH:00 format: {text}")
+        hour = int(text[:2])
+        if not 0 <= hour <= 23:
+            raise ValueError(f"pressure hour is outside 00..23: {text}")
+        parsed.append((hour, text))
+    hours = [hour for hour, _ in parsed]
+    if len(hours) != len(set(hours)):
+        raise ValueError("pressure times must not contain duplicates")
+    return [text for _, text in sorted(parsed)]
+
+
+def time_tag(times: list[str]) -> str:
+    return "_".join(text[:2] for text in normalize_times(times))
+
+
+def build_request(
+    day: date,
+    times: list[str] | None = None,
+) -> dict[str, list[str] | str]:
+    selected_times = normalize_times(times)
     return {
         "product_type": ["reanalysis"],
         "variable": VARIABLES,
         "year": [f"{day.year:04d}"],
         "month": [f"{day.month:02d}"],
         "day": [f"{day.day:02d}"],
-        "time": TIMES,
+        "time": selected_times,
         "pressure_level": PRESSURE_LEVELS,
         "data_format": "netcdf",
         "download_format": "zip",
     }
 
 
-def target_path(output_dir: Path, day: date) -> Path:
-    return output_dir / f"era5_pressure_{day:%Y%m%d}_00_06.zip"
+def target_path(
+    output_dir: Path,
+    day: date,
+    times: list[str] | None = None,
+) -> Path:
+    return output_dir / f"era5_pressure_{day:%Y%m%d}_{time_tag(times or DEFAULT_TIMES)}.zip"
 
 
 def download_with_retries(
@@ -87,6 +123,7 @@ def download_with_retries(
     request_error: type[BaseException],
     attempts: int,
     retry_delay_seconds: float,
+    times: list[str] | None = None,
 ) -> None:
     """Download one day atomically, retrying transient request failures."""
     partial = target.with_name(f"{target.name}.part")
@@ -97,7 +134,7 @@ def download_with_retries(
             partial.unlink()
         try:
             client = client_factory()
-            client.retrieve(DATASET, build_request(day), str(partial))
+            client.retrieve(DATASET, build_request(day, times), str(partial))
             if not partial.is_file() or not zipfile.is_zipfile(partial):
                 raise InvalidDownloadError(f"CDS output is missing or not a ZIP: {partial}")
             partial.replace(target)
@@ -125,6 +162,9 @@ def main() -> int:
     parser.add_argument("--start", help="first UTC init date YYYY-MM-DD")
     parser.add_argument("--end", help="last UTC init date YYYY-MM-DD (inclusive)")
     parser.add_argument("--every-days", type=int, default=7, help="date interval with --start/--end (default: 7)")
+    parser.add_argument(
+        "--times", nargs="+", help="pressure snapshots such as 00:00 06:00 12:00 18:00; default: 00:00 06:00"
+    )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--download", action="store_true", help="actually submit CDS requests")
     parser.add_argument(
@@ -143,6 +183,7 @@ def main() -> int:
 
     try:
         dates = parse_dates(args)
+        times = normalize_times(args.times)
     except ValueError as exc:
         parser.error(str(exc))
     if not dates:
@@ -157,7 +198,7 @@ def main() -> int:
     existing: list[tuple[date, Path]] = []
     pending: list[tuple[date, Path]] = []
     for day in dates:
-        target = target_path(args.output_dir, day)
+        target = target_path(args.output_dir, day, times)
         if not target.exists():
             pending.append((day, target))
         elif zipfile.is_zipfile(target):
@@ -166,7 +207,8 @@ def main() -> int:
             parser.error(f"existing file is not a valid ZIP; inspect it manually: {target}")
 
     # 5 variables x 13 pressure levels x 2 times = 130 fields per date.
-    print(f"Selected {len(dates)} date(s), {len(VARIABLES) * len(PRESSURE_LEVELS) * len(TIMES)} fields/date")
+    print(f"Selected {len(dates)} date(s), {len(VARIABLES) * len(PRESSURE_LEVELS) * len(times)} fields/date")
+    print(f"Pressure snapshots: {', '.join(times)}")
     print("Each date uses global 0.25-degree ERA5 data; no region or resolution reduction.")
     print("This script does NOT request FuXi's five surface fields or hourly precipitation.")
     print(f"Output: {args.output_dir}")
@@ -177,7 +219,7 @@ def main() -> int:
     for day, target in pending:
         print(f"\n{day.isoformat()} -> {target}")
         if not args.download:
-            print(json.dumps(build_request(day), ensure_ascii=False, indent=2))
+            print(json.dumps(build_request(day, times), ensure_ascii=False, indent=2))
 
     if not args.download:
         print("\nDRY RUN: no CDS requests were submitted. Add --download to submit.")
@@ -208,6 +250,7 @@ def main() -> int:
                 request_error=requests.exceptions.RequestException,
                 attempts=args.retry_attempts,
                 retry_delay_seconds=args.retry_delay_seconds,
+                times=times,
             )
         except (requests.exceptions.RequestException, InvalidDownloadError) as exc:
             failures.append((day, exc))

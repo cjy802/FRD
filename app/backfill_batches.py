@@ -2,9 +2,9 @@
 
 Per calendar month this orchestrator:
 
-1. downloads the daily ERA5 pressure ZIPs (00/06 UTC) into the batch dir;
+1. downloads the daily ERA5 pressure ZIPs (00/06/12/18 UTC by default) into the batch dir;
 2. downloads three ERA5 single-level files for the month: t2m/msl and
-   u10/v10 at 00/06/12 UTC, plus hourly tp. The tp download is split into
+   u10/v10 at 00/06/12/18 UTC, plus hourly tp. The tp download is split into
    the month itself and the preceding evening (18:00-23:00 of the last day
    of the previous month), because the six-hour accumulations at month
    start need those frames and a single CDS request would fetch whole
@@ -17,7 +17,8 @@ Per calendar month this orchestrator:
 
 Re-running is safe and resumable: paired days are skipped, finished
 downloads are reused, and a month stops at its first failure. The default
-is a dry run; add --execute to download and run.
+is a dry run; add --execute to download and run. Use --download-only with
+--execute to retain validated monthly downloads without starting GPU pairing.
 """
 
 from __future__ import annotations
@@ -58,12 +59,13 @@ NC_VARIABLE_NAMES = {
     "10m_v_component_of_wind": "v10",
     "total_precipitation": "tp",
 }
-INSTANT_TIMES = ["00:00", "06:00", "12:00"]
+PRESSURE_TIMES = list(pressure_dl.FOUR_TIMES)
+INSTANT_TIMES = list(PRESSURE_TIMES)
 HOURLY_TIMES = [f"{hour:02d}:00" for hour in range(24)]
 EVENING_TIMES = [f"{hour:02d}:00" for hour in range(18, 24)]
 # Rough per-month download estimate, printed in dry runs only.
-PRESSURE_GB_PER_DAY = 0.24
-SINGLE_GB_PER_MONTH = 2.5
+PRESSURE_GB_PER_DAY = 0.48
+SINGLE_GB_PER_MONTH = 3.0
 
 
 def month_days(year: int, month: int) -> list[date]:
@@ -416,7 +418,7 @@ def process_month(
         batch_dir.mkdir(parents=True, exist_ok=True)
 
         for day in missing:
-            target = pressure_dl.target_path(batch_dir, day)
+            target = pressure_dl.target_path(batch_dir, day, args.pressure_times)
             if target.exists() and zipfile.is_zipfile(target):
                 print(f"Existing pressure ZIP; will skip: {target.name}")
                 continue
@@ -427,6 +429,7 @@ def process_month(
                 request_error=request_error,
                 attempts=args.retry_attempts,
                 retry_delay_seconds=args.retry_delay_seconds,
+                times=args.pressure_times,
             )
             print(f"Saved {target} ({target.stat().st_size:,} bytes)")
 
@@ -496,6 +499,13 @@ def process_month(
             )
         merge_observations(args.obs_csv, month_table)
 
+        if args.download_only:
+            print(
+                f"Download-only complete; keeping validated batch dir {batch_dir}. "
+                "No GPU pairing was started."
+            )
+            return
+
         run_pairing(batch_dir, surface_nc, wind_nc, precip_nc, args.obs_csv, args, len(missing))
 
         still_missing = [day for day in days if day not in paired_days(args.pairs_csv, year, month)]
@@ -532,19 +542,33 @@ def main() -> int:
     parser.add_argument("--longitude", type=float, default=119.5)
     parser.add_argument("--model-dir", type=Path, default=MODEL_DIR)
     parser.add_argument("--fuxi-python", type=Path, default=FUXI_PYTHON)
+    parser.add_argument(
+        "--pressure-times", nargs="+", default=list(PRESSURE_TIMES),
+        help="pressure snapshots per day; default: 00:00 06:00 12:00 18:00",
+    )
     parser.add_argument("--min-free-gb", type=float, default=30.0)
     parser.add_argument("--retry-attempts", type=int, default=5)
     parser.add_argument("--retry-delay-seconds", type=float, default=30.0)
     parser.add_argument("--keep-downloads", action="store_true",
                         help="keep batch downloads after a successful month")
+    parser.add_argument(
+        "--download-only", action="store_true",
+        help="with --execute, download and validate monthly inputs but skip GPU pairing and cleanup",
+    )
     parser.add_argument("--execute", action="store_true",
                         help="actually download, infer, and clean up (default: dry run)")
     args = parser.parse_args()
+    if args.download_only and not args.execute:
+        parser.error("--download-only requires --execute")
     if not args.obs_csv:
         stem = (
             f"era5_surface_point_{args.latitude:g}N_{args.longitude:g}E_{args.year}"
         ).replace(".", "p")
         args.obs_csv = PROJECT_ROOT / "app" / "point_data" / f"{stem}.csv"
+    try:
+        args.pressure_times = pressure_dl.normalize_times(args.pressure_times)
+    except ValueError as exc:
+        parser.error(str(exc))
     months = sorted(set(args.months)) if args.months else list(range(1, 13))
     if not (1 <= min(months) and max(months) <= 12):
         parser.error("months must be between 1 and 12")
@@ -553,6 +577,7 @@ def main() -> int:
     print(f"Pairs CSV: {args.pairs_csv}")
     print(f"Observation CSV: {args.obs_csv}")
     print(f"Batch root: {args.batch_root}")
+    print(f"Pressure snapshots: {', '.join(args.pressure_times)}")
 
     client_factory = None
     request_error = None
