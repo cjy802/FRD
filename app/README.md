@@ -24,7 +24,7 @@
 
 下载中若出现临时 TLS/连接错误，可直接重新运行原命令。脚本用 `.part` 临时文件下载，验证为有效ZIP后才改成正式文件名；重跑时跳过已经完成的有效ZIP。重试次数和初始等待时间可分别用 `--retry-attempts`、`--retry-delay-seconds` 调整。
 
-`backfill_batches.py` 默认按月下载四个气压层快照 `00/06/12/18 UTC`，并仍只执行现有的 `06:00 -> 12:00` 配对。若只想下载并保留四时刻输入、不启动GPU配对，可使用 `--execute --download-only`；全年任务建议按月串行运行，单月会在校验通过后保留在 `D:\DATASET\FuXi_ERA5\backfill`。
+`backfill_batches.py` 默认按月下载四个气压层快照 `00/06/12/18 UTC`，并仍只执行现有的 `06:00 -> 12:00` 配对。若只想下载并保留四时刻输入、不启动GPU配对，可使用 `--execute --download-only`；若希望每天配对成功后立即删除当天气压包，可使用 `--execute --daily-cleanup`。全年任务建议按月串行运行，批次目录位于 `D:\DATASET\FuXi_ERA5\backfill`。
 
 配对脚本默认只预览，不加载模型。PowerShell中运行：
 

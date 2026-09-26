@@ -19,6 +19,8 @@ Re-running is safe and resumable: paired days are skipped, finished
 downloads are reused, and a month stops at its first failure. The default
 is a dry run; add --execute to download and run. Use --download-only with
 --execute to retain validated monthly downloads without starting GPU pairing.
+Use --daily-cleanup with --execute to pair one day at a time and remove that
+day's pressure archive immediately after a successful append.
 """
 
 from __future__ import annotations
@@ -388,6 +390,44 @@ def run_pairing(
         raise RuntimeError(f"build_fuxi_pairs.py exited with {result.returncode}")
 
 
+def pair_one_day_and_cleanup(
+    day: date,
+    batch_dir: Path,
+    surface_nc: Path,
+    wind_nc: Path,
+    precip_nc: Path,
+    args: argparse.Namespace,
+    client_factory,
+    request_error: type[BaseException],
+) -> None:
+    """Download, pair, and clean one day's pressure archive."""
+    day_dir = batch_dir / f"pressure_{day:%Y%m%d}"
+    day_dir.mkdir(parents=True, exist_ok=True)
+    target = pressure_dl.target_path(day_dir, day, args.pressure_times)
+    if target.exists() and zipfile.is_zipfile(target):
+        print(f"Existing pressure ZIP; will skip: {target}")
+    else:
+        pressure_dl.download_with_retries(
+            day=day,
+            target=target,
+            client_factory=client_factory,
+            request_error=request_error,
+            attempts=args.retry_attempts,
+            retry_delay_seconds=args.retry_delay_seconds,
+            times=args.pressure_times,
+        )
+        print(f"Saved {target} ({target.stat().st_size:,} bytes)")
+
+    run_pairing(day_dir, surface_nc, wind_nc, precip_nc, args.obs_csv, args, 1)
+    if day not in paired_days(args.pairs_csv, day.year, day.month):
+        raise RuntimeError(
+            f"{day} did not appear in the pair CSV after pairing; keeping {day_dir} for retry"
+        )
+    if not args.keep_downloads:
+        shutil.rmtree(day_dir)
+        print(f"Day complete; removed {day_dir}")
+
+
 def process_month(
     year: int,
     month: int,
@@ -417,21 +457,22 @@ def process_month(
             )
         batch_dir.mkdir(parents=True, exist_ok=True)
 
-        for day in missing:
-            target = pressure_dl.target_path(batch_dir, day, args.pressure_times)
-            if target.exists() and zipfile.is_zipfile(target):
-                print(f"Existing pressure ZIP; will skip: {target.name}")
-                continue
-            pressure_dl.download_with_retries(
-                day=day,
-                target=target,
-                client_factory=client_factory,
-                request_error=request_error,
-                attempts=args.retry_attempts,
-                retry_delay_seconds=args.retry_delay_seconds,
-                times=args.pressure_times,
-            )
-            print(f"Saved {target} ({target.stat().st_size:,} bytes)")
+        if not args.daily_cleanup:
+            for day in missing:
+                target = pressure_dl.target_path(batch_dir, day, args.pressure_times)
+                if target.exists() and zipfile.is_zipfile(target):
+                    print(f"Existing pressure ZIP; will skip: {target.name}")
+                    continue
+                pressure_dl.download_with_retries(
+                    day=day,
+                    target=target,
+                    client_factory=client_factory,
+                    request_error=request_error,
+                    attempts=args.retry_attempts,
+                    retry_delay_seconds=args.retry_delay_seconds,
+                    times=args.pressure_times,
+                )
+                print(f"Saved {target} ({target.stat().st_size:,} bytes)")
 
         surface_nc = batch_dir / f"single_surface_{year}{month:02d}.nc"
         wind_nc = batch_dir / f"single_wind_{year}{month:02d}.nc"
@@ -506,7 +547,14 @@ def process_month(
             )
             return
 
-        run_pairing(batch_dir, surface_nc, wind_nc, precip_nc, args.obs_csv, args, len(missing))
+        if args.daily_cleanup:
+            for day in missing:
+                pair_one_day_and_cleanup(
+                    day, batch_dir, surface_nc, wind_nc, precip_nc,
+                    args, client_factory, request_error,
+                )
+        else:
+            run_pairing(batch_dir, surface_nc, wind_nc, precip_nc, args.obs_csv, args, len(missing))
 
         still_missing = [day for day in days if day not in paired_days(args.pairs_csv, year, month)]
         if still_missing:
@@ -555,11 +603,17 @@ def main() -> int:
         "--download-only", action="store_true",
         help="with --execute, download and validate monthly inputs but skip GPU pairing and cleanup",
     )
+    parser.add_argument(
+        "--daily-cleanup", action="store_true",
+        help="with --execute, pair one day at a time and delete that day's pressure archive after success",
+    )
     parser.add_argument("--execute", action="store_true",
                         help="actually download, infer, and clean up (default: dry run)")
     args = parser.parse_args()
     if args.download_only and not args.execute:
         parser.error("--download-only requires --execute")
+    if args.download_only and args.daily_cleanup:
+        parser.error("--download-only cannot be combined with --daily-cleanup")
     if not args.obs_csv:
         stem = (
             f"era5_surface_point_{args.latitude:g}N_{args.longitude:g}E_{args.year}"
