@@ -20,6 +20,7 @@
 - `download_era5_pressure.py`：按起报日期分批申请气压层数据，默认只预览请求；支持 `--times 00:00 06:00 12:00 18:00`，有效ZIP会自动跳过，临时网络错误默认重试5次并继续处理后续日期。
 - `extract_era5_point.py`：从四份全球ERA5文件抽取31.5°N、119.5°E一个网格点，输出逐小时地面表和气压层表到 `point_data/`。表中同时保留原始单位与明确标注的衍生列；原始全球文件不变。
 - `build_fuxi_pairs.py`：扫描已下载的全球气压层ZIP，用冻结的 `short` 模型做 `+6h` 预测，直接抽取目标点，与同时间的ERA5参考值配对写入 `point_data/fuxi_era5_pairs_6h.csv`；不保存每次的全球预测文件。
+- `pair_existing_batches.py`：只使用已经存在的月度批次文件逐日配对，不访问 CDS；配对成功后可用 `--cleanup-pressure` 删除当天压力 ZIP，适合磁盘空间不足时续跑。
 - `run_fuxi_pairs.ps1`：为本机现有目录预设路径并创建稳定的英文目录链接，提供一个简短、安全的运行入口。
 
 下载中若出现临时 TLS/连接错误，可直接重新运行原命令。脚本用 `.part` 临时文件下载，验证为有效ZIP后才改成正式文件名；重跑时跳过已经完成的有效ZIP。重试次数和初始等待时间可分别用 `--retry-attempts`、`--retry-delay-seconds` 调整。
