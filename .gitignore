@@ -8,6 +8,9 @@
 /.playwright-cli/
 /output/
 /app/point_data/
+/help/backfill/
+/help/data/
+/help/output/
 *.pbf
 *.nc
 *.onnx
