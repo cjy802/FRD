@@ -43,7 +43,7 @@ from extract_era5_point import SURFACE_COLUMNS, read_surface
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPT_DIR.parent
+PROJECT_ROOT = SCRIPT_DIR
 FUXI_PYTHON = Path(sys.executable)
 MODEL_DIR = PROJECT_ROOT / "FuXi_EC"
 DEFAULT_PAIRS = SCRIPT_DIR / "data" / "fuxi_era5_pairs_6h.csv"
@@ -372,7 +372,7 @@ def run_pairing(
 ) -> None:
     command = [
         str(args.fuxi_python),
-        str(PROJECT_ROOT / "app" / "build_fuxi_pairs.py"),
+        str(SCRIPT_DIR / "build_fuxi_pairs.py"),
         "--pressure-dir", str(batch_dir),
         "--surface", str(surface_nc),
         "--wind", str(wind_nc),
@@ -615,12 +615,6 @@ def main() -> int:
         parser.error("--download-only requires --execute")
     if args.download_only and args.daily_cleanup:
         parser.error("--download-only cannot be combined with --daily-cleanup")
-    if args.execute and not args.download_only:
-        parser.error(
-            "This help bundle is download-only and intentionally excludes FuXi weights; "
-            "use --execute --download-only, or run the full project app/backfill_batches.py "
-            "on a machine that has the FuXi model."
-        )
     if not args.obs_csv:
         stem = (
             f"era5_surface_point_{args.latitude:g}N_{args.longitude:g}E_{args.year}"
@@ -654,8 +648,15 @@ def main() -> int:
             return 2
         client_factory = cdsapi.Client
         request_error = requests.exceptions.RequestException
-        # The help bundle only permits --download-only, so no FuXi executable
-        # or model weights are required here.
+        if not args.download_only:
+            build_script = SCRIPT_DIR / "build_fuxi_pairs.py"
+            required = (args.fuxi_python, args.model_dir / "short.onnx", args.model_dir / "short", build_script)
+            missing = [path for path in required if not path.exists()]
+            if missing:
+                raise FileNotFoundError(
+                    "Full FuXi pairing requires these paths: "
+                    + ", ".join(map(str, missing))
+                )
 
     for month in months:
         try:
