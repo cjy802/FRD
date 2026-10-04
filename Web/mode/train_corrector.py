@@ -24,7 +24,7 @@ import pandas as pd
 
 
 DEFAULT_DATA = Path("D:/低空经济/app/point_data/fuxi_era5_pairs_6h.csv")
-DEFAULT_OUTPUT = Path("D:/低空经济/output/corrector_experiment")
+DEFAULT_OUTPUT = Path("D:/低空经济/Web/mode/output")
 
 FIELDS = (
     "t2m_K",
@@ -46,26 +46,30 @@ def load_pairs(path: Path) -> pd.DataFrame:
     if not path.is_file():
         raise FileNotFoundError(path)
     table = pd.read_csv(path)
-    required = {"valid_time_utc", "lead_hours"}
+    required = {"init_time_utc", "valid_time_utc", "lead_hours", "latitude_deg", "longitude_deg"}
     for field in FIELDS:
         required.update((f"fuxi_{field}", f"era5_{field}"))
     missing = sorted(required - set(table.columns))
     if missing:
         raise ValueError(f"CSV is missing required columns: {missing}")
 
+    table["init_time_utc"] = pd.to_datetime(table["init_time_utc"], utc=True, errors="coerce")
     table["valid_time_utc"] = pd.to_datetime(table["valid_time_utc"], utc=True, errors="coerce")
-    numeric_columns = ["lead_hours"] + [
+    numeric_columns = ["lead_hours", "latitude_deg", "longitude_deg"] + [
         column
         for field in FIELDS
         for column in (f"fuxi_{field}", f"era5_{field}")
     ]
+    feature_columns = sorted(column for column in table.columns if column.startswith("feature_"))
+    numeric_columns.extend(feature_columns)
     for column in numeric_columns:
         table[column] = pd.to_numeric(table[column], errors="coerce")
-    table = table.sort_values("valid_time_utc").reset_index(drop=True)
-    if table["valid_time_utc"].isna().any():
-        raise ValueError("CSV contains invalid valid_time_utc values")
-    if table["valid_time_utc"].duplicated().any():
-        raise ValueError("CSV contains duplicate valid_time_utc values")
+    table = table.sort_values(["valid_time_utc", "init_time_utc", "lead_hours"]).reset_index(drop=True)
+    if table[["init_time_utc", "valid_time_utc"]].isna().any().any():
+        raise ValueError("CSV contains invalid init_time_utc or valid_time_utc values")
+    key_columns = ["init_time_utc", "lead_hours", "latitude_deg", "longitude_deg"]
+    if table.duplicated(key_columns).any():
+        raise ValueError(f"CSV contains duplicate forecast keys: {key_columns}")
 
     complete = table[numeric_columns].notna().all(axis=1)
     dropped = int((~complete).sum())
@@ -86,6 +90,7 @@ def make_features(table: pd.DataFrame) -> tuple[np.ndarray, list[str]]:
         + timestamps.dt.hour.to_numpy(dtype=np.float64) / 24.0
     )
     angle = 2.0 * np.pi * day_fraction / 365.25
+    extra_names = sorted(column for column in table.columns if column.startswith("feature_"))
     columns = [table[f"fuxi_{field}"].to_numpy(dtype=np.float64) for field in FIELDS]
     columns.extend(
         (
@@ -94,7 +99,8 @@ def make_features(table: pd.DataFrame) -> tuple[np.ndarray, list[str]]:
             np.cos(angle),
         )
     )
-    return np.column_stack(columns), list(FEATURE_NAMES)
+    columns.extend(table[name].to_numpy(dtype=np.float64) for name in extra_names)
+    return np.column_stack(columns), [*FEATURE_NAMES, *extra_names]
 
 
 def residual_targets(table: pd.DataFrame) -> np.ndarray:

@@ -390,6 +390,40 @@ def run_pairing(
         raise RuntimeError(f"build_fuxi_pairs.py exited with {result.returncode}")
 
 
+def run_feature_pairing(
+    batch_dir: Path,
+    surface_nc: Path,
+    wind_nc: Path,
+    precip_nc: Path,
+    obs_csv: Path,
+    args: argparse.Namespace,
+    max_runs: int,
+) -> None:
+    """Run the optional feature-rich extractor on the same monthly inputs."""
+    command = [
+        str(args.fuxi_python),
+        str(PROJECT_ROOT / "app" / "build_fuxi_features.py"),
+        "--pressure-dir", str(batch_dir),
+        "--surface", str(surface_nc),
+        "--wind", str(wind_nc),
+        "--precip", str(precip_nc),
+        "--model-dir", str(args.model_dir),
+        "--observations", str(obs_csv),
+        "--output", str(args.feature_output),
+        "--latitude", str(args.latitude),
+        "--longitude", str(args.longitude),
+        "--init-hours", *(str(value) for value in args.feature_init_hours),
+        "--lead-hours", *(str(value) for value in args.feature_lead_hours),
+        "--neighborhood-size", str(args.feature_neighborhood_size),
+        "--run",
+        "--max-runs", str(max_runs),
+    ]
+    print("Feature pairing command:", " ".join(command))
+    result = subprocess.run(command)
+    if result.returncode != 0:
+        raise RuntimeError(f"build_fuxi_features.py exited with {result.returncode}")
+
+
 def pair_one_day_and_cleanup(
     day: date,
     batch_dir: Path,
@@ -438,9 +472,10 @@ def process_month(
     days = month_days(year, month)
     batch_dir = args.batch_root / f"{year}-{month:02d}"
     done = paired_days(args.pairs_csv, year, month)
-    missing = [day for day in days if day not in done]
+    feature_mode = bool(args.feature_output)
+    missing = days if (feature_mode and args.feature_only) else [day for day in days if day not in done]
     print(f"\n=== {year}-{month:02d}: {len(days)} days, paired {len(done)}/{len(days)} ===")
-    if not missing:
+    if not missing and not (feature_mode and args.feature_only):
         print("Month already complete.")
         if args.execute and not args.keep_downloads and batch_dir.is_dir():
             shutil.rmtree(batch_dir)
@@ -547,7 +582,19 @@ def process_month(
             )
             return
 
-        if args.daily_cleanup:
+        if args.feature_only:
+            before = args.feature_output.stat().st_size if args.feature_output.exists() else 0
+            run_feature_pairing(
+                batch_dir, surface_nc, wind_nc, precip_nc, args.obs_csv, args,
+                len(missing) * len(args.feature_init_hours),
+            )
+            after = args.feature_output.stat().st_size if args.feature_output.exists() else 0
+            if after <= before:
+                raise RuntimeError(
+                    f"Feature pairing wrote no new data for {year}-{month:02d}: "
+                    f"{args.feature_output}"
+                )
+        elif args.daily_cleanup:
             for day in missing:
                 pair_one_day_and_cleanup(
                     day, batch_dir, surface_nc, wind_nc, precip_nc,
@@ -556,12 +603,13 @@ def process_month(
         else:
             run_pairing(batch_dir, surface_nc, wind_nc, precip_nc, args.obs_csv, args, len(missing))
 
-        still_missing = [day for day in days if day not in paired_days(args.pairs_csv, year, month)]
-        if still_missing:
-            raise RuntimeError(
-                f"{year}-{month:02d} still missing {len(still_missing)} pair(s): "
-                f"{still_missing}; keeping batch dir for retry"
-            )
+        if not args.feature_only:
+            still_missing = [day for day in days if day not in paired_days(args.pairs_csv, year, month)]
+            if still_missing:
+                raise RuntimeError(
+                    f"{year}-{month:02d} still missing {len(still_missing)} pair(s): "
+                    f"{still_missing}; keeping batch dir for retry"
+                )
         if not args.keep_downloads:
             shutil.rmtree(batch_dir)
             print(f"Batch complete; removed {batch_dir}")
@@ -607,6 +655,26 @@ def main() -> int:
         "--daily-cleanup", action="store_true",
         help="with --execute, pair one day at a time and delete that day's pressure archive after success",
     )
+    parser.add_argument(
+        "--feature-output", type=Path,
+        help="optional feature-rich CSV written by build_fuxi_features.py",
+    )
+    parser.add_argument(
+        "--feature-only", action="store_true",
+        help="download monthly inputs and write feature rows without legacy point pairing",
+    )
+    parser.add_argument(
+        "--feature-init-hours", type=int, nargs="+", default=[6, 12, 18],
+        help="feature-mode initialization hours; 00 requires previous-day inputs",
+    )
+    parser.add_argument(
+        "--feature-lead-hours", type=int, nargs="+", default=[6, 12, 24],
+        help="feature-mode leads in hours; must be positive multiples of six",
+    )
+    parser.add_argument(
+        "--feature-neighborhood-size", type=int, choices=(3, 5), default=3,
+        help="feature-mode FuXi neighbourhood size",
+    )
     parser.add_argument("--execute", action="store_true",
                         help="actually download, infer, and clean up (default: dry run)")
     args = parser.parse_args()
@@ -614,6 +682,25 @@ def main() -> int:
         parser.error("--download-only requires --execute")
     if args.download_only and args.daily_cleanup:
         parser.error("--download-only cannot be combined with --daily-cleanup")
+    if args.feature_only and not args.feature_output:
+        parser.error("--feature-only requires --feature-output")
+    if args.feature_output and not args.feature_only:
+        parser.error("--feature-output currently requires --feature-only")
+    if args.feature_only and not args.execute:
+        parser.error("--feature-only requires --execute")
+    if args.feature_only and args.download_only:
+        parser.error("--feature-only cannot be combined with --download-only")
+    if args.feature_only and args.daily_cleanup:
+        parser.error("--feature-only cannot be combined with --daily-cleanup")
+    if args.feature_output:
+        args.feature_init_hours = sorted(set(args.feature_init_hours))
+        args.feature_lead_hours = sorted(set(args.feature_lead_hours))
+        if any(hour not in (0, 6, 12, 18) for hour in args.feature_init_hours):
+            parser.error("--feature-init-hours must be chosen from 0, 6, 12, 18")
+        if not args.feature_lead_hours or any(
+            lead < 6 or lead % 6 for lead in args.feature_lead_hours
+        ):
+            parser.error("--feature-lead-hours must be positive multiples of six")
     if not args.obs_csv:
         stem = (
             f"era5_surface_point_{args.latitude:g}N_{args.longitude:g}E_{args.year}"
