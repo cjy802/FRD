@@ -14,6 +14,8 @@ from weather_service import (
     PROJECT_ROOT, PointWeatherStore, WeatherUnavailable, point_risk,
 )
 
+VALIDATED_MODEL = PROJECT_ROOT / "Web/mode/output_year_transfer_2026/corrector_ridge.npz"
+
 
 class WeatherServiceTests(unittest.TestCase):
     def setUp(self):
@@ -125,14 +127,14 @@ class WeatherServiceTests(unittest.TestCase):
         self.assertEqual(missing.status_code, 422)
 
     @unittest.skipUnless(
-        DEFAULT_PAIRS.is_file() and DEFAULT_MODEL.is_file()
-        and (DEFAULT_MODEL.parent / "test_predictions.csv").is_file(),
+        DEFAULT_PAIRS.is_file() and VALIDATED_MODEL.is_file()
+        and (VALIDATED_MODEL.parent / "test_predictions.csv").is_file(),
         "Local weather data/model artifacts are not part of the repository",
     )
     def test_saved_model_matches_training_inference_for_real_data(self):
-        store = PointWeatherStore(DEFAULT_PAIRS, DEFAULT_MODEL)
+        store = PointWeatherStore(DEFAULT_PAIRS, VALIDATED_MODEL)
         forecast = store.forecast()
-        prediction_csv = DEFAULT_MODEL.parent / "test_predictions.csv"
+        prediction_csv = VALIDATED_MODEL.parent / "test_predictions.csv"
         with prediction_csv.open("r", encoding="utf-8-sig", newline="") as handle:
             row = next(record for record in csv.DictReader(handle) if record["init_time_utc"] == forecast["init_time_utc"])
         for field in ("t2m_K", "u10_m_s", "tp_6h_mm"):

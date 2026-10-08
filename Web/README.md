@@ -39,15 +39,24 @@ npm run dev
 - `GET /api/weather/status`：历史单点天气和模型状态、可选预报时间、逐变量使用策略
 - `GET /api/weather/forecast`：当前模型订正后的历史预报，含 FuXi 原值、最终使用值、来源和派生风速/风向。可用 `init_time_utc`（带时区）及 `lead_hours` 选择记录，默认最新可用记录；不存在的记录返回 422。
 - `GET /api/weather/risk`：同一记录的单点地面风雨提示，不改变航线的未评估状态
+- `POST /api/weather/predict`：页面进入时发起一次 +6 小时 FuXi 预测，返回任务 ID 和状态；只共享正在运行的任务，不复用已完成的历史预报。
+- `GET /api/weather/predictions/{job_id}`：查询预测进度、输入缺失/过期原因，或最终天气预报。
 - `POST /api/routes/plan`：请求体的 `road_source` 为 `local`（默认）或 `online`。本地模式从索引按 A/B 范围加缓冲提取路网；在线模式向 OSRM 请求完整道路几何。两种模式均输出 GeoJSON 路线、道路名称、道路/直线距离、端点接入距离和未评估标记。端点离所选道路网络超过 35 米时返回 422；在线服务不可用时返回 503。
 - `POST /api/landing/check`：用本地索引对候选点做快速初筛，返回 `mapped_building`、`road_nearby` 或 `no_road`，以及 35 米接路半径和最近道路点。`landing_verified` 始终为 `false`。
 - `POST /api/routes/preview`：保留原有的两点直线基线接口
 
-天气数据默认读取 `app/point_data/fuxi_era5_pairs_6h.csv` 中的 2026 年记录，模型默认读取 `Web/mode/output_year_transfer_2026/corrector_ridge.npz`（只用 2024—2025 年拟合的公共 8 特征 Ridge）。温度、U 风、6 小时降水采用订正结果，V 风和海平面气压严格保留 FuXi 原值；派生风速、风向以及单点风雨提示均使用这组最终值。推理不读取 ERA5 验证标签。模型缺失或不兼容时，会明确显示警告，并全部回退到原始 FuXi，避免隐式使用其他模型。修改模型或数据文件后，服务按文件更新时间刷新缓存。
+上线模型默认读取 `Web/mode/output_production/corrector_ridge.npz`，它由两份表去重后的全部可用样本拟合（目前 3893 条，包含 2024、2025、2026 年），使用已验证方案的公共 8 特征。温度、U 风、6 小时降水采用订正结果，V 风和海平面气压严格保留 FuXi 原值；派生风速、风向以及单点风雨提示均使用最终值。全量拟合不再留测试集，也不产生新的独立测试指标；此前 `output_year_transfer_2026` 验证结果保留不变。
 
-页面的“天气数据”提供历史预报时间选择（显示为北京时间）、FuXi/使用值对照和各变量来源。当前点位是 31.5°N、119.5°E，数据截至 2026-09-06，与默认校园航线点位不同。“气象风险”显示所选时次的单点地面风雨提示：风速 8/12 m/s、6 小时降水 1/5 mm 是关注/较强提示的演示阈值，不是机型飞行限值。单点、10 米风和历史时次不足以评估当前航线或任务高度，`ready_for_route_risk` 始终为 `false`，道路路线和放飞结论仍保持未评估。
+页面的“天气数据”进入时自动发起预测并轮询进度，只显示最终温度、U/V 风、气压、降水、风速与风向，不显示原值/订正值对照或历史日期选择。起报、有效时刻和生成时刻都以北京时间显示。模型的 +6h 是从起报场时刻计算，不伪装为从页面访问时刻开始的逐小时预报。“气象风险”与最终预报同步；阈值仍为单点地面风雨演示规则，不代表机型飞行限值。当前模型点位固定为 31.5°N、119.5°E，不能直接作为校园航线和任务高度的天气场。
 
-可配置 `WEATHER_PAIRS_PATH`、`WEATHER_CORRECTOR_PATH`、`WEATHER_ARCHIVE_YEAR`；相对路径以项目根目录为基准。模型、数据和生成结果不纳入 Git。如果没有可用单点 CSV，`WEATHER_GRID_PATH` 仍可用来检测待接入网格文件，但文件存在不代表已经完成网格解析。
+实时推理必须配置 `FUXI_LIVE_INPUT`，指向准备好的最新全球起报场 NetCDF，形状 `(2,70,721,1440)`、原 FuXi 通道顺序、两帧相隔 6 小时。默认查找 `app/prepared/latest.nc`；可用 `FUXI_PYTHON` 设置 ONNX 环境 Python，`FUXI_MODEL_DIR` 设置 FuXi 权重目录，`WEATHER_CORRECTOR_PATH` 设置订正模型。Windows NetCDF 库可能不支持中文路径，建议使用已有的英文目录链接。输入未配置、+6h 有效时刻已过去或模型不可用时，任务返回明确的 `blocked` 状态，不回退到历史 CSV。ERA5/ERA5T 回填下载有发布延迟，不是当前全球起报场的数据源；本项目尚未配置实时起报数据下载接口。
+
+旧的 `/status`、`/forecast`、`/risk` 接口仅供历史记录诊断，仍可通过 `WEATHER_PAIRS_PATH` 和 `WEATHER_ARCHIVE_YEAR` 配置；页面未来预报流程不调用它们。所有相对路径以项目根目录为基准，模型与数据不纳入 Git。全量重训命令：
+
+```powershell
+& 'D:\anaconda\envs\fuxi_onnx\python.exe' `
+  'D:\低空经济\Web\mode\fit_production_corrector.py' --train
+```
 
 默认示例点位位于常州信息职业技术大学：A 约为 `31.67920°N, 119.95150°E`，B 约为 `31.68040°N, 119.94950°E`。本地规划会在 A/B 各自 35 米范围内寻找可连接的道路，并在可达候选中选择总路线；超过半径或接入线穿过已收录建筑缓冲区则报错。当前原型限制 A/B 直线距离不超过 10 公里。道路路线只按二维地图数据计算，不能代表可飞行航线。
 

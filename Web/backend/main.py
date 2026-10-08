@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from online_router import OnlineServiceUnavailable, plan_online_route
 from road_planner import CampusRoadNetwork, LOCAL_INDEX_FILE, LocalRoadStore, RouteUnavailable
 from weather_service import weather_store
+from live_weather import forecast_jobs
 
 
 app = FastAPI(title="低空飞行决策工作台", version="0.1.0")
@@ -115,6 +116,19 @@ def weather_risk(init_time_utc: str | None = None, lead_hours: int | None = None
         "derived": forecast["derived"],
         **forecast["point_risk"],
     }
+
+
+@app.post("/api/weather/predict")
+def start_weather_prediction():
+    return forecast_jobs.start()
+
+
+@app.get("/api/weather/predictions/{job_id}")
+def weather_prediction_job(job_id: str):
+    try:
+        return forecast_jobs.get(job_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="天气预测任务不存在，请重新预测。") from error
 
 
 @app.post("/api/landing/check")

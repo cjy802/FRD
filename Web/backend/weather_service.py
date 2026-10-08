@@ -1,7 +1,7 @@
 """Point weather from archived FuXi forecasts with selective ridge correction.
 
 ERA5 label columns are intentionally ignored during inference. This service
-uses the training-only 2024/2025 model and preserves FuXi V10 and MSL exactly.
+uses the all-data deployment refit and preserves FuXi V10 and MSL exactly.
 Surface point indicators are demonstration rules, not route-flight limits.
 """
 
@@ -19,7 +19,7 @@ import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PAIRS = PROJECT_ROOT / "app/point_data/fuxi_era5_pairs_6h.csv"
-DEFAULT_MODEL = PROJECT_ROOT / "Web/mode/output_year_transfer_2026/corrector_ridge.npz"
+DEFAULT_MODEL = PROJECT_ROOT / "Web/mode/output_production/corrector_ridge.npz"
 FIELDS = ("t2m_K", "u10_m_s", "v10_m_s", "msl_Pa", "tp_6h_mm")
 CORRECTED_FIELDS = frozenset(("t2m_K", "u10_m_s", "tp_6h_mm"))
 FEATURE_NAMES = tuple(f"fuxi_{field}" for field in FIELDS) + ("lead_hours", "doy_sin", "doy_cos")
@@ -43,6 +43,67 @@ def utc_timestamp(value: str) -> datetime:
 
 def iso_utc(stamp: datetime) -> str:
     return stamp.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def load_corrector(model_path: Path) -> dict:
+    with np.load(model_path, allow_pickle=False) as artifact:
+        if tuple(artifact["feature_names"].tolist()) != FEATURE_NAMES:
+            raise WeatherUnavailable("模型不是当前公共 8 特征模型。")
+        if tuple(artifact["target_names"].tolist()) != TARGET_NAMES:
+            raise WeatherUnavailable("模型输出变量与天气接口不匹配。")
+        expected = {
+            "coefficients": (9, 5), "feature_mean": (8,), "feature_scale": (8,),
+            "target_mean": (5,), "target_scale": (5,),
+        }
+        model = {}
+        for name, shape in expected.items():
+            values = np.asarray(artifact[name], dtype=np.float64)
+            if values.shape != shape or not np.isfinite(values).all():
+                raise WeatherUnavailable(f"模型参数 {name} 无效。")
+            model[name] = values.copy()
+        if np.any(model["feature_scale"] <= 0) or np.any(model["target_scale"] <= 0):
+            raise WeatherUnavailable("模型标准化尺度无效。")
+        return model
+
+
+def assemble_forecast(row: dict, model: dict | None, model_warning: str | None = None, historical: bool = True) -> dict:
+    raw = dict(row["raw"])
+    if not all(math.isfinite(raw[field]) for field in FIELDS):
+        raise WeatherUnavailable("FuXi 点位预报包含非有限数值。")
+    final = dict(raw)
+    sources = {field: "fuxi" for field in FIELDS}
+    if model is not None:
+        stamp = row["valid"]
+        fraction = stamp.timetuple().tm_yday - 1.0 + stamp.hour / 24.0
+        angle = 2 * np.pi * fraction / 365.25
+        features = np.asarray([*[raw[field] for field in FIELDS], row["lead_hours"], np.sin(angle), np.cos(angle)])
+        design = np.r_[1.0, (features - model["feature_mean"]) / model["feature_scale"]]
+        residual = design @ model["coefficients"] * model["target_scale"] + model["target_mean"]
+        if not np.isfinite(residual).all():
+            raise WeatherUnavailable("订正模型输出了非有限数值。")
+        for index, field in enumerate(FIELDS):
+            if field in CORRECTED_FIELDS:
+                final[field] = raw[field] + float(residual[index])
+                sources[field] = "ridge"
+        final["tp_6h_mm"] = max(0.0, final["tp_6h_mm"])
+    speed = math.hypot(final["u10_m_s"], final["v10_m_s"])
+    direction = (math.degrees(math.atan2(-final["u10_m_s"], -final["v10_m_s"])) + 360) % 360 if speed > 1e-12 else None
+    risk = point_risk(speed, final["tp_6h_mm"])
+    if not historical:
+        risk["scope"] = "forecast_point_surface"
+        risk["message"] = "仅评估该预报点位的 10 米风和 6 小时降水，阈值为演示规则，不是飞行限值。"
+    return {
+        "init_time_utc": iso_utc(row["init"]), "valid_time_utc": iso_utc(row["valid"]),
+        "lead_hours": row["lead_hours"],
+        "point": {"latitude_deg": row["latitude_deg"], "longitude_deg": row["longitude_deg"]},
+        "raw": raw, "values": final, "sources": sources,
+        "derived": {
+            "t2m_C": final["t2m_K"] - 273.15, "msl_hPa": final["msl_Pa"] / 100,
+            "wind_speed_10m_m_s": speed, "wind_direction_from_deg": direction,
+        },
+        "historical": historical, "ready_for_route_risk": False,
+        "model_warning": model_warning, "point_risk": risk,
+    }
 
 
 class PointWeatherStore:
@@ -98,24 +159,7 @@ class PointWeatherStore:
         return sorted(rows, key=lambda row: (row["valid"], row["init"], row["lead_hours"]), reverse=True)
 
     def _load_model(self) -> dict:
-        with np.load(self.model_path, allow_pickle=False) as artifact:
-            if tuple(artifact["feature_names"].tolist()) != FEATURE_NAMES:
-                raise WeatherUnavailable("模型不是当前公共 8 特征模型。")
-            if tuple(artifact["target_names"].tolist()) != TARGET_NAMES:
-                raise WeatherUnavailable("模型输出变量与天气接口不匹配。")
-            expected = {
-                "coefficients": (9, 5), "feature_mean": (8,), "feature_scale": (8,),
-                "target_mean": (5,), "target_scale": (5,),
-            }
-            model = {}
-            for name, shape in expected.items():
-                values = np.asarray(artifact[name], dtype=np.float64)
-                if values.shape != shape or not np.isfinite(values).all():
-                    raise WeatherUnavailable(f"模型参数 {name} 无效。")
-                model[name] = values.copy()
-            if np.any(model["feature_scale"] <= 0) or np.any(model["target_scale"] <= 0):
-                raise WeatherUnavailable("模型标准化尺度无效。")
-            return model
+        return load_corrector(self.model_path)
 
     def status(self) -> dict:
         first = self.rows[0]
@@ -148,40 +192,7 @@ class PointWeatherStore:
         )]
         if not candidates:
             raise WeatherUnavailable("所选起报时间和提前量没有天气记录；未替换为其他日期。")
-        row = candidates[0]
-        raw = dict(row["raw"])
-        final = dict(raw)
-        sources = {field: "fuxi" for field in FIELDS}
-        if self.model is not None:
-            stamp = row["valid"]
-            fraction = stamp.timetuple().tm_yday - 1.0 + stamp.hour / 24.0
-            angle = 2 * np.pi * fraction / 365.25
-            features = np.asarray([*raw.values(), row["lead_hours"], np.sin(angle), np.cos(angle)])
-            model = self.model
-            design = np.r_[1.0, (features - model["feature_mean"]) / model["feature_scale"]]
-            residual = design @ model["coefficients"] * model["target_scale"] + model["target_mean"]
-            if not np.isfinite(residual).all():
-                raise WeatherUnavailable("订正模型输出了非有限数值。")
-            for index, field in enumerate(FIELDS):
-                if field in CORRECTED_FIELDS:
-                    final[field] = raw[field] + float(residual[index])
-                    sources[field] = "ridge"
-            final["tp_6h_mm"] = max(0.0, final["tp_6h_mm"])
-        speed = math.hypot(final["u10_m_s"], final["v10_m_s"])
-        direction = (math.degrees(math.atan2(-final["u10_m_s"], -final["v10_m_s"])) + 360) % 360 if speed > 1e-12 else None
-        return {
-            "init_time_utc": iso_utc(row["init"]), "valid_time_utc": iso_utc(row["valid"]),
-            "lead_hours": row["lead_hours"],
-            "point": {"latitude_deg": row["latitude_deg"], "longitude_deg": row["longitude_deg"]},
-            "raw": raw, "values": final, "sources": sources,
-            "derived": {
-                "t2m_C": final["t2m_K"] - 273.15, "msl_hPa": final["msl_Pa"] / 100,
-                "wind_speed_10m_m_s": speed, "wind_direction_from_deg": direction,
-            },
-            "historical": True, "ready_for_route_risk": False,
-            "model_warning": self.model_error,
-            "point_risk": point_risk(speed, final["tp_6h_mm"]),
-        }
+        return assemble_forecast(candidates[0], self.model, self.model_error)
 
 
 def point_risk(wind_speed: float, rain_6h: float) -> dict:

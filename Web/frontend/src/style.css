@@ -122,6 +122,9 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .weather-derived { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 12px; font-size: var(--font-caption); }
 .weather-derived strong { display: block; margin-top: 2px; }
 .weather-model-policy { color: var(--ui-accent) !important; }
+.weather-live-actions { display: flex; align-items: flex-start; gap: 10px; margin-top: 14px; }
+.weather-live-actions small { margin-top: 0; }
+.weather-forecast-time { color: var(--ui-accent); font-size: var(--font-caption); }
 .weather-choice-controls select:focus-visible, .weather-rule-details summary:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 2px; }
 .status-block small { display: block; margin-top: 9px; color: var(--ui-muted); font-size: var(--font-caption); }
 .pipeline { margin-top: 24px; }

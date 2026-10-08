@@ -1,0 +1,122 @@
+"""One on-entry forecast job, requiring a fresh prepared FuXi initial field."""
+
+from __future__ import annotations
+
+import copy
+import json
+import subprocess
+import threading
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from weather_service import (
+    DEFAULT_MODEL, PROJECT_ROOT, WeatherUnavailable, assemble_forecast,
+    configured_path, iso_utc, load_corrector, utc_timestamp,
+)
+
+
+def validate_metadata(metadata: dict, now: datetime) -> tuple[datetime, datetime]:
+    init = utc_timestamp(metadata["init_time_utc"])
+    previous = utc_timestamp(metadata["previous_time_utc"])
+    valid = utc_timestamp(metadata["valid_time_utc"])
+    if init - previous != timedelta(hours=6) or valid - init != timedelta(hours=6) or metadata["lead_hours"] != 6:
+        raise WeatherUnavailable("起报场与 +6 小时预报时间不一致。")
+    if init > now:
+        raise WeatherUnavailable("起报场时间晚于当前时间，不能作为已获得的输入。")
+    if valid <= now:
+        raise WeatherUnavailable(f"起报场已过期（起报 {iso_utc(init)}）；需要最新全球起报场才能预测未来天气。")
+    if (float(metadata["latitude_deg"]), float(metadata["longitude_deg"])) != (31.5, 119.5):
+        raise WeatherUnavailable("当前订正模型仅用于 31.5°N、119.5°E 点位。")
+    return init, valid
+
+
+def call_worker(input_path: Path, inspect: bool) -> dict:
+    python = configured_path("FUXI_PYTHON", Path("D:/anaconda/envs/fuxi_onnx/python.exe"))
+    command = [str(python), "-B", str(PROJECT_ROOT / "app/predict_fuxi_point.py"), "--input", str(input_path)]
+    if inspect:
+        command.append("--inspect")
+    else:
+        model_dir = configured_path("FUXI_MODEL_DIR", PROJECT_ROOT / "FuXi_EC")
+        command.extend(["--model-dir", str(model_dir)])
+    completed = subprocess.run(
+        command, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=30 if inspect else 300,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    try:
+        payload = json.loads(completed.stdout)
+    except ValueError as error:
+        raise WeatherUnavailable("FuXi 推理进程未返回有效结果，请检查 Python 环境及起报场文件。") from error
+    if completed.returncode or "error" in payload:
+        raise WeatherUnavailable(payload.get("error", "FuXi 推理失败。"))
+    return payload
+
+
+class ForecastJobs:
+    def __init__(self, worker=call_worker, clock=None, corrector=load_corrector):
+        self.worker = worker
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.corrector = corrector
+        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fuxi-live")
+        self.lock = threading.Lock()
+        self.jobs: dict[str, dict] = {}
+        self.active: str | None = None
+
+    def get(self, job_id: str) -> dict:
+        with self.lock:
+            if job_id not in self.jobs:
+                raise KeyError(job_id)
+            return copy.deepcopy(self.jobs[job_id])
+
+    def update(self, job_id: str, **values):
+        with self.lock:
+            self.jobs[job_id].update(values)
+            if values.get("status") in ("blocked", "failed", "succeeded"):
+                if self.active == job_id:
+                    self.active = None
+
+    def start(self) -> dict:
+        with self.lock:
+            if self.active:
+                return {**copy.deepcopy(self.jobs[self.active]), "shared_in_progress": True}
+            job_id = uuid.uuid4().hex
+            self.jobs[job_id] = {
+                "job_id": job_id, "status": "queued", "message": "正在检查最新全球起报场。",
+                "requested_at_utc": iso_utc(self.clock()), "forecast": None,
+            }
+            self.active = job_id
+            for old_id in list(self.jobs)[:-64]:
+                self.jobs.pop(old_id, None)
+        self.executor.submit(self.run, job_id)
+        return self.get(job_id)
+
+    def run(self, job_id: str):
+        try:
+            input_path = configured_path("FUXI_LIVE_INPUT", PROJECT_ROOT / "app/prepared/latest.nc")
+            if not input_path.is_file():
+                raise WeatherUnavailable("尚未接入最新全球起报场，暂时无法生成未来 6 小时天气。历史样本用于训练，不能替代当前天气输入。")
+            self.update(job_id, status="running", message="正在校验起报场时刻和网格。")
+            metadata = self.worker(input_path, True)
+            validate_metadata(metadata, self.clock())
+            model = self.corrector(configured_path("WEATHER_CORRECTOR_PATH", DEFAULT_MODEL))
+            self.update(job_id, message="FuXi 正在预测起报后 6 小时天气。")
+            predicted = self.worker(input_path, False)
+            init, valid = validate_metadata(predicted, self.clock())
+            if any(predicted[name] != metadata[name] for name in (
+                "init_time_utc", "valid_time_utc", "previous_time_utc", "lead_hours",
+                "latitude_deg", "longitude_deg",
+            )):
+                raise WeatherUnavailable("推理期间起报场发生变化，请重新预测。")
+            row = {**predicted, "init": init, "valid": valid}
+            forecast = assemble_forecast(row, model, historical=False)
+            forecast["generated_at_utc"] = iso_utc(self.clock())
+            self.update(job_id, status="succeeded", message="未来天气预报已生成。", forecast=forecast)
+        except (WeatherUnavailable, FileNotFoundError) as error:
+            self.update(job_id, status="blocked", message=str(error), forecast=None)
+        except Exception as error:
+            self.update(job_id, status="failed", message=f"天气预测失败：{error}", forecast=None)
+
+
+forecast_jobs = ForecastJobs()
