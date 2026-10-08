@@ -54,6 +54,12 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .route-divider { height: 28px; margin: 1px 0 1px 11px; border-left: 1px solid #b8c9d8; }
 .form-line { height: 1px; margin: 24px 0; background: var(--ui-line); }
 .clearance-row { margin-top: 18px; }
+.departure-field { display: block; margin-top: 18px; color: #424242; font-size: var(--font-caption); font-weight: 600; }
+.departure-field input { display: block; width: 100%; min-width: 0; height: 40px; margin-top: 6px; padding: 0 10px; border: 1px solid #bfc6cd; border-radius: var(--ui-radius); background: #fff; color: #242424; font: inherit; }
+.departure-field input:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 2px; }
+.departure-field small { display: block; margin-top: 6px; color: var(--ui-muted); font-weight: 400; line-height: 1.5; }
+.route-weather-samples { max-height: 300px; overflow-y: auto; margin-top: 8px; }
+.route-weather-samples p { padding: 8px 0; border-bottom: 1px solid var(--ui-line); }
 .clearance-row span { display: block; margin-top: 6px; color: var(--ui-muted); font-size: var(--font-caption); }
 .primary-button { display: block; width: 100%; margin-top: 24px; min-height: 42px; text-align: center; font-size: var(--font-body); font-weight: 600; --borderRadiusMedium: 2px; }
 .form-error { color: #a4262c; font-size: var(--font-caption); }

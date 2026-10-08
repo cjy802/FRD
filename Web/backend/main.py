@@ -50,6 +50,13 @@ class LandingCheckRequest(BaseModel):
     clearance_m: float = Field(default=2.0, ge=0, le=20)
 
 
+class RouteWeatherRequest(BaseModel):
+    coordinates: list[tuple[float, float]] = Field(min_length=2, max_length=10000)
+    departure_time_utc: str
+    speed_kmh: float = Field(default=45, gt=0, le=200, allow_inf_nan=False)
+    altitude_m: float = Field(default=100, ge=0, le=1000, allow_inf_nan=False)
+
+
 @lru_cache(maxsize=1)
 def road_network() -> CampusRoadNetwork:
     return CampusRoadNetwork()
@@ -132,9 +139,19 @@ def weather_prediction_job(job_id: str):
 
 
 @app.get("/api/weather/predictions/{job_id}/sample")
-def sample_regional_weather(job_id: str, latitude: float, longitude: float):
+def sample_regional_weather(job_id: str, latitude: float, longitude: float, valid_time_utc: str | None = None):
     try:
-        return forecast_jobs.sample(job_id, latitude, longitude)
+        return forecast_jobs.sample(job_id, latitude, longitude, valid_time_utc) if valid_time_utc else forecast_jobs.sample(job_id, latitude, longitude)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="天气预测任务不存在，请重新预测。") from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.post("/api/weather/predictions/{job_id}/route")
+def align_route_weather(job_id: str, request: RouteWeatherRequest):
+    try:
+        return forecast_jobs.route(job_id, **request.model_dump())
     except KeyError as error:
         raise HTTPException(status_code=404, detail="天气预测任务不存在，请重新预测。") from error
     except ValueError as error:

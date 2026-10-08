@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 const props = defineProps<{ altitudeM: number; start: { latitude: number; longitude: number }; end: { latitude: number; longitude: number } }>()
+const emit = defineEmits<{ jobReady: [jobId: string | null] }>()
 type Field = 't2m_K' | 'u10_m_s' | 'v10_m_s' | 'msl_Pa' | 'tp_6h_mm'
 type Forecast = {
   init_time_utc: string; valid_time_utc: string; generated_at_utc: string
@@ -103,6 +104,7 @@ function applyJob(job: Job, controller: AbortController, attempts: number) {
     loading.value = false
     activeController = null
     completedJob.value = job.job_id
+    emit('jobReady', job.job_id)
     void sampleRouteWeather()
     return
   }
@@ -128,6 +130,7 @@ async function predictWeather() {
   sampleController = null
   sampling.value = false
   completedJob.value = ''
+  emit('jobReady', null)
   if (pollTimer) clearTimeout(pollTimer)
   const controller = new AbortController()
   activeController = controller
@@ -159,7 +162,7 @@ onBeforeUnmount(() => {
     <template v-if="forecast">
       <p v-if="forecast.point_risk.triggers.length === 0">预报地面风雨未触发演示阈值。</p>
       <ul v-else class="weather-triggers"><li v-for="trigger in forecast.point_risk.triggers" :key="trigger.field">{{ trigger.label }}：{{ trigger.value.toFixed(2) }} {{ trigger.unit }}（≥ {{ trigger.threshold }}）</li></ul>
-      <p class="weather-scope">{{ forecast.point_risk.route_reason }}</p>
+      <p class="weather-scope">这里是起终点中点的地面风雨提示；沿线时刻匹配见下方，飞行高度与机型限制仍待接入。</p>
       <small>任务高度 {{ altitudeM }} m；当前风预报为地面以上 10 m。</small>
       <details class="weather-rule-details"><summary>查看单点提示规则</summary><p>风速 ≥ {{ forecast.point_risk.rules.wind_attention_m_s }} / {{ forecast.point_risk.rules.wind_elevated_m_s }} m/s，6 小时降水 ≥ {{ forecast.point_risk.rules.rain_attention_6h_mm }} / {{ forecast.point_risk.rules.rain_elevated_6h_mm }} mm，分别触发关注 / 较强提示。</p><small>{{ forecast.point_risk.message }}</small></details>
     </template>

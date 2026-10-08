@@ -1,4 +1,4 @@
-"""Inspect a prepared current global input or run one FuXi +6h point forecast.
+"""Inspect current global input or retain native regional FuXi forecasts.
 
 stdout contains one JSON document; initialization and CUDA logs go to stderr.
 No observations, historical pair CSV, or global forecast output are needed.
@@ -50,6 +50,33 @@ def inspect_input(path: Path, latitude: float, longitude: float) -> tuple[dict, 
         return metadata, lat_index, lon_index
 
 
+def forecast_region(session, values: np.ndarray, metadata: dict, lat_index: int, lon_index: int,
+                    max_lead_hours: int = 24) -> dict:
+    if max_lead_hours not in (6, 12, 18, 24):
+        raise ValueError("Supported regional forecast horizons are 6, 12, 18, 24 hours")
+    init = pd.Timestamp(metadata["init_time_utc"]).to_pydatetime().replace(tzinfo=None)
+    region = crop_region(values[0, -1], metadata["init_time_utc"], 0)
+    region["snapshots"][0]["source"] = "initial_background"
+    state, raw = values, None
+    for lead in range(6, max_lead_hours + 1, 6):
+        step_init = init + timedelta(hours=lead - 6)
+        output = session.run(None, {"input": state, "temb": time_embedding(step_init)})[0]
+        if output.shape != (1, 2, 70, 721, 1440):
+            raise ValueError(f"Unexpected FuXi output shape: {output.shape}")
+        point = output[0, -1, :, lat_index, lon_index]
+        if not np.isfinite(point).all():
+            raise ValueError("FuXi point output contains non-finite values")
+        if lead == 6:
+            raw = {field: float(point[CHANNELS.index(channel)]) for field, channel, _ in FIELD_MAP}
+        valid = (init + timedelta(hours=lead)).replace(tzinfo=timezone.utc).isoformat()
+        snapshot = crop_region(output[0, -1], valid, lead)["snapshots"][0]
+        snapshot["source"] = "fuxi"
+        region["snapshots"].append(snapshot)
+        print(f"Retained native regional FuXi +{lead}h forecast", file=sys.stderr)
+        state = output
+    return {**metadata, "raw": raw, "region": region}
+
+
 def predict_point(args: argparse.Namespace, metadata: dict, lat_index: int, lon_index: int) -> dict:
     with xr.open_dataarray(args.input) as data:
         values = np.asarray(data.values[None], dtype=np.float32)
@@ -58,16 +85,9 @@ def predict_point(args: argparse.Namespace, metadata: dict, lat_index: int, lon_
     with contextlib.redirect_stdout(sys.stderr):
         handles = prepare_cuda_libraries()
         session = make_session(args.model_dir)
-    init = pd.Timestamp(metadata["init_time_utc"]).to_pydatetime().replace(tzinfo=None)
-    output = session.run(None, {"input": values, "temb": time_embedding(init)})[0]
-    if output.shape != (1, 2, 70, 721, 1440):
-        raise ValueError(f"Unexpected FuXi output shape: {output.shape}")
-    point = output[0, -1, :, lat_index, lon_index]
-    if not np.isfinite(point).all():
-        raise ValueError("FuXi point output contains non-finite values")
+    result = forecast_region(session, values, metadata, lat_index, lon_index, args.max_lead_hours)
     assert handles is not None
-    region = crop_region(output[0, -1], metadata["valid_time_utc"], 6)
-    return {**metadata, "raw": {field: float(point[CHANNELS.index(channel)]) for field, channel, _ in FIELD_MAP}, "region": region}
+    return result
 
 
 def main() -> int:
@@ -76,6 +96,7 @@ def main() -> int:
     parser.add_argument("--model-dir", type=Path)
     parser.add_argument("--latitude", type=float, default=31.5)
     parser.add_argument("--longitude", type=float, default=119.5)
+    parser.add_argument("--max-lead-hours", type=int, choices=(6, 12, 18, 24), default=24)
     parser.add_argument("--inspect", action="store_true")
     args = parser.parse_args()
     try:

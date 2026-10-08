@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import WeatherPanels from './WeatherPanels.vue'
+import RouteWeatherPanel from './RouteWeatherPanel.vue'
 
 type Point = { latitude: number; longitude: number }
 type Preview = {
@@ -34,6 +35,9 @@ const form = reactive({
   clearance_m: 2,
 })
 const preview = ref<Preview | null>(null)
+const previewKey = ref('')
+const weatherJobId = ref<string | null>(null)
+const departureBeijing = ref(new Date(Date.now() + 30 * 60 * 1000 + 8 * 3600 * 1000).toISOString().slice(0, 16))
 const loading = ref(false)
 const checkingPoint = ref(false)
 const error = ref('')
@@ -50,8 +54,10 @@ let Cesium: any = null
 let routeController: AbortController | null = null
 let routeRequestVersion = 0
 
-const elapsed = computed(() => preview.value ? `${preview.value.estimated_minutes} 分钟` : '待计算')
+const elapsed = computed(() => preview.value && form.speed_kmh > 0 ? `${(preview.value.distance_km / form.speed_kmh * 60).toFixed(2)} 分钟` : '待计算')
 const distance = computed(() => preview.value ? `${preview.value.distance_km.toFixed(2)} km` : '待计算')
+const routeKey = computed(() => JSON.stringify([form.start, form.end, roadSource.value, form.clearance_m]))
+const weatherCoordinates = computed(() => preview.value && previewKey.value === routeKey.value ? preview.value.geometry.coordinates : null)
 
 function formatted(point: Point) {
   return `${point.latitude.toFixed(4)}°N, ${point.longitude.toFixed(4)}°E`
@@ -61,6 +67,7 @@ async function calculate() {
   if (loading.value) return
   const controller = new AbortController()
   const requestVersion = ++routeRequestVersion
+  const requestedKey = routeKey.value
   routeController = controller
   loading.value = true
   error.value = ''
@@ -81,6 +88,7 @@ async function calculate() {
     const result: Preview = await response.json()
     if (controller.signal.aborted || requestVersion !== routeRequestVersion) return
     preview.value = result
+    previewKey.value = requestedKey
     drawCesiumRoute()
   } catch (cause) {
     if (controller.signal.aborted || requestVersion !== routeRequestVersion) return
@@ -285,6 +293,7 @@ onBeforeUnmount(() => {
 
           <div class="form-line"></div>
           <div class="coordinate-row"><label>飞行高度 · 米<input v-model.number="form.altitude_m" type="number" min="0" max="1000" required :disabled="loading" /></label><label>巡航速度 · km/h<input v-model.number="form.speed_kmh" type="number" min="1" max="200" step="1" required :disabled="loading" /></label></div>
+          <label class="departure-field">出发时刻 · 北京时间<input v-model="departureBeijing" type="datetime-local" required /><small>沿线 ETA 按填写速度估算，不含风对地速的影响。</small></label>
           <div class="clearance-row"><label>建筑缓冲 · 米（演示）<input v-model.number="form.clearance_m" type="number" min="0" max="20" step="0.5" required :disabled="loading || roadSource === 'online'" /></label><span>{{ roadSource === 'local' ? '用于排除靠近建筑的道路段' : '在线机动车路线不使用此参数' }}</span></div>
           <fluent-button class="primary-button" appearance="primary" type="submit" :disabled="loading">{{ loading ? '计算中…' : '计算道路路线' }}</fluent-button>
           <p v-if="error" class="form-error" role="alert">{{ error }}</p>
@@ -316,8 +325,9 @@ onBeforeUnmount(() => {
         <div class="insights-header"><span class="eyebrow">任务状态</span><h2>任务概览</h2></div>
         <div class="metric-pair"><div><span>道路路线</span><strong>{{ distance }}</strong></div><div><span>理论航时</span><strong>{{ elapsed }}</strong></div></div>
         <div v-if="preview" class="road-summary"><strong>{{ preview.road_names.join(' → ') || '未命名道路' }}</strong><span>直线 {{ preview.straight_distance_km.toFixed(2) }} km · {{ preview.building_clearance_m === null ? '在线模式未检查建筑缓冲' : `建筑缓冲 ${preview.building_clearance_m} m` }}</span><small>A/B 到道路分别约 {{ preview.start_snap_m }} m / {{ preview.end_snap_m }} m</small><small>{{ preview.data_source }}</small><small>路线数据 © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap contributors</a></small></div>
-          <WeatherPanels :altitude-m="form.altitude_m" :start="form.start" :end="form.end" />
-        <div class="pipeline"><h3>接下来接入</h3><div><span>01</span><p>气象网格与时间、高度对齐</p></div><div><span>02</span><p>沿线风险评分与预警</p></div><div><span>03</span><p>天气约束下的绕行与飞行窗口</p></div></div>
+        <WeatherPanels :altitude-m="form.altitude_m" :start="form.start" :end="form.end" @job-ready="weatherJobId = $event" />
+        <RouteWeatherPanel :job-id="weatherJobId" :coordinates="weatherCoordinates" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" />
+        <div class="pipeline"><h3>接入进度</h3><div><span>01</span><p>网格与时间已接入，飞行高度待匹配</p></div><div><span>02</span><p>沿线风险评分与预警 · 待接入</p></div><div><span>03</span><p>天气绕行与飞行窗口 · 待接入</p></div></div>
         <div class="decision">当前决策 <strong>数据不足，暂不可判定能否飞行</strong></div>
       </aside>
     </main>

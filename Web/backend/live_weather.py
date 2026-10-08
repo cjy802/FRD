@@ -17,6 +17,7 @@ from weather_service import (
     configured_path, iso_utc, load_corrector, utc_timestamp,
 )
 from regional_weather import RegionalWeather
+from route_weather import align_route
 
 
 def validate_metadata(metadata: dict, now: datetime) -> tuple[datetime, datetime]:
@@ -44,7 +45,7 @@ def call_worker(input_path: Path, inspect: bool) -> dict:
         command.extend(["--model-dir", str(model_dir)])
     completed = subprocess.run(
         command, capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=30 if inspect else 300,
+        timeout=30 if inspect else 600,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     try:
@@ -98,7 +99,7 @@ class ForecastJobs:
                 if self.active == job_id:
                     self.active = None
 
-    def sample(self, job_id: str, latitude: float, longitude: float) -> dict:
+    def regional_job(self, job_id: str):
         with self.lock:
             if job_id not in self.jobs:
                 raise KeyError(job_id)
@@ -106,11 +107,20 @@ class ForecastJobs:
                 raise WeatherUnavailable("区域天气尚未就绪，请等待预测完成。")
             grid, model = self.grids[job_id], self.models[job_id]
             generated = self.jobs[job_id]["forecast"]["generated_at_utc"]
-        result = grid.sample(latitude, longitude, model)
+        return grid, model, generated
+
+    def sample(self, job_id: str, latitude: float, longitude: float, valid_time_utc: str | None = None) -> dict:
+        grid, model, generated = self.regional_job(job_id)
+        result = grid.sample(latitude, longitude, model, valid_time_utc)
         if utc_timestamp(result["valid_time_utc"]) <= self.clock():
             raise WeatherUnavailable("区域预报已过期，请重新预测。")
         result["generated_at_utc"] = generated
         return result
+
+    def route(self, job_id: str, coordinates, departure_time_utc: str, speed_kmh: float, altitude_m: float):
+        grid, model, generated = self.regional_job(job_id)
+        result = align_route(grid, coordinates, departure_time_utc, speed_kmh, altitude_m, model, now=self.clock())
+        return {**result, 'job_id': job_id, 'generated_at_utc': generated}
 
     def start(self) -> dict:
         with self.lock:
@@ -141,7 +151,7 @@ class ForecastJobs:
             metadata = self.worker(input_path, True)
             validate_metadata(metadata, self.clock())
             model = self.corrector(configured_path("WEATHER_CORRECTOR_PATH", DEFAULT_MODEL))
-            self.update(job_id, message="FuXi 正在预测起报后 6 小时天气。")
+            self.update(job_id, message="FuXi 正在生成未来 6/12/18/24 小时区域天气。")
             predicted = self.worker(input_path, False)
             init, valid = validate_metadata(predicted, self.clock())
             if any(predicted[name] != metadata[name] for name in (
