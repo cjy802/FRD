@@ -21,6 +21,7 @@ from route_weather import align_route
 from height_weather import HeightWeather
 from weather_risk import screen_route
 from weather_decision import build_decision
+from weather_windows import compare_departures
 
 
 def validate_metadata(metadata: dict, now: datetime) -> tuple[datetime, datetime]:
@@ -167,6 +168,15 @@ class ForecastJobs:
                 self.height_warnings.pop(old_id, None)
         self.executor.submit(self.run, job_id)
         return self.get(job_id)
+
+    def windows(self, job_id, coordinates, departure_time_utc, speed_kmh, altitude_m, profile=None):
+        grid, _, generated = self.regional_job(job_id)
+        with self.lock: auxiliary = self.height_grids.get(job_id)
+        end = min(grid.snapshots[-1]['valid'], auxiliary.snapshots[-1]['valid']) if auxiliary else grid.snapshots[-1]['valid']
+        result = compare_departures(
+            lambda stamp: self.route(job_id, coordinates, stamp, speed_kmh, altitude_m, profile),
+            [item['valid'] for item in grid.snapshots], coordinates, departure_time_utc, speed_kmh, end, self.clock())
+        return {**result, 'job_id': job_id, 'generated_at_utc': generated}
 
     def run(self, job_id: str):
         try:

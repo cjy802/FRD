@@ -181,6 +181,16 @@ def check_landing_point(request: LandingCheckRequest):
     return {**result, "landing_verified": False, "data_source": planner.data_source}
 
 
+@app.post('/api/weather/predictions/{job_id}/windows')
+def compare_weather_windows(job_id: str, request: RouteWeatherRequest):
+    try:
+        return forecast_jobs.windows(job_id, **request.model_dump())
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail='天气预测任务不存在，请重新预测。') from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
 @app.post("/api/routes/preview")
 def preview_route(route: RouteRequest):
     km = distance_km(route.start, route.end)

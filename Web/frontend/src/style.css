@@ -71,6 +71,11 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .check-ready { color: #0f6cbd; }
 .check-pending { color: #875100; }
 .risk-incomplete { color: var(--ui-muted); }
+.weather-window-list { list-style: none; padding: 0; margin: 12px 0; }
+.weather-window-list li { padding: 12px 0; border-bottom: 1px solid var(--ui-line); }
+.weather-window-list strong, .weather-window-list span { display: block; font-size: var(--font-caption); }
+.weather-window-list span { color: var(--ui-muted); margin-top: 5px; }
+.weather-window-list button { margin-top: 8px; }
 .departure-field { display: block; margin-top: 18px; color: #424242; font-size: var(--font-caption); font-weight: 600; }
 .departure-field input { display: block; width: 100%; min-width: 0; height: 40px; margin-top: 6px; padding: 0 10px; border: 1px solid #bfc6cd; border-radius: var(--ui-radius); background: #fff; color: #242424; font: inherit; }
 .departure-field input:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 2px; }
