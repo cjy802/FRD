@@ -104,6 +104,25 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .status-title b { padding-left: 8px; border-left: 2px solid currentColor; font-size: var(--font-caption); font-weight: 600; white-space: nowrap; }
 .pending { color: #835400; }
 .weather-state { color: var(--ui-accent); }
+.risk-attention, .risk-elevated { color: #835400; }
+.risk-no_trigger { color: var(--ui-muted); }
+.weather-triggers { margin: 8px 0; padding-left: 18px; }
+.weather-scope { color: var(--ui-muted); }
+.weather-rule-details { margin-top: 12px; color: var(--ui-muted); font-size: var(--font-caption); }
+.weather-rule-details summary { cursor: pointer; }
+.weather-choice-row label { display: block; margin-bottom: 7px; color: var(--ui-muted); font-size: var(--font-caption); }
+.weather-choice-controls { display: flex; gap: 6px; }
+.weather-choice-controls select { min-width: 0; width: 100%; padding: 6px; border: 1px solid var(--ui-line); border-radius: var(--ui-radius); background: white; color: inherit; font: inherit; font-size: var(--font-caption); }
+.weather-refresh { flex-shrink: 0; padding: 5px 8px; border: 1px solid var(--ui-line); border-radius: var(--ui-radius); background: white; color: var(--ui-accent); font-size: var(--font-caption); }
+.weather-values { width: 100%; margin-top: 14px; border-collapse: collapse; font-size: var(--font-caption); }
+.weather-values caption { margin-bottom: 7px; text-align: left; color: var(--ui-muted); }
+.weather-values th, .weather-values td { padding: 8px 3px; border-bottom: 1px solid var(--ui-line); text-align: right; font-variant-numeric: tabular-nums; }
+.weather-values th:first-child { text-align: left; font-weight: 500; }
+.weather-value-source { display: block; font-size: 11px; color: var(--ui-muted); }
+.weather-derived { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 12px; font-size: var(--font-caption); }
+.weather-derived strong { display: block; margin-top: 2px; }
+.weather-model-policy { color: var(--ui-accent) !important; }
+.weather-choice-controls select:focus-visible, .weather-rule-details summary:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 2px; }
 .status-block small { display: block; margin-top: 9px; color: var(--ui-muted); font-size: var(--font-caption); }
 .pipeline { margin-top: 24px; }
 .pipeline h3 { margin: 0 0 12px; font-size: var(--font-body); font-weight: 600; }

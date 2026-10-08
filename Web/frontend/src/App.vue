@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import WeatherPanels from './WeatherPanels.vue'
 
 type Point = { latitude: number; longitude: number }
 type Preview = {
@@ -15,7 +16,6 @@ type Preview = {
   data_source: string
   risk: { level: string; score: number | null; reason: string }
 }
-type Weather = { state: string; source: string | null; ready_for_route_risk: boolean; message: string }
 type LandingCheck = {
   state: 'mapped_building' | 'road_nearby' | 'no_road'
   search_radius_m: number
@@ -34,7 +34,6 @@ const form = reactive({
   clearance_m: 2,
 })
 const preview = ref<Preview | null>(null)
-const weather = ref<Weather | null>(null)
 const loading = ref(false)
 const checkingPoint = ref(false)
 const error = ref('')
@@ -53,20 +52,9 @@ let routeRequestVersion = 0
 
 const elapsed = computed(() => preview.value ? `${preview.value.estimated_minutes} 分钟` : '待计算')
 const distance = computed(() => preview.value ? `${preview.value.distance_km.toFixed(2)} km` : '待计算')
-const weatherLabel = computed(() => weather.value?.state === 'file_detected' ? '已发现文件' : '等待数据')
 
 function formatted(point: Point) {
   return `${point.latitude.toFixed(4)}°N, ${point.longitude.toFixed(4)}°E`
-}
-
-async function loadWeather() {
-  try {
-    const response = await fetch('/api/weather/status')
-    if (!response.ok) throw new Error('天气状态接口不可用')
-    weather.value = await response.json()
-  } catch {
-    weather.value = { state: 'awaiting_data', source: null, ready_for_route_risk: false, message: '后端未连接，暂时无法检查气象文件。' }
-  }
 }
 
 async function calculate() {
@@ -264,7 +252,6 @@ function initMap() {
 }
 
 onMounted(() => {
-  void loadWeather()
   void calculate()
   if ((window as any).Cesium) initMap()
   else window.addEventListener('load', initMap, { once: true })
@@ -329,8 +316,7 @@ onBeforeUnmount(() => {
         <div class="insights-header"><span class="eyebrow">任务状态</span><h2>任务概览</h2></div>
         <div class="metric-pair"><div><span>道路路线</span><strong>{{ distance }}</strong></div><div><span>理论航时</span><strong>{{ elapsed }}</strong></div></div>
         <div v-if="preview" class="road-summary"><strong>{{ preview.road_names.join(' → ') || '未命名道路' }}</strong><span>直线 {{ preview.straight_distance_km.toFixed(2) }} km · {{ preview.building_clearance_m === null ? '在线模式未检查建筑缓冲' : `建筑缓冲 ${preview.building_clearance_m} m` }}</span><small>A/B 到道路分别约 {{ preview.start_snap_m }} m / {{ preview.end_snap_m }} m</small><small>{{ preview.data_source }}</small><small>路线数据 © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap contributors</a></small></div>
-        <div class="status-block"><div class="status-title"><span>气象风险</span><b class="pending">待评估</b></div><p>尚无与航线位置、飞行高度及时间匹配的气象数据。</p></div>
-        <div class="status-block"><div class="status-title"><span>天气数据</span><b class="weather-state">{{ weatherLabel }}</b></div><p>{{ weather?.message || '正在检查数据状态…' }}</p><small v-if="weather?.source">文件：{{ weather.source }}</small></div>
+        <WeatherPanels :altitude-m="form.altitude_m" />
         <div class="pipeline"><h3>接下来接入</h3><div><span>01</span><p>气象网格与时间、高度对齐</p></div><div><span>02</span><p>沿线风险评分与预警</p></div><div><span>03</span><p>天气约束下的绕行与飞行窗口</p></div></div>
         <div class="decision">当前决策 <strong>数据不足，暂不可判定能否飞行</strong></div>
       </aside>

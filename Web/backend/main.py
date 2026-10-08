@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from online_router import OnlineServiceUnavailable, plan_online_route
 from road_planner import CampusRoadNetwork, LOCAL_INDEX_FILE, LocalRoadStore, RouteUnavailable
+from weather_service import weather_store
 
 
 app = FastAPI(title="低空飞行决策工作台", version="0.1.0")
@@ -74,6 +75,10 @@ def health():
 
 @app.get("/api/weather/status")
 def weather_status():
+    try:
+        return weather_store().status()
+    except (OSError, ValueError) as error:
+        message = str(error)
     configured = os.getenv("WEATHER_GRID_PATH", "").strip()
     path = Path(configured) if configured else None
     exists = bool(path and path.is_file())
@@ -82,10 +87,33 @@ def weather_status():
         "source": path.name if exists and path else None,
         "ready_for_route_risk": False,
         "message": (
-            "已检测到气象文件，仍需解析时间、高度和空间网格后才能评估航线。"
+            f"{message} 已检测到网格文件，仍需解析时间、高度和空间覆盖。"
             if exists
-            else "等待沿航线、分高度和分时刻的气象网格数据。"
+            else message
         ),
+        "options": [],
+    }
+
+
+@app.get("/api/weather/forecast")
+def weather_forecast(init_time_utc: str | None = None, lead_hours: int | None = None):
+    try:
+        return weather_store().forecast(init_time_utc, lead_hours)
+    except (OSError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.get("/api/weather/risk")
+def weather_risk(init_time_utc: str | None = None, lead_hours: int | None = None):
+    forecast = weather_forecast(init_time_utc, lead_hours)
+    return {
+        "init_time_utc": forecast["init_time_utc"],
+        "valid_time_utc": forecast["valid_time_utc"],
+        "lead_hours": forecast["lead_hours"],
+        "point": forecast["point"],
+        "sources": forecast["sources"],
+        "derived": forecast["derived"],
+        **forecast["point_risk"],
     }
 
 
