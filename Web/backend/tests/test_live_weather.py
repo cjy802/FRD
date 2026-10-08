@@ -42,10 +42,11 @@ def wait_for_job(manager, job):
 
 
 class LiveWeatherTests(unittest.TestCase):
-    def manager(self, worker=None, clock=None, corrector=None):
+    def manager(self, worker=None, clock=None, corrector=None, preparer=None):
         manager = ForecastJobs(
             worker=worker or (lambda path, inspect: METADATA if inspect else {**METADATA, "raw": RAW}),
             clock=clock or (lambda: NOW), corrector=corrector or (lambda path: model()),
+            preparer=preparer or (lambda path: path),
         )
         self.addCleanup(manager.executor.shutdown, wait=True)
         return manager
@@ -57,7 +58,25 @@ class LiveWeatherTests(unittest.TestCase):
             result = wait_for_job(manager, manager.start())
         self.assertEqual(result["status"], "blocked")
         self.assertIsNone(result["forecast"])
-        self.assertIn("最新全球起报场", result["message"])
+        self.assertIn("未获取成功", result["message"])
+        worker.assert_not_called()
+
+    def test_current_input_is_prepared_automatically_without_user_file(self):
+        preparer = Mock(return_value=Path("automatic-gfs.nc"))
+        manager = self.manager(preparer=preparer)
+        with patch.dict("live_weather.os.environ", {"FUXI_LIVE_INPUT": ""}), patch("live_weather.Path.is_file", return_value=True):
+            result = wait_for_job(manager, manager.start())
+        self.assertEqual(result["status"], "succeeded")
+        preparer.assert_called_once()
+
+    def test_download_failure_is_reported_without_historical_fallback(self):
+        preparer = Mock(side_effect=WeatherUnavailable("NOAA unavailable"))
+        worker = Mock()
+        manager = self.manager(preparer=preparer, worker=worker)
+        with patch.dict("live_weather.os.environ", {"FUXI_LIVE_INPUT": ""}):
+            result = wait_for_job(manager, manager.start())
+        self.assertEqual(result["status"], "blocked")
+        self.assertIsNone(result["forecast"])
         worker.assert_not_called()
 
     def test_current_input_runs_prediction_and_only_corrects_selected_fields(self):

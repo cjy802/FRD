@@ -44,6 +44,8 @@ def inspect_input(path: Path, latitude: float, longitude: float) -> tuple[dict, 
             "valid_time_utc": (stamps[1] + timedelta(hours=6)).isoformat(),
             "lead_hours": 6, "latitude_deg": latitude, "longitude_deg": longitude,
         }
+        with xr.open_dataset(path) as dataset:
+            metadata["input_source"] = dataset.attrs.get("initialization_source", "Configured weather initial field")
         return metadata, lat_index, lon_index
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import subprocess
 import threading
 import uuid
@@ -54,11 +55,28 @@ def call_worker(input_path: Path, inspect: bool) -> dict:
     return payload
 
 
+def prepare_latest_input(output: Path) -> Path:
+    python = configured_path("FUXI_PYTHON", Path("D:/anaconda/envs/fuxi_onnx/python.exe"))
+    completed = subprocess.run(
+        [str(python), "-B", str(PROJECT_ROOT / "app/prepare_gfs_live.py"), "--output", str(output)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1200,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    try:
+        payload = json.loads(completed.stdout)
+    except ValueError as error:
+        raise WeatherUnavailable("公开实时气象数据获取失败，请检查网络和 GFS 解码环境。") from error
+    if completed.returncode or "error" in payload:
+        raise WeatherUnavailable(f"自动获取当前天气失败：{payload.get('error', 'NOAA 数据源暂不可用')}")
+    return Path(payload["input_path"])
+
+
 class ForecastJobs:
-    def __init__(self, worker=call_worker, clock=None, corrector=load_corrector):
+    def __init__(self, worker=call_worker, clock=None, corrector=load_corrector, preparer=prepare_latest_input):
         self.worker = worker
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.corrector = corrector
+        self.preparer = preparer
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fuxi-live")
         self.lock = threading.Lock()
         self.jobs: dict[str, dict] = {}
@@ -95,8 +113,11 @@ class ForecastJobs:
     def run(self, job_id: str):
         try:
             input_path = configured_path("FUXI_LIVE_INPUT", PROJECT_ROOT / "app/prepared/latest.nc")
+            if not os.getenv("FUXI_LIVE_INPUT", "").strip():
+                self.update(job_id, status="running", message="正在自动获取 NOAA 当前天气资料；首次下载可能需要几分钟。")
+                input_path = self.preparer(input_path)
             if not input_path.is_file():
-                raise WeatherUnavailable("尚未接入最新全球起报场，暂时无法生成未来 6 小时天气。历史样本用于训练，不能替代当前天气输入。")
+                raise WeatherUnavailable("当前气象数据未获取成功，请稍后重新预测。")
             self.update(job_id, status="running", message="正在校验起报场时刻和网格。")
             metadata = self.worker(input_path, True)
             validate_metadata(metadata, self.clock())
@@ -111,6 +132,7 @@ class ForecastJobs:
                 raise WeatherUnavailable("推理期间起报场发生变化，请重新预测。")
             row = {**predicted, "init": init, "valid": valid}
             forecast = assemble_forecast(row, model, historical=False)
+            forecast["input_source"] = predicted.get("input_source", "Configured weather initial field")
             forecast["generated_at_utc"] = iso_utc(self.clock())
             self.update(job_id, status="succeeded", message="未来天气预报已生成。", forecast=forecast)
         except (WeatherUnavailable, FileNotFoundError) as error:

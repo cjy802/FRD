@@ -49,7 +49,17 @@ npm run dev
 
 页面的“天气数据”进入时自动发起预测并轮询进度，只显示最终温度、U/V 风、气压、降水、风速与风向，不显示原值/订正值对照或历史日期选择。起报、有效时刻和生成时刻都以北京时间显示。模型的 +6h 是从起报场时刻计算，不伪装为从页面访问时刻开始的逐小时预报。“气象风险”与最终预报同步；阈值仍为单点地面风雨演示规则，不代表机型飞行限值。当前模型点位固定为 31.5°N、119.5°E，不能直接作为校园航线和任务高度的天气场。
 
-实时推理必须配置 `FUXI_LIVE_INPUT`，指向准备好的最新全球起报场 NetCDF，形状 `(2,70,721,1440)`、原 FuXi 通道顺序、两帧相隔 6 小时。默认查找 `app/prepared/latest.nc`；可用 `FUXI_PYTHON` 设置 ONNX 环境 Python，`FUXI_MODEL_DIR` 设置 FuXi 权重目录，`WEATHER_CORRECTOR_PATH` 设置订正模型。Windows NetCDF 库可能不支持中文路径，建议使用已有的英文目录链接。输入未配置、+6h 有效时刻已过去或模型不可用时，任务返回明确的 `blocked` 状态，不回退到历史 CSV。ERA5/ERA5T 回填下载有发布延迟，不是当前全球起报场的数据源；本项目尚未配置实时起报数据下载接口。
+实时推理默认由程序自动获取 [NOAA 公开 GFS](https://www.nco.ncep.noaa.gov/pmb/products/gfs/nomads/) 的当前气象场，不要求用户提供起报文件。每次进入页面发起预测：自动获取两帧相隔 6 小时的当前资料 → 转成 FuXi 70 通道输入 → GPU 推理 +6h → 全量模型订正 → 显示最终值。FuXi 官方也提供了 [GFS 输入转换示例](https://github.com/tpys/FuXi/blob/main/make_gfs_input.py)。本项目保持真实的 6 小时累计降水，不使用示例中的零值占位；位势高度乘标准重力转为位势，温度/湿度/风/气压保留对应物理单位。
+
+自动获取脚本为 `app/prepare_gfs_live.py`，通过 NOAA 公共对象存储的 GRIB 索引和 HTTP byte range 只下载所需字段（69 个状态字段约 54 MB/帧，另取少量真实降水字段），不下载完整全球 GRIB 文件。优先使用已发布的分析场；分析未发布时使用有效时刻相同的短时背景场，并记录每帧来源周期与提前量。相同起报时次使用缓存，较新的分析场发布后会升级背景场；自动缓存仅保留最近 48 小时。本项目的 ERA5 回测不能直接当作 GFS 起报后的实时精度验证。
+
+首次运行在既有 `fuxi_onnx` 环境补充解码器依赖：
+
+```powershell
+& 'D:\anaconda\envs\fuxi_onnx\python.exe' -m pip install -r 'D:\低空经济\app\requirements-live.txt'
+```
+
+本机依赖已安装并通过实际 GPU 推理。`FUXI_LIVE_INPUT` 仅用于手动覆盖自动来源；通常不需要设置。可用 `FUXI_PYTHON` 设置 ONNX 环境 Python，`FUXI_MODEL_DIR` 设置权重目录，`WEATHER_CORRECTOR_PATH` 设置订正模型。自动生成的 `app/prepared/latest.nc` 通过本机已有英文目录链接访问，避开 Windows NetCDF 的中文路径限制。输入网络下载失败、已过期或模型不可用时返回明确原因，不使用历史 CSV 伪装未来天气。新页面进入会重新运行 FuXi；只有同时进行中的任务共享一次 GPU 推理。
 
 旧的 `/status`、`/forecast`、`/risk` 接口仅供历史记录诊断，仍可通过 `WEATHER_PAIRS_PATH` 和 `WEATHER_ARCHIVE_YEAR` 配置；页面未来预报流程不调用它们。所有相对路径以项目根目录为基准，模型与数据不纳入 Git。全量重训命令：
 

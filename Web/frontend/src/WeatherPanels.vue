@@ -6,6 +6,7 @@ type Field = 't2m_K' | 'u10_m_s' | 'v10_m_s' | 'msl_Pa' | 'tp_6h_mm'
 type Forecast = {
   init_time_utc: string; valid_time_utc: string; generated_at_utc: string
   lead_hours: number; historical: boolean
+  input_source?: string
   point: { latitude_deg: number; longitude_deg: number }
   values: Record<Field, number>
   derived: { wind_speed_10m_m_s: number; wind_direction_from_deg: number | null }
@@ -77,7 +78,7 @@ function applyJob(job: Job, controller: AbortController, attempts: number) {
     activeController = null
     return
   }
-  if (attempts >= 360) throw new Error('天气推理等待超时，请稍后重新预测。')
+  if (attempts >= 1800) throw new Error('天气推理等待超时，请稍后重新预测。')
   pollTimer = setTimeout(() => { void pollJob(job.job_id, controller, attempts + 1) }, 1000)
 }
 async function pollJob(jobId: string, controller: AbortController, attempts: number) {
@@ -134,6 +135,7 @@ onBeforeUnmount(() => {
       <table class="weather-values"><caption>未来天气预报</caption><thead><tr><th scope="col">变量</th><th scope="col">预报值</th></tr></thead><tbody><tr v-for="metric in metrics" :key="metric.field"><th scope="row">{{ metric.label }}</th><td>{{ metricValue(metric.field, forecast.values[metric.field]) }}</td></tr></tbody></table>
       <div class="weather-derived"><span>10 米风速 <strong>{{ forecast.derived.wind_speed_10m_m_s.toFixed(2) }} m/s</strong></span><span>风向（来向）<strong>{{ forecast.derived.wind_direction_from_deg === null ? '静风' : `${forecast.derived.wind_direction_from_deg.toFixed(0)}°` }}</strong></span></div>
       <small>点位 {{ forecast.point.latitude_deg }}°N，{{ forecast.point.longitude_deg }}°E</small>
+      <small v-if="forecast.input_source?.startsWith('NOAA GFS')">起报资料：NOAA 公开 GFS 气象场</small>
       <small>起报：{{ localTime(forecast.init_time_utc) }} · 提前量 {{ forecast.lead_hours }} 小时</small>
       <small>生成：{{ localTime(forecast.generated_at_utc) }}（北京时间）</small>
     </template>

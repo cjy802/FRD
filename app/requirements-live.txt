@@ -1,0 +1,2 @@
+# Add to the existing fuxi_onnx environment for public GFS GRIB2 decoding.
+eccodes>=2.43,<3
