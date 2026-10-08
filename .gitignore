@@ -9,6 +9,7 @@
 /output/
 /app/point_data/
 /app/prepared/gfs_cache/
+/app/prepared/gfs_aux_cache/
 /Web/mode/output_year_transfer_*/
 /Web/mode/output_production/
 /help/backfill/

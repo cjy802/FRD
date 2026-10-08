@@ -126,6 +126,11 @@ class GFSDownloader:
 
     def fetch_fields(self, cycle: datetime, hour: int, kind: str) -> Path:
         records = select_records(self.inventory(cycle, hour), kind)
+        return self.fetch_records(cycle, hour, kind, records)
+
+    def fetch_records(self, cycle: datetime, hour: int, kind: str, records: list[dict]) -> Path:
+        if kind not in ('state', 'rain', 'height') or not records:
+            raise ValueError('Unknown or empty GFS download selection')
         target = self.cache / f"gfs_{cycle:%Y%m%d%H}_f{hour:03d}_{kind}.grib2"
         manifest = target.with_suffix(".json")
         expected = [{"channel": record["channel"], "start": record["start"], "end": record["end"]} for record in records]
@@ -187,7 +192,7 @@ class GFSDownloader:
     def prune_old_cache(self, now: datetime):
         """Remove only this provider's recorded GRIB cache older than 48h."""
         for manifest in self.cache.glob("gfs_*.json"):
-            match = re.fullmatch(r"gfs_(\d{10})_f(\d{3})_(state|rain)\.json", manifest.name)
+            match = re.fullmatch(r"gfs_(\d{10})_f(\d{3})_(state|rain|height)\.json", manifest.name)
             if not match:
                 continue
             cycle = datetime.strptime(match[1], "%Y%m%d%H").replace(tzinfo=timezone.utc)

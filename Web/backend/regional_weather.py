@@ -13,7 +13,7 @@ CALIBRATION_POINT = (31.5, 119.5)
 
 
 class RegionalWeather:
-    def __init__(self, payload: dict, init_time: str, input_source: str):
+    def __init__(self, payload: dict, init_time: str, input_source: str, required_channels=None):
         self.latitudes = np.asarray(payload["latitudes"], dtype=float)
         self.longitudes = np.asarray(payload["longitudes"], dtype=float)
         self.channels = list(payload["channels"])
@@ -26,7 +26,8 @@ class RegionalWeather:
             raise WeatherUnavailable("区域天气坐标或通道不完整。")
         if not (np.allclose(np.diff(self.latitudes), -.25) and np.allclose(np.diff(self.longitudes), .25)):
             raise WeatherUnavailable("区域天气必须保留原生 0.25° 网格。")
-        if not set(FIELD_CHANNELS.values()).issubset(self.channels):
+        required = set(FIELD_CHANNELS.values()) if required_channels is None else set(required_channels)
+        if not required.issubset(self.channels):
             raise WeatherUnavailable("区域天气缺少地面预报变量。")
         self.snapshots = []
         for snapshot in payload["snapshots"]:

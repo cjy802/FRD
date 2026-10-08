@@ -42,7 +42,8 @@ def route_positions(coordinates):
     return positions, total
 
 
-def align_route(grid, coordinates, departure_time_utc, speed_kmh, altitude_m, model=None, now=None):
+def align_route(grid, coordinates, departure_time_utc, speed_kmh, altitude_m, model=None, now=None,
+                height_grid=None, height_warning=None):
     if not math.isfinite(speed_kmh) or not 0 < speed_kmh <= 200:
         raise WeatherUnavailable("任务速度须大于零且不超过 200 km/h。")
     if not math.isfinite(altitude_m) or not 0 <= altitude_m <= 1000:
@@ -51,26 +52,36 @@ def align_route(grid, coordinates, departure_time_utc, speed_kmh, altitude_m, mo
     if now is not None and departure < now:
         raise WeatherUnavailable("出发时间已过去，请选择当前或未来时刻。")
     positions, total = route_positions(coordinates)
-    samples, missing = [], []
+    samples, missing, height_missing = [], [], []
     for index, position in enumerate(positions):
         when = departure + timedelta(seconds=position['distance_m'] / (speed_kmh / 3.6))
         base = {'index': index, **position, 'eta_utc': when.isoformat()}
         try:
             longitude, latitude = position['coordinate']
             forecast = grid.sample(latitude, longitude, model, when.isoformat())
-            samples.append({**base, 'weather': forecast})
+            height_weather = None
+            try:
+                if height_grid is None:
+                    raise WeatherUnavailable(height_warning or '近地高度风、阵风和能见度资料尚不可用。')
+                height_weather = height_grid.sample_height(latitude, longitude, altitude_m, when.isoformat())
+            except WeatherUnavailable as error:
+                height_missing.append({**base, 'reason': str(error)})
+            samples.append({**base, 'weather': forecast, 'height_weather': height_weather})
         except WeatherUnavailable as error:
             missing.append({**base, 'reason': str(error)})
     return {
-        'state': 'incomplete' if missing else 'time_aligned_surface_only',
+        'state': 'incomplete' if missing else 'time_aligned_surface_only' if height_missing else 'space_time_height_aligned',
         'departure_time_utc': iso_utc(departure),
         'arrival_time_utc': (departure + timedelta(seconds=total / (speed_kmh / 3.6))).isoformat(),
         'distance_m': total, 'duration_seconds': total / (speed_kmh / 3.6),
-        'altitude_m': altitude_m, 'sample_count': len(positions), 'samples': samples, 'missing': missing,
-        'coverage': {'surface_space_time': not missing, 'flight_height': False},
+        'altitude_m': altitude_m, 'height_reference': 'AGL', 'sample_count': len(positions),
+        'samples': samples, 'missing': missing, 'height_missing': height_missing,
+        'coverage': {'surface_space_time': not missing, 'flight_height': not missing and not height_missing},
         'native_time_step_hours': 6, 'native_resolution_deg': .25,
         'eta_method': 'constant_user_speed_no_wind_adjustment',
-        'message': ('沿线天气未完全匹配，覆盖不足的位置与原因已列出，不进行空间或时间外推；飞行高度仍待匹配。' if missing
-                    else '已按沿线距离与填写速度匹配天气；时间插值是估计，尚未匹配飞行高度，也未计入风对地速的影响。'),
+        'message': ('沿线天气未完全匹配，覆盖不足的位置与原因已列出，不进行空间或时间外推。' if missing
+                    else '沿线地面时空已匹配，但高度天气未完全匹配。' if height_missing
+                    else '沿线位置、经过时刻与离地高度风已匹配；插值是估计，阵风和能见度仍为地面指标。'),
+        'eta_warning': 'ETA 按填写速度估算，未计入风对地速的影响。',
         'flight_permission': None,
     }

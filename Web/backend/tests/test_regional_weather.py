@@ -71,7 +71,8 @@ class RegionalWeatherTests(unittest.TestCase):
         def worker(path, inspect):
             calls.append(inspect)
             return METADATA if inspect else {**METADATA, 'raw': RAW, 'region': region_payload()}
-        manager = ForecastJobs(worker=worker, clock=lambda: NOW, corrector=lambda path: model(), preparer=lambda path: path)
+        manager = ForecastJobs(worker=worker, clock=lambda: NOW, corrector=lambda path: model(), preparer=lambda path: path,
+                               height_provider=lambda path: (_ for _ in ()).throw(WeatherUnavailable('Mock: no height data')))
         self.addCleanup(manager.executor.shutdown, wait=True)
         with patch('live_weather.Path.is_file', return_value=True):
             result = wait_for_job(manager, manager.start())

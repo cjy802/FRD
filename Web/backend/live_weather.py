@@ -18,6 +18,7 @@ from weather_service import (
 )
 from regional_weather import RegionalWeather
 from route_weather import align_route
+from height_weather import HeightWeather
 
 
 def validate_metadata(metadata: dict, now: datetime) -> tuple[datetime, datetime]:
@@ -73,17 +74,35 @@ def prepare_latest_input(output: Path) -> Path:
     return Path(payload["input_path"])
 
 
+def prepare_height_weather(input_path: Path) -> dict:
+    python = configured_path('FUXI_PYTHON', Path('D:/anaconda/envs/fuxi_onnx/python.exe'))
+    completed = subprocess.run(
+        [str(python), '-B', str(PROJECT_ROOT / 'app/prepare_gfs_height.py'), '--input', str(input_path)],
+        capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=600,
+        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+    )
+    try: payload = json.loads(completed.stdout)
+    except ValueError as error: raise WeatherUnavailable('近地高度天气进程未返回有效数据。') from error
+    if completed.returncode or 'error' in payload:
+        raise WeatherUnavailable(f"高度天气获取失败：{payload.get('error', 'NOAA 辅助资料不可用')}")
+    return payload
+
+
 class ForecastJobs:
-    def __init__(self, worker=call_worker, clock=None, corrector=load_corrector, preparer=prepare_latest_input):
+    def __init__(self, worker=call_worker, clock=None, corrector=load_corrector, preparer=prepare_latest_input,
+                 height_provider=prepare_height_weather):
         self.worker = worker
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.corrector = corrector
         self.preparer = preparer
+        self.height_provider = height_provider
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fuxi-live")
         self.lock = threading.Lock()
         self.jobs: dict[str, dict] = {}
         self.grids: dict[str, RegionalWeather] = {}
         self.models: dict[str, dict] = {}
+        self.height_grids: dict[str, HeightWeather] = {}
+        self.height_warnings: dict[str, str] = {}
         self.active: str | None = None
 
     def get(self, job_id: str) -> dict:
@@ -119,7 +138,10 @@ class ForecastJobs:
 
     def route(self, job_id: str, coordinates, departure_time_utc: str, speed_kmh: float, altitude_m: float):
         grid, model, generated = self.regional_job(job_id)
-        result = align_route(grid, coordinates, departure_time_utc, speed_kmh, altitude_m, model, now=self.clock())
+        with self.lock:
+            height_grid, warning = self.height_grids.get(job_id), self.height_warnings.get(job_id)
+        result = align_route(grid, coordinates, departure_time_utc, speed_kmh, altitude_m, model, now=self.clock(),
+                             height_grid=height_grid, height_warning=warning)
         return {**result, 'job_id': job_id, 'generated_at_utc': generated}
 
     def start(self) -> dict:
@@ -136,6 +158,8 @@ class ForecastJobs:
                 self.jobs.pop(old_id, None)
                 self.grids.pop(old_id, None)
                 self.models.pop(old_id, None)
+                self.height_grids.pop(old_id, None)
+                self.height_warnings.pop(old_id, None)
         self.executor.submit(self.run, job_id)
         return self.get(job_id)
 
@@ -169,6 +193,18 @@ class ForecastJobs:
                     self.grids[job_id] = grid
                     self.models[job_id] = model
                 forecast["regional_coverage"] = grid.coverage()
+                self.update(job_id, message='正在获取与区域时次匹配的高度风、地面阵风和能见度。')
+                try:
+                    height_grid = HeightWeather(self.height_provider(input_path), predicted['init_time_utc'])
+                    with self.lock: self.height_grids[job_id] = height_grid
+                    forecast['height_coverage'] = {**height_grid.coverage(), 'heights_m': list((10, 20, 30, 40, 50, 80, 100)), 'height_reference': 'AGL'}
+                    forecast['height_status'] = 'available'
+                except Exception as error:
+                    # Keep genuine FuXi surface forecasts usable; never replace
+                    # missing altitude winds with the 10 m surface prediction.
+                    warning = str(error)
+                    with self.lock: self.height_warnings[job_id] = warning
+                    forecast.update({'height_status': 'unavailable', 'height_warning': warning})
             self.update(job_id, status="succeeded", message="未来天气预报已生成。", forecast=forecast)
         except (WeatherUnavailable, FileNotFoundError) as error:
             self.update(job_id, status="blocked", message=str(error), forecast=None)
