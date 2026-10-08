@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 const props = defineProps<{ altitudeM: number; start: { latitude: number; longitude: number }; end: { latitude: number; longitude: number } }>()
-const emit = defineEmits<{ jobReady: [jobId: string | null] }>()
+const emit = defineEmits<{ jobReady: [jobId: string | null]; stateChanged: [state: { status: string; message: string }] }>()
 type Field = 't2m_K' | 'u10_m_s' | 'v10_m_s' | 'msl_Pa' | 'tp_6h_mm'
 type Forecast = {
   init_time_utc: string; valid_time_utc: string; generated_at_utc: string
@@ -90,6 +90,7 @@ async function readJob(response: Response): Promise<Job> {
 function finishError(controller: AbortController, cause: unknown) {
   if (controller.signal.aborted || controller !== activeController) return
   error.value = cause instanceof Error ? cause.message : '天气预测失败。'
+  emit('stateChanged', { status: 'failed', message: error.value })
   loading.value = false
   activeController = null
 }
@@ -97,6 +98,7 @@ function applyJob(job: Job, controller: AbortController, attempts: number) {
   if (controller.signal.aborted || controller !== activeController) return
   jobStatus.value = job.status
   message.value = job.message
+  emit('stateChanged', { status: job.status, message: job.message })
   if (job.status === 'succeeded') {
     if (!job.forecast || job.forecast.historical || new Date(job.forecast.valid_time_utc).getTime() <= Date.now()) {
       throw new Error('预报时刻已过期或接口返回历史数据，需要最新起报场。')
@@ -139,6 +141,7 @@ async function predictWeather() {
   forecast.value = null
   jobStatus.value = 'queued'
   message.value = '正在发起未来天气预测…'
+  emit('stateChanged', { status: 'queued', message: message.value })
   try {
     const job = await readJob(await fetch('/api/weather/predict', {
       method: 'POST', signal: controller.signal, cache: 'no-store',
@@ -157,12 +160,12 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="status-block weather-risk-panel" aria-label="气象风险">
-    <div class="status-title"><span>气象风险</span><b :class="forecast ? `risk-${forecast.point_risk.level}` : 'pending'">{{ forecast?.point_risk.label || (loading ? '等待预测' : '待评估') }}</b></div>
+  <div class="status-block weather-risk-panel" aria-label="地面风雨提示">
+    <div class="status-title"><span>地面风雨提示</span><b :class="forecast ? `risk-${forecast.point_risk.level}` : 'pending'">{{ forecast?.point_risk.label || (loading ? '等待预测' : '待评估') }}</b></div>
     <template v-if="forecast">
       <p v-if="forecast.point_risk.triggers.length === 0">预报地面风雨未触发演示阈值。</p>
       <ul v-else class="weather-triggers"><li v-for="trigger in forecast.point_risk.triggers" :key="trigger.field">{{ trigger.label }}：{{ trigger.value.toFixed(2) }} {{ trigger.unit }}（≥ {{ trigger.threshold }}）</li></ul>
-      <p class="weather-scope">这里是起终点中点的地面风雨提示；沿线时刻匹配见下方，飞行高度与机型限制仍待接入。</p>
+      <p class="weather-scope">这里仅是起终点中点的地面风雨提示；任务时刻、高度风和方向分量见沿线初筛。</p>
       <small>任务高度 {{ altitudeM }} m；当前风预报为地面以上 10 m。</small>
       <details class="weather-rule-details"><summary>查看单点提示规则</summary><p>风速 ≥ {{ forecast.point_risk.rules.wind_attention_m_s }} / {{ forecast.point_risk.rules.wind_elevated_m_s }} m/s，6 小时降水 ≥ {{ forecast.point_risk.rules.rain_attention_6h_mm }} / {{ forecast.point_risk.rules.rain_elevated_6h_mm }} mm，分别触发关注 / 较强提示。</p><small>{{ forecast.point_risk.message }}</small></details>
     </template>

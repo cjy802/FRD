@@ -23,4 +23,6 @@ export type RouteAssessment = {
   missing: { index: number; reason: string }[]; height_missing: { index: number; reason: string }[]
   coverage: { surface_space_time: boolean; flight_height: boolean }
   weather_risk: WeatherRisk
+  decision: { status: string; label: string; message: string
+    checks: { key: string; label: string; state: string; detail: string }[] }
 }

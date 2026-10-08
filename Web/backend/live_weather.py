@@ -20,6 +20,7 @@ from regional_weather import RegionalWeather
 from route_weather import align_route
 from height_weather import HeightWeather
 from weather_risk import screen_route
+from weather_decision import build_decision
 
 
 def validate_metadata(metadata: dict, now: datetime) -> tuple[datetime, datetime]:
@@ -143,8 +144,10 @@ class ForecastJobs:
             height_grid, warning = self.height_grids.get(job_id), self.height_warnings.get(job_id)
         result = align_route(grid, coordinates, departure_time_utc, speed_kmh, altitude_m, model, now=self.clock(),
                              height_grid=height_grid, height_warning=warning)
-        return {**result, 'weather_risk': screen_route(result, coordinates, profile),
-                'job_id': job_id, 'generated_at_utc': generated}
+        result.update({'weather_risk': screen_route(result, coordinates, profile),
+                       'job_id': job_id, 'generated_at_utc': generated})
+        result['decision'] = build_decision(result)
+        return result
 
     def start(self) -> dict:
         with self.lock:

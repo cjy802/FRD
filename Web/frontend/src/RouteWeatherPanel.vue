@@ -7,6 +7,7 @@ const props = defineProps<{
   departureBeijing: string; speedKmh: number; altitudeM: number
   limits?: WeatherLimits | null
 }>()
+const emit = defineEmits<{ assessed: [result: RouteAssessment | null]; phase: [state: { pending: boolean; error: string }] }>()
 const alignment = ref<RouteAssessment | null>(null)
 const pending = ref(false)
 const error = ref('')
@@ -21,6 +22,7 @@ async function requestAlignment() {
   const current = new AbortController()
   controller = current
   pending.value = true
+  emit('phase', { pending: true, error: '' })
   try {
     const departure = new Date(`${props.departureBeijing}:00+08:00`)
     if (Number.isNaN(departure.getTime())) throw new Error('请填写有效的北京时间出发时刻。')
@@ -32,10 +34,11 @@ async function requestAlignment() {
     if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : '航线天气时间匹配失败，请检查任务参数。')
     if (current.signal.aborted || current !== controller) return
     alignment.value = payload
+    emit('assessed', payload)
   } catch (cause) {
     if (!current.signal.aborted && current === controller) error.value = cause instanceof Error ? cause.message : '航线天气时间匹配失败。'
   } finally {
-    if (current === controller) { pending.value = false; controller = null }
+    if (current === controller) { pending.value = false; controller = null; emit('phase', { pending: false, error: error.value }) }
   }
 }
 watch(() => [props.jobId, props.coordinates, props.departureBeijing, props.speedKmh, props.altitudeM, props.limits], () => {
@@ -43,8 +46,10 @@ watch(() => [props.jobId, props.coordinates, props.departureBeijing, props.speed
   controller = null
   if (timer) clearTimeout(timer)
   alignment.value = null
+  emit('assessed', null)
   pending.value = false
   error.value = ''
+  emit('phase', { pending: false, error: '' })
   if (props.jobId && props.coordinates) timer = setTimeout(() => { void requestAlignment() }, 250)
 }, { immediate: true, deep: true })
 onBeforeUnmount(() => { controller?.abort(); if (timer) clearTimeout(timer) })

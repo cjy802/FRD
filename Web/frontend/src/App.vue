@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import WeatherPanels from './WeatherPanels.vue'
 import RouteWeatherPanel from './RouteWeatherPanel.vue'
+import type { RouteAssessment, WeatherLimits } from './weatherTypes'
 
 type Point = { latitude: number; longitude: number }
 type Preview = {
@@ -37,6 +38,13 @@ const form = reactive({
 const preview = ref<Preview | null>(null)
 const previewKey = ref('')
 const weatherJobId = ref<string | null>(null)
+const weatherState = ref({ status: 'idle', message: '等待天气预测。' })
+const routeAssessment = ref<RouteAssessment | null>(null)
+const routePhase = ref({ pending: false, error: '' })
+const customLimitsEnabled = ref(false)
+const customLimits = reactive<WeatherLimits>({ name: '自定义阈值', max_wind_m_s: 12, max_crosswind_m_s: 8,
+  max_headwind_m_s: 12, max_gust_m_s: 15, max_rain_6h_mm: 5, min_visibility_m: 3000 })
+const activeLimits = computed(() => customLimitsEnabled.value ? customLimits : null)
 const departureBeijing = ref(new Date(Date.now() + 30 * 60 * 1000 + 8 * 3600 * 1000).toISOString().slice(0, 16))
 const loading = ref(false)
 const checkingPoint = ref(false)
@@ -58,6 +66,22 @@ const elapsed = computed(() => preview.value && form.speed_kmh > 0 ? `${(preview
 const distance = computed(() => preview.value ? `${preview.value.distance_km.toFixed(2)} km` : '待计算')
 const routeKey = computed(() => JSON.stringify([form.start, form.end, roadSource.value, form.clearance_m]))
 const weatherCoordinates = computed(() => preview.value && previewKey.value === routeKey.value ? preview.value.geometry.coordinates : null)
+const decisionLabel = computed(() => {
+  if (!weatherCoordinates.value) return '请先计算与当前起终点一致的道路路线'
+  if (routeAssessment.value) return routeAssessment.value.decision.label
+  if (routePhase.value.error) return `沿线评估未完成：${routePhase.value.error}`
+  if (routePhase.value.pending) return '正在计算沿线气象初筛'
+  if (['blocked', 'failed'].includes(weatherState.value.status)) return `天气预测不可用：${weatherState.value.message}`
+  if (!weatherJobId.value) return '天气资料处理中，暂不进行放飞判定'
+  return '等待沿线天气匹配，暂不进行放飞判定'
+})
+const alignmentProgress = computed(() => routeAssessment.value?.coverage.flight_height ? '沿线位置、时间与高度风已匹配'
+  : routeAssessment.value?.coverage.surface_space_time ? '地面时空已匹配，高度资料不足' : '等待路线与天气资料匹配')
+
+watch(routeKey, () => {
+  if (preview.value && previewKey.value !== routeKey.value) { preview.value = null; routeAssessment.value = null; drawCesiumRoute(false) }
+})
+watch(routeAssessment, () => { drawCesiumRoute(false) })
 
 function formatted(point: Point) {
   return `${point.latitude.toFixed(4)}°N, ${point.longitude.toFixed(4)}°E`
@@ -207,6 +231,14 @@ function drawCesiumRoute(flyToRoute = true) {
       clampToGround: true,
     },
   })
+  if (routeAssessment.value && weatherCoordinates.value) {
+    const colors: Record<string, string> = { no_trigger: '#0f6cbd', attention: '#b66a00', elevated: '#b42318', incomplete: '#6e7781' }
+    for (const segment of routeAssessment.value.weather_risk.segments) {
+      viewer.entities.add({ name: `气象初筛第 ${segment.index + 1} 段 · ${segment.level}（非街道级预报）`,
+        polyline: { positions: Cesium.Cartesian3.fromDegreesArray([...segment.start, ...segment.end]), width: 5,
+          material: Cesium.Color.fromCssColorString(colors[segment.level] || '#6e7781'), clampToGround: true } })
+    }
+  }
   const centerLongitude = (start.longitude + end.longitude) / 2
   const centerLatitude = (start.latitude + end.latitude) / 2
   const cameraHeight = Math.max(620, preview.value.straight_distance_km * 2600)
@@ -292,9 +324,11 @@ onBeforeUnmount(() => {
           <div class="coordinate-row"><label>纬度<input v-model.number="form.end.latitude" type="number" step="0.00001" min="-90" max="90" required :disabled="loading" /></label><label>经度<input v-model.number="form.end.longitude" type="number" step="0.00001" min="-180" max="180" required :disabled="loading" /></label></div>
 
           <div class="form-line"></div>
-          <div class="coordinate-row"><label>飞行高度 · 米<input v-model.number="form.altitude_m" type="number" min="0" max="1000" required :disabled="loading" /></label><label>巡航速度 · km/h<input v-model.number="form.speed_kmh" type="number" min="1" max="200" step="1" required :disabled="loading" /></label></div>
+          <div class="coordinate-row"><label>离地高度 AGL · 米<input v-model.number="form.altitude_m" type="number" min="0" max="1000" required :disabled="loading" /></label><label>巡航速度 · km/h<input v-model.number="form.speed_kmh" type="number" min="1" max="200" step="0.5" required :disabled="loading" /></label></div>
+          <small class="form-scope-note">目前高度风覆盖 10–100 米；范围外会标记缺测。</small>
           <label class="departure-field">出发时刻 · 北京时间<input v-model="departureBeijing" type="datetime-local" required /><small>沿线 ETA 按填写速度估算，不含风对地速的影响。</small></label>
           <div class="clearance-row"><label>建筑缓冲 · 米（演示）<input v-model.number="form.clearance_m" type="number" min="0" max="20" step="0.5" required :disabled="loading || roadSource === 'online'" /></label><span>{{ roadSource === 'local' ? '用于排除靠近建筑的道路段' : '在线机动车路线不使用此参数' }}</span></div>
+          <details class="limits-settings"><summary>天气初筛阈值</summary><label class="limits-toggle"><input v-model="customLimitsEnabled" type="checkbox" /> 填写自定义限值（需核验机型手册）</label><p>关闭时使用演示规则。填写后也不代表机型或放飞条件已验证。</p><template v-if="customLimitsEnabled"><label>限值名称<input v-model="customLimits.name" maxlength="80" /></label><div class="coordinate-row"><label>最大高度风 · m/s<input v-model.number="customLimits.max_wind_m_s" type="number" min="0.1" max="200" step="0.1" required /></label><label>最大侧风 · m/s<input v-model.number="customLimits.max_crosswind_m_s" type="number" min="0.1" max="200" step="0.1" required /></label></div><div class="coordinate-row"><label>最大逆风 · m/s<input v-model.number="customLimits.max_headwind_m_s" type="number" min="0.1" max="200" step="0.1" required /></label><label>最大地面阵风 · m/s<input v-model.number="customLimits.max_gust_m_s" type="number" min="0.1" max="200" step="0.1" required /></label></div><div class="coordinate-row"><label>最大雨量 · mm/6h<input v-model.number="customLimits.max_rain_6h_mm" type="number" min="0.1" max="500" step="0.1" required /></label><label>最低地面能见度 · m<input v-model.number="customLimits.min_visibility_m" type="number" min="1" max="100000" step="1" required /></label></div></template></details>
           <fluent-button class="primary-button" appearance="primary" type="submit" :disabled="loading">{{ loading ? '计算中…' : '计算道路路线' }}</fluent-button>
           <p v-if="error" class="form-error" role="alert">{{ error }}</p>
         </form>
@@ -311,6 +345,7 @@ onBeforeUnmount(() => {
         <div v-if="error" class="map-alert" role="alert">{{ error }}</div>
         <div v-else-if="pointHint" class="map-point-hint" role="status">{{ pointHint }}</div>
         <div class="map-bottom"><div class="map-switch"><button :class="{ active: mapMode === 'start' }" :disabled="checkingPoint" @click="mapMode = 'start'">设置起点 A</button><button :class="{ active: mapMode === 'end' }" :disabled="checkingPoint" @click="mapMode = 'end'">设置终点 B</button></div><span class="map-radius">接路判定 {{ landingSearchRadiusM }} m</span><span class="map-scale">任务高度 {{ form.altitude_m }} m</span></div>
+        <div v-if="routeAssessment" class="weather-map-legend">沿线初筛：蓝 · 未触发，橙 · 关注，红 · 较强，灰 · 缺测<br />基于 0.25° 场，不是街道级风险，也不代表飞行许可。</div>
         <div v-if="loading" class="map-loading-overlay">
           <div class="map-loading-card">
             <button type="button" class="map-loading-cancel" aria-label="取消路线计算" title="取消" @click="cancelCalculation">×</button>
@@ -325,10 +360,10 @@ onBeforeUnmount(() => {
         <div class="insights-header"><span class="eyebrow">任务状态</span><h2>任务概览</h2></div>
         <div class="metric-pair"><div><span>道路路线</span><strong>{{ distance }}</strong></div><div><span>理论航时</span><strong>{{ elapsed }}</strong></div></div>
         <div v-if="preview" class="road-summary"><strong>{{ preview.road_names.join(' → ') || '未命名道路' }}</strong><span>直线 {{ preview.straight_distance_km.toFixed(2) }} km · {{ preview.building_clearance_m === null ? '在线模式未检查建筑缓冲' : `建筑缓冲 ${preview.building_clearance_m} m` }}</span><small>A/B 到道路分别约 {{ preview.start_snap_m }} m / {{ preview.end_snap_m }} m</small><small>{{ preview.data_source }}</small><small>路线数据 © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap contributors</a></small></div>
-        <WeatherPanels :altitude-m="form.altitude_m" :start="form.start" :end="form.end" @job-ready="weatherJobId = $event" />
-        <RouteWeatherPanel :job-id="weatherJobId" :coordinates="weatherCoordinates" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" />
-        <div class="pipeline"><h3>接入进度</h3><div><span>01</span><p>网格与时间已接入，飞行高度待匹配</p></div><div><span>02</span><p>沿线风险评分与预警 · 待接入</p></div><div><span>03</span><p>天气绕行与飞行窗口 · 待接入</p></div></div>
-        <div class="decision">当前决策 <strong>数据不足，暂不可判定能否飞行</strong></div>
+        <WeatherPanels :altitude-m="form.altitude_m" :start="form.start" :end="form.end" @job-ready="weatherJobId = $event" @state-changed="weatherState = $event" />
+        <RouteWeatherPanel :job-id="weatherJobId" :coordinates="weatherCoordinates" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" :limits="activeLimits" @assessed="routeAssessment = $event" @phase="routePhase = $event" />
+        <div class="pipeline"><h3>接入进度</h3><div><span>01</span><p>{{ alignmentProgress }}</p></div><div><span>02</span><p>{{ routeAssessment?.weather_risk.label || '沿线初筛等待资料' }}</p></div><div><span>03</span><p>天气绕行与飞行窗口 · 待接入</p></div></div>
+        <div class="decision" aria-live="polite">当前决策 <strong>{{ decisionLabel }}</strong><small>当前系统不提供放飞许可。</small><details v-if="routeAssessment"><summary>查看分项核验状态</summary><div v-for="check in routeAssessment.decision.checks" :key="check.key" class="decision-check"><b>{{ check.label }}</b><span :class="check.state === 'ready' ? 'check-ready' : 'check-pending'">{{ check.state === 'ready' ? '资料已就绪' : check.state === 'no_trigger' ? '未触发当前规则' : check.state === 'elevated' ? '较强提示' : check.state === 'attention' ? '关注' : '待补齐 / 未核验' }}</span><small>{{ check.detail }}</small></div></details></div>
       </aside>
     </main>
   </div>
