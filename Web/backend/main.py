@@ -50,11 +50,22 @@ class LandingCheckRequest(BaseModel):
     clearance_m: float = Field(default=2.0, ge=0, le=20)
 
 
+class WeatherLimits(BaseModel):
+    name: str = Field(default='自定义阈值', max_length=80)
+    max_wind_m_s: float = Field(gt=0, le=200, allow_inf_nan=False)
+    max_crosswind_m_s: float = Field(gt=0, le=200, allow_inf_nan=False)
+    max_headwind_m_s: float = Field(gt=0, le=200, allow_inf_nan=False)
+    max_gust_m_s: float = Field(gt=0, le=200, allow_inf_nan=False)
+    max_rain_6h_mm: float = Field(gt=0, le=500, allow_inf_nan=False)
+    min_visibility_m: float = Field(gt=0, le=100000, allow_inf_nan=False)
+
+
 class RouteWeatherRequest(BaseModel):
     coordinates: list[tuple[float, float]] = Field(min_length=2, max_length=10000)
     departure_time_utc: str
     speed_kmh: float = Field(default=45, gt=0, le=200, allow_inf_nan=False)
     altitude_m: float = Field(default=100, ge=0, le=1000, allow_inf_nan=False)
+    profile: WeatherLimits | None = None
 
 
 @lru_cache(maxsize=1)

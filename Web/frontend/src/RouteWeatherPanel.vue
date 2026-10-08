@@ -1,24 +1,13 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref, watch } from 'vue'
+import type { RouteAssessment, WeatherLimits } from './weatherTypes'
 
 const props = defineProps<{
   jobId: string | null; coordinates: number[][] | null
   departureBeijing: string; speedKmh: number; altitudeM: number
+  limits?: WeatherLimits | null
 }>()
-type Weather = {
-  values: { t2m_K: number; tp_6h_mm: number }
-  derived: { wind_speed_10m_m_s: number }
-  time_method: string; rain_interval: { start_utc: string; end_utc: string }
-}
-type Alignment = {
-  state: string; departure_time_utc: string; arrival_time_utc: string
-  sample_count: number; duration_seconds: number; message: string
-  samples: { index: number; coordinate: number[]; eta_utc: string; weather: Weather; height_weather: { wind_speed_m_s: number; height_method: string; gust_surface_m_s: number; visibility_surface_m: number } | null }[]
-  missing: { index: number; reason: string }[]
-  height_missing: { index: number; reason: string }[]
-  coverage: { surface_space_time: boolean; flight_height: boolean }
-}
-const alignment = ref<Alignment | null>(null)
+const alignment = ref<RouteAssessment | null>(null)
 const pending = ref(false)
 const error = ref('')
 let controller: AbortController | null = null
@@ -37,7 +26,7 @@ async function requestAlignment() {
     if (Number.isNaN(departure.getTime())) throw new Error('请填写有效的北京时间出发时刻。')
     const response = await fetch(`/api/weather/predictions/${encodeURIComponent(props.jobId)}/route`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: current.signal,
-      body: JSON.stringify({ coordinates: props.coordinates, departure_time_utc: departure.toISOString(), speed_kmh: props.speedKmh, altitude_m: props.altitudeM }),
+      body: JSON.stringify({ coordinates: props.coordinates, departure_time_utc: departure.toISOString(), speed_kmh: props.speedKmh, altitude_m: props.altitudeM, profile: props.limits ?? null }),
     })
     const payload = await response.json()
     if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : '航线天气时间匹配失败，请检查任务参数。')
@@ -49,7 +38,7 @@ async function requestAlignment() {
     if (current === controller) { pending.value = false; controller = null }
   }
 }
-watch(() => [props.jobId, props.coordinates, props.departureBeijing, props.speedKmh, props.altitudeM], () => {
+watch(() => [props.jobId, props.coordinates, props.departureBeijing, props.speedKmh, props.altitudeM, props.limits], () => {
   controller?.abort()
   controller = null
   if (timer) clearTimeout(timer)
@@ -62,6 +51,18 @@ onBeforeUnmount(() => { controller?.abort(); if (timer) clearTimeout(timer) })
 </script>
 
 <template>
+  <div class="status-block" aria-label="沿线气象初筛">
+    <div class="status-title"><span>沿线气象初筛</span><b :class="alignment ? `risk-${alignment.weather_risk.level}` : 'pending'">{{ alignment?.weather_risk.label || '待评估' }}</b></div>
+    <template v-if="alignment">
+      <p>高度风最高 {{ alignment.weather_risk.summary.max_wind_m_s?.toFixed(2) ?? '—' }} m/s · 侧风最高 {{ alignment.weather_risk.summary.max_crosswind_m_s?.toFixed(2) ?? '—' }} m/s</p>
+      <small>地面阵风最高 {{ alignment.weather_risk.summary.max_surface_gust_m_s?.toFixed(2) ?? '—' }} m/s · 地面能见度最低 {{ alignment.weather_risk.summary.min_surface_visibility_m?.toFixed(0) ?? '—' }} m</small>
+      <small>参考分 {{ alignment.weather_risk.score_0_100 === null ? '缺测，不评分' : `${alignment.weather_risk.score_0_100.toFixed(1)} / 100` }}；{{ alignment.weather_risk.rule_mode === 'demo' ? '演示规则，不是机型飞行限值' : '自定义阈值，仍需核验机型手册' }}。</small>
+      <ul v-if="alignment.weather_risk.alerts.length" class="weather-triggers"><li v-for="alert in alignment.weather_risk.alerts" :key="alert.field">第 {{ alert.point_index + 1 }} 个点 · {{ beijing(alert.eta_utc) }}<br />{{ alert.coordinate[1]?.toFixed(5) }}°N / {{ alert.coordinate[0]?.toFixed(5) }}°E：{{ alert.reason }}</li></ul>
+      <p v-else>{{ alignment.weather_risk.coverage_complete ? '所覆盖的风雨及地面能见度未触发当前规则。' : '天气未完整覆盖，不能以未触发提示作为初筛通过。' }}</p>
+      <details class="weather-rule-details"><summary>规则与未覆盖因素</summary><p>{{ alignment.weather_risk.score_definition }}</p><small>风 {{ alignment.weather_risk.limits.max_wind_m_s }}、侧风 {{ alignment.weather_risk.limits.max_crosswind_m_s }}、逆风 {{ alignment.weather_risk.limits.max_headwind_m_s }}、地面阵风 {{ alignment.weather_risk.limits.max_gust_m_s }} m/s；雨量 {{ alignment.weather_risk.limits.max_rain_6h_mm }} mm/6h；地面能见度 {{ alignment.weather_risk.limits.min_visibility_m }} m。最明显触发位置列在上方。</small><small v-for="limitation in alignment.weather_risk.limitations" :key="limitation">{{ limitation }}</small></details>
+    </template>
+    <p v-else>{{ pending ? '正在计算沿线高度风及风雨提示…' : error || '等待路线与天气资料就绪。' }}</p>
+  </div>
   <div class="status-block route-weather-panel" aria-label="沿线时间匹配">
     <div class="status-title"><span>沿线时空与高度</span><b :class="alignment?.coverage.flight_height ? 'risk-no_trigger' : 'pending'">{{ pending ? '匹配中' : alignment?.coverage.flight_height ? '高度风已匹配' : alignment?.coverage.surface_space_time ? '缺高度资料' : '待匹配' }}</b></div>
     <p v-if="error" role="alert">{{ error }}</p>
@@ -78,6 +79,7 @@ onBeforeUnmount(() => { controller?.abort(); if (timer) clearTimeout(timer) })
         </div>
       </details>
       <small>{{ alignment.message }}</small>
+      <small>{{ alignment.eta_warning }}</small>
       <small>0.25° 原生网格；累计降水不是分钟雨强。高度风来自 GFS，不套用地面订正；地面阵风/能见度不代表空中湍流或云中能见度。</small>
     </template>
   </div>
