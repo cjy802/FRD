@@ -30,12 +30,12 @@ def straight_distance_m(start_lat: float, start_lon: float, end_lat: float, end_
 
 
 @lru_cache(maxsize=128)
-def _fetch_route(url: str, ten_minute_bucket: int) -> dict:
+def _fetch_route(url: str, ten_minute_bucket: int, alternatives: bool = False) -> dict:
     del ten_minute_bucket  # Part of the cache key; refresh results after ten minutes.
     try:
         response = requests.get(
             url,
-            params={"overview": "full", "geometries": "geojson", "steps": "true"},
+            params={"overview": "full", "geometries": "geojson", "steps": "true", "alternatives": 'true' if alternatives else 'false'},
             headers={"User-Agent": "LowAltitudeRoutePrototype/0.2 (road reference comparison)"},
             timeout=(5, 15),
         )
@@ -64,8 +64,15 @@ def plan_online_route(
         raise RouteUnavailable("在线道路网络未找到可用路线，请调整 A/B 点位。")
 
     try:
-        route = payload["routes"][0]
-        waypoints = payload["waypoints"]
+        route, waypoints = payload['routes'][0], payload['waypoints']
+    except (KeyError, IndexError, TypeError) as error:
+        raise OnlineServiceUnavailable('在线道路服务返回了不完整的路线。') from error
+    return normalize_route(route, waypoints, start_lat, start_lon, end_lat, end_lon)
+
+
+def normalize_route(route, waypoints, start_lat, start_lon, end_lat, end_lon):
+    direct_distance = straight_distance_m(start_lat, start_lon, end_lat, end_lon)
+    try:
         start_snap = float(waypoints[0]["distance"])
         end_snap = float(waypoints[-1]["distance"])
         road_coordinates = route["geometry"]["coordinates"]
@@ -74,6 +81,12 @@ def plan_online_route(
         raise OnlineServiceUnavailable("在线道路服务返回了不完整的路线。") from error
     if not road_coordinates or not all(math.isfinite(value) for value in (start_snap, end_snap, road_distance)):
         raise OnlineServiceUnavailable("在线道路服务返回了无效的路线。")
+    if len(road_coordinates) < 2 or any(not isinstance(point, (list, tuple)) or len(point) != 2
+                                       or not all(isinstance(value, (int, float)) and math.isfinite(value) for value in point)
+                                       or not (-180 <= point[0] <= 180 and -90 <= point[1] <= 90) for point in road_coordinates):
+        raise OnlineServiceUnavailable('在线道路几何坐标无效。')
+    if min(start_snap, end_snap, road_distance) < 0:
+        raise OnlineServiceUnavailable('在线道路距离无效。')
     if start_snap > MAX_SNAP_M or end_snap > MAX_SNAP_M:
         distance = max(start_snap, end_snap)
         raise RouteUnavailable(f"端点距在线道路约 {distance:.1f} 米，超过 {MAX_SNAP_M:.0f} 米接入范围。")
@@ -99,3 +112,18 @@ def plan_online_route(
         "building_clearance_m": None,
         "data_source": "OSRM 在线路线（机动车道路，基于 OpenStreetMap）",
     }
+
+
+def plan_online_alternatives(start_lat, start_lon, end_lat, end_lon, clearance_m=2.):
+    del clearance_m
+    if straight_distance_m(start_lat, start_lon, end_lat, end_lon) > 10000:
+        raise RouteUnavailable('当前原型只支持两点相距 10 公里以内的道路规划。')
+    base_url = os.getenv('ONLINE_ROUTER_URL', 'https://router.project-osrm.org').rstrip('/')
+    coordinates = f'{start_lon:.7f},{start_lat:.7f};{end_lon:.7f},{end_lat:.7f}'
+    payload = _fetch_route(f'{base_url}/route/v1/driving/{coordinates}', int(time.time() // 600), True)
+    if payload.get('code') != 'Ok' or not payload.get('routes'):
+        raise RouteUnavailable('在线道路网络未找到可用路线。')
+    try:
+        return [normalize_route(route, payload['waypoints'], start_lat, start_lon, end_lat, end_lon) for route in payload['routes'][:3]]
+    except KeyError as error:
+        raise OnlineServiceUnavailable('在线道路服务缺少端点或道路几何。') from error

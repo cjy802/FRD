@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import os
+import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -16,10 +17,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from online_router import OnlineServiceUnavailable, plan_online_route
+from online_router import OnlineServiceUnavailable, plan_online_route, plan_online_alternatives
 from road_planner import CampusRoadNetwork, LOCAL_INDEX_FILE, LocalRoadStore, RouteUnavailable
 from weather_service import weather_store
 from live_weather import forecast_jobs
+from route_candidates import local_road_candidates
+from weather_routes import compare_road_weather
 
 
 app = FastAPI(title="低空飞行决策工作台", version="0.1.0")
@@ -65,6 +68,12 @@ class RouteWeatherRequest(BaseModel):
     departure_time_utc: str
     speed_kmh: float = Field(default=45, gt=0, le=200, allow_inf_nan=False)
     altitude_m: float = Field(default=100, ge=0, le=1000, allow_inf_nan=False)
+    profile: WeatherLimits | None = None
+
+
+class WeatherRouteComparisonRequest(RouteRequest):
+    weather_job_id: str
+    departure_time_utc: str
     profile: WeatherLimits | None = None
 
 
@@ -235,6 +244,10 @@ def plan_road_route(route: RouteRequest):
         raise HTTPException(status_code=503, detail=str(error)) from error
     except RouteUnavailable as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+    return route_response(route, result)
+
+
+def route_response(route, result):
     km = result["distance_m"] / 1000
     return {
         **result,
@@ -253,3 +266,31 @@ def plan_road_route(route: RouteRequest):
             ),
         },
     }
+
+
+@lru_cache(maxsize=32)
+def road_candidates_cached(source, start_lat, start_lon, end_lat, end_lon, clearance, data_epoch, bucket):
+    del data_epoch, bucket
+    if source == 'online': return plan_online_alternatives(start_lat, start_lon, end_lat, end_lon, clearance)
+    planner = local_road_store() if LOCAL_INDEX_FILE.is_file() else road_network()
+    return local_road_candidates(planner, start_lat, start_lon, end_lat, end_lon, clearance)
+
+
+@app.post('/api/routes/compare-weather')
+def compare_weather_routes(request: WeatherRouteComparisonRequest):
+    try:
+        grid, _, generated = forecast_jobs.regional_job(request.weather_job_id)
+        epoch = LOCAL_INDEX_FILE.stat().st_mtime_ns if LOCAL_INDEX_FILE.is_file() else 0
+        candidates = road_candidates_cached(request.road_source, request.start.latitude, request.start.longitude,
+                                            request.end.latitude, request.end.longitude, request.clearance_m, epoch, int(time.time() // 600))
+        result = compare_road_weather(candidates, grid, lambda coordinates: forecast_jobs.route(
+            request.weather_job_id, coordinates, request.departure_time_utc, request.speed_kmh, request.altitude_m,
+            request.profile.model_dump() if request.profile else None))
+        for candidate in result['candidates']: candidate['route'] = route_response(request, candidate['route'])
+        return {**result, 'job_id': request.weather_job_id, 'generated_at_utc': generated}
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail='天气任务不存在，请重新预测。') from error
+    except OnlineServiceUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error

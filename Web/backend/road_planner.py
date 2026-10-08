@@ -217,6 +217,7 @@ class CampusRoadNetwork:
         end_lat: float,
         end_lon: float,
         clearance_m: float = 2.0,
+        edge_penalty=None,
     ) -> dict:
         allowed, obstacles = self._allowed_segments(clearance_m)
         if not allowed:
@@ -234,8 +235,11 @@ class CampusRoadNetwork:
 
         def add_edge(a: str, b: str, road_name: str | None, metres: float | None = None) -> None:
             distance = length(positions[a], positions[b]) if metres is None else metres
-            graph.setdefault(a, []).append((b, distance, road_name))
-            graph.setdefault(b, []).append((a, distance, road_name))
+            multiplier = edge_penalty(self._to_lon_lat(*positions[a]), self._to_lon_lat(*positions[b])) if edge_penalty else 1.
+            if not math.isfinite(multiplier) or multiplier < 1:
+                raise RouteUnavailable('道路备选权重必须是大于等于 1 的有限值。')
+            graph.setdefault(a, []).append((b, distance * multiplier, road_name))
+            graph.setdefault(b, []).append((a, distance * multiplier, road_name))
 
         for segment in allowed:
             add_edge(segment.a, segment.b, segment.name)
@@ -417,7 +421,8 @@ class LocalRoadStore:
         )
 
     def plan(
-        self, start_lat: float, start_lon: float, end_lat: float, end_lon: float, clearance_m: float = 2.0
+        self, start_lat: float, start_lon: float, end_lat: float, end_lon: float, clearance_m: float = 2.0,
+        edge_penalty=None,
     ) -> dict:
         approximate_distance = math.hypot(
             (end_lat - start_lat) * METRES_PER_DEGREE_LAT,
@@ -443,7 +448,7 @@ class LocalRoadStore:
         for padding in (first_padding, max(2_500.0, first_padding * 2)):
             try:
                 network = self._network_for_area(start_lat, start_lon, end_lat, end_lon, padding)
-                return network.plan(start_lat, start_lon, end_lat, end_lon, clearance_m)
+                return network.plan(start_lat, start_lon, end_lat, end_lon, clearance_m, edge_penalty=edge_penalty)
             except NetworkUnavailable as error:
                 last_error = error
         raise last_error or RouteUnavailable("本地道路网络未找到路线。")

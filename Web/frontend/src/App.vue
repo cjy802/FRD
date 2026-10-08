@@ -3,22 +3,11 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import WeatherPanels from './WeatherPanels.vue'
 import RouteWeatherPanel from './RouteWeatherPanel.vue'
 import WeatherWindowsPanel from './WeatherWindowsPanel.vue'
+import RoadWeatherComparison from './RoadWeatherComparison.vue'
 import type { RouteAssessment, WeatherLimits } from './weatherTypes'
+import type { RoadPreview as Preview } from './routeTypes'
 
 type Point = { latitude: number; longitude: number }
-type Preview = {
-  geometry: { coordinates: number[][] }
-  distance_km: number
-  straight_distance_km: number
-  estimated_minutes: number
-  altitude_m: number
-  road_names: string[]
-  start_snap_m: number
-  end_snap_m: number
-  building_clearance_m: number | null
-  data_source: string
-  risk: { level: string; score: number | null; reason: string }
-}
 type LandingCheck = {
   state: 'mapped_building' | 'road_nearby' | 'no_road'
   search_radius_m: number
@@ -43,6 +32,7 @@ const weatherState = ref({ status: 'idle', message: '等待天气预测。' })
 const routeAssessment = ref<RouteAssessment | null>(null)
 const routePhase = ref({ pending: false, error: '' })
 const windowPhase = ref('waiting')
+const comparisonPhase = ref('waiting')
 const customLimitsEnabled = ref(false)
 const customLimits = reactive<WeatherLimits>({ name: '自定义阈值', max_wind_m_s: 12, max_crosswind_m_s: 8,
   max_headwind_m_s: 12, max_gust_m_s: 15, max_rain_6h_mm: 5, min_visibility_m: 3000 })
@@ -79,6 +69,15 @@ const decisionLabel = computed(() => {
 })
 const alignmentProgress = computed(() => routeAssessment.value?.coverage.flight_height ? '沿线位置、时间与高度风已匹配'
   : routeAssessment.value?.coverage.surface_space_time ? '地面时空已匹配，高度资料不足' : '等待路线与天气资料匹配')
+const planningProgress = computed(() => {
+  if (windowPhase.value === 'pending' || comparisonPhase.value === 'pending') return '正在比较候选时次与道路路线'
+  if (windowPhase.value === 'no_covered_candidate' || comparisonPhase.value === 'coverage_incomplete') return '候选天气覆盖不足，不给出可飞结论'
+  if (windowPhase.value === 'available' && comparisonPhase.value === 'no_resolvable_weather_difference') return '时次已比较；无可分辨的天气绕行收益'
+  if (windowPhase.value === 'available' && comparisonPhase.value === 'candidate_lower_screening') return '时次已比较；存在较低初筛分道路备选'
+  if (windowPhase.value === 'available' && ['no_alternative', 'no_material_improvement'].includes(comparisonPhase.value)) return '时次与道路候选已比较；保留道路基线'
+  if (windowPhase.value === 'failed' || comparisonPhase.value === 'failed') return '部分比较未完成，请查看接口提示'
+  return '候选时次与路线等待当前资料'
+})
 
 watch(routeKey, () => {
   if (preview.value && previewKey.value !== routeKey.value) { preview.value = null; routeAssessment.value = null; drawCesiumRoute(false) }
@@ -91,6 +90,14 @@ function formatted(point: Point) {
 
 function chooseDeparture(time: string) {
   departureBeijing.value = new Date(new Date(time).getTime() + 8 * 3600 * 1000).toISOString().slice(0, 16)
+}
+
+function chooseRoad(route: Preview) {
+  cancelCalculation()
+  preview.value = route
+  previewKey.value = routeKey.value
+  routeAssessment.value = null
+  drawCesiumRoute()
 }
 
 async function calculate() {
@@ -369,7 +376,8 @@ onBeforeUnmount(() => {
         <WeatherPanels :altitude-m="form.altitude_m" :start="form.start" :end="form.end" @job-ready="weatherJobId = $event" @state-changed="weatherState = $event" />
         <RouteWeatherPanel :job-id="weatherJobId" :coordinates="weatherCoordinates" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" :limits="activeLimits" @assessed="routeAssessment = $event" @phase="routePhase = $event" />
         <WeatherWindowsPanel :job-id="weatherJobId" :coordinates="weatherCoordinates" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" :limits="activeLimits" @choose="chooseDeparture" @state="windowPhase = $event" />
-        <div class="pipeline"><h3>接入进度</h3><div><span>01</span><p>{{ alignmentProgress }}</p></div><div><span>02</span><p>{{ routeAssessment?.weather_risk.label || '沿线初筛等待资料' }}</p></div><div><span>03</span><p>{{ windowPhase === 'available' ? '候选时次已比较；路线比较待接入' : windowPhase === 'no_covered_candidate' ? '没有完整覆盖的候选时次' : '候选时次等待资料；路线比较待接入' }}</p></div></div>
+        <RoadWeatherComparison :job-id="weatherJobId" :can-compare="!!weatherCoordinates" :current-coordinates="weatherCoordinates" :start="form.start" :end="form.end" :road-source="roadSource" :clearance-m="form.clearance_m" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" :limits="activeLimits" @choose="chooseRoad" @state="comparisonPhase = $event" />
+        <div class="pipeline"><h3>接入进度</h3><div><span>01</span><p>{{ alignmentProgress }}</p></div><div><span>02</span><p>{{ routeAssessment?.weather_risk.label || '沿线初筛等待资料' }}</p></div><div><span>03</span><p>{{ planningProgress }}</p></div></div>
         <div class="decision" aria-live="polite">当前决策 <strong>{{ decisionLabel }}</strong><small>当前系统不提供放飞许可。</small><details v-if="routeAssessment"><summary>查看分项核验状态</summary><div v-for="check in routeAssessment.decision.checks" :key="check.key" class="decision-check"><b>{{ check.label }}</b><span :class="check.state === 'ready' ? 'check-ready' : 'check-pending'">{{ check.state === 'ready' ? '资料已就绪' : check.state === 'no_trigger' ? '未触发当前规则' : check.state === 'elevated' ? '较强提示' : check.state === 'attention' ? '关注' : '待补齐 / 未核验' }}</span><small>{{ check.detail }}</small></div></details></div>
       </aside>
     </main>
