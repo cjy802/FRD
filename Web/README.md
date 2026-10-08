@@ -10,7 +10,7 @@
 cd backend
 python -m pip install -r requirements.txt
 python scripts/index_pbf.py --source ..\..\jiangsu-260916.osm.pbf
-python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
+python -m uvicorn main:app --reload --host 127.0.0.1 --port 8011
 ```
 
 前端（Node 20.19+）：
@@ -20,6 +20,11 @@ cd frontend
 npm install
 npm run dev
 ```
+
+前端默认将 `/api` 请求代理到 `http://127.0.0.1:8011`，与上面的后端端口一致。
+使用其他端口时，在 `frontend/.env.local` 中设置
+`VITE_API_TARGET=http://127.0.0.1:端口` 后重启前端；终端中设置的同名环境变量优先。
+开发服务器和 `npm run preview` 使用相同的代理目标。
 
 百度地图 JSAPI Three 的 AK 在 `frontend/.env.local` 配置，空白模板见
 `frontend/.env.example`。依赖和静态资源复制已配置；配置或修改 AK 后重启前端，
