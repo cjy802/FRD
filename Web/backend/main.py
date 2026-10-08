@@ -131,6 +131,16 @@ def weather_prediction_job(job_id: str):
         raise HTTPException(status_code=404, detail="天气预测任务不存在，请重新预测。") from error
 
 
+@app.get("/api/weather/predictions/{job_id}/sample")
+def sample_regional_weather(job_id: str, latitude: float, longitude: float):
+    try:
+        return forecast_jobs.sample(job_id, latitude, longitude)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="天气预测任务不存在，请重新预测。") from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
 @app.post("/api/landing/check")
 def check_landing_point(request: LandingCheckRequest):
     try:

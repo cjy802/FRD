@@ -16,6 +16,7 @@ from weather_service import (
     DEFAULT_MODEL, PROJECT_ROOT, WeatherUnavailable, assemble_forecast,
     configured_path, iso_utc, load_corrector, utc_timestamp,
 )
+from regional_weather import RegionalWeather
 
 
 def validate_metadata(metadata: dict, now: datetime) -> tuple[datetime, datetime]:
@@ -80,6 +81,8 @@ class ForecastJobs:
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fuxi-live")
         self.lock = threading.Lock()
         self.jobs: dict[str, dict] = {}
+        self.grids: dict[str, RegionalWeather] = {}
+        self.models: dict[str, dict] = {}
         self.active: str | None = None
 
     def get(self, job_id: str) -> dict:
@@ -95,6 +98,20 @@ class ForecastJobs:
                 if self.active == job_id:
                     self.active = None
 
+    def sample(self, job_id: str, latitude: float, longitude: float) -> dict:
+        with self.lock:
+            if job_id not in self.jobs:
+                raise KeyError(job_id)
+            if self.jobs[job_id]["status"] != "succeeded" or job_id not in self.grids:
+                raise WeatherUnavailable("区域天气尚未就绪，请等待预测完成。")
+            grid, model = self.grids[job_id], self.models[job_id]
+            generated = self.jobs[job_id]["forecast"]["generated_at_utc"]
+        result = grid.sample(latitude, longitude, model)
+        if utc_timestamp(result["valid_time_utc"]) <= self.clock():
+            raise WeatherUnavailable("区域预报已过期，请重新预测。")
+        result["generated_at_utc"] = generated
+        return result
+
     def start(self) -> dict:
         with self.lock:
             if self.active:
@@ -105,8 +122,10 @@ class ForecastJobs:
                 "requested_at_utc": iso_utc(self.clock()), "forecast": None,
             }
             self.active = job_id
-            for old_id in list(self.jobs)[:-64]:
+            for old_id in list(self.jobs)[:-8]:
                 self.jobs.pop(old_id, None)
+                self.grids.pop(old_id, None)
+                self.models.pop(old_id, None)
         self.executor.submit(self.run, job_id)
         return self.get(job_id)
 
@@ -134,6 +153,12 @@ class ForecastJobs:
             forecast = assemble_forecast(row, model, historical=False)
             forecast["input_source"] = predicted.get("input_source", "Configured weather initial field")
             forecast["generated_at_utc"] = iso_utc(self.clock())
+            if "region" in predicted:
+                grid = RegionalWeather(predicted["region"], predicted["init_time_utc"], forecast["input_source"])
+                with self.lock:
+                    self.grids[job_id] = grid
+                    self.models[job_id] = model
+                forecast["regional_coverage"] = grid.coverage()
             self.update(job_id, status="succeeded", message="未来天气预报已生成。", forecast=forecast)
         except (WeatherUnavailable, FileNotFoundError) as error:
             self.update(job_id, status="blocked", message=str(error), forecast=None)

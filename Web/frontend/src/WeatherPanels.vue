@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-defineProps<{ altitudeM: number }>()
+const props = defineProps<{ altitudeM: number; start: { latitude: number; longitude: number }; end: { latitude: number; longitude: number } }>()
 type Field = 't2m_K' | 'u10_m_s' | 'v10_m_s' | 'msl_Pa' | 'tp_6h_mm'
 type Forecast = {
   init_time_utc: string; valid_time_utc: string; generated_at_utc: string
   lead_hours: number; historical: boolean
   input_source?: string
+  native_resolution_deg?: number; model_warning?: string
   point: { latitude_deg: number; longitude_deg: number }
   values: Record<Field, number>
   derived: { wind_speed_10m_m_s: number; wind_direction_from_deg: number | null }
@@ -26,7 +27,10 @@ const loading = ref(false)
 const message = ref('进入页面后自动生成未来天气预报。')
 const error = ref('')
 const jobStatus = ref<Job['status'] | null>(null)
+const completedJob = ref('')
+const sampling = ref(false)
 let activeController: AbortController | null = null
+let sampleController: AbortController | null = null
 let pollTimer: ReturnType<typeof setTimeout> | null = null
 const metrics: { field: Field; label: string }[] = [
   { field: 't2m_K', label: '温度 · °C' },
@@ -36,6 +40,34 @@ const metrics: { field: Field; label: string }[] = [
   { field: 'tp_6h_mm', label: '6 小时降水 · mm' },
 ]
 const weatherLabel = computed(() => loading.value ? '预测中' : forecast.value ? '+6h 预报' : '等待最新起报场')
+const routePoint = computed(() => ({
+  latitude: (props.start.latitude + props.end.latitude) / 2,
+  longitude: (props.start.longitude + props.end.longitude) / 2,
+}))
+
+async function sampleRouteWeather() {
+  if (!completedJob.value || loading.value) return
+  sampleController?.abort()
+  const controller = new AbortController()
+  sampleController = controller
+  sampling.value = true
+  forecast.value = null
+  error.value = ''
+  try {
+    const query = new URLSearchParams({ latitude: String(routePoint.value.latitude), longitude: String(routePoint.value.longitude) })
+    const response = await fetch(`/api/weather/predictions/${encodeURIComponent(completedJob.value)}/sample?${query}`, {
+      signal: controller.signal, cache: 'no-store',
+    })
+    const payload = await response.json()
+    if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : '区域天气查询失败。')
+    if (controller.signal.aborted || controller !== sampleController) return
+    forecast.value = payload
+  } catch (cause) {
+    if (!controller.signal.aborted && controller === sampleController) error.value = cause instanceof Error ? cause.message : '区域天气查询失败。'
+  } finally {
+    if (controller === sampleController) { sampling.value = false; sampleController = null }
+  }
+}
 
 function localTime(time: string) {
   return new Date(time).toLocaleString('zh-CN', {
@@ -68,9 +100,10 @@ function applyJob(job: Job, controller: AbortController, attempts: number) {
     if (!job.forecast || job.forecast.historical || new Date(job.forecast.valid_time_utc).getTime() <= Date.now()) {
       throw new Error('预报时刻已过期或接口返回历史数据，需要最新起报场。')
     }
-    forecast.value = job.forecast
     loading.value = false
     activeController = null
+    completedJob.value = job.job_id
+    void sampleRouteWeather()
     return
   }
   if (job.status === 'blocked' || job.status === 'failed') {
@@ -91,6 +124,10 @@ async function pollJob(jobId: string, controller: AbortController, attempts: num
 }
 async function predictWeather() {
   activeController?.abort()
+  sampleController?.abort()
+  sampleController = null
+  sampling.value = false
+  completedJob.value = ''
   if (pollTimer) clearTimeout(pollTimer)
   const controller = new AbortController()
   activeController = controller
@@ -108,8 +145,10 @@ async function predictWeather() {
 }
 
 onMounted(() => { void predictWeather() })
+watch(routePoint, () => { void sampleRouteWeather() })
 onBeforeUnmount(() => {
   activeController?.abort()
+  sampleController?.abort()
   if (pollTimer) clearTimeout(pollTimer)
 })
 </script>
@@ -129,12 +168,14 @@ onBeforeUnmount(() => {
 
   <div class="status-block weather-data-panel" aria-label="天气数据">
     <div class="status-title"><span>天气数据</span><b class="weather-state">{{ weatherLabel }}</b></div>
-    <p v-if="!forecast" :role="jobStatus === 'failed' || error ? 'alert' : 'status'">{{ error || message }}</p>
+    <p v-if="!forecast" :role="jobStatus === 'failed' || error ? 'alert' : 'status'">{{ error || (sampling ? '正在查询航线位置的区域天气…' : message) }}</p>
     <template v-if="forecast">
       <p class="weather-forecast-time">有效时刻：{{ localTime(forecast.valid_time_utc) }}（北京时间）</p>
       <table class="weather-values"><caption>未来天气预报</caption><thead><tr><th scope="col">变量</th><th scope="col">预报值</th></tr></thead><tbody><tr v-for="metric in metrics" :key="metric.field"><th scope="row">{{ metric.label }}</th><td>{{ metricValue(metric.field, forecast.values[metric.field]) }}</td></tr></tbody></table>
       <div class="weather-derived"><span>10 米风速 <strong>{{ forecast.derived.wind_speed_10m_m_s.toFixed(2) }} m/s</strong></span><span>风向（来向）<strong>{{ forecast.derived.wind_direction_from_deg === null ? '静风' : `${forecast.derived.wind_direction_from_deg.toFixed(0)}°` }}</strong></span></div>
-      <small>点位 {{ forecast.point.latitude_deg }}°N，{{ forecast.point.longitude_deg }}°E</small>
+      <small>起终点中点 {{ forecast.point.latitude_deg.toFixed(5) }}°N，{{ forecast.point.longitude_deg.toFixed(5) }}°E（不代表整条航线）</small>
+      <small v-if="forecast.native_resolution_deg">原生网格 {{ forecast.native_resolution_deg }}°，空间插值不是街道级预报。</small>
+      <small v-if="forecast.model_warning">{{ forecast.model_warning }}</small>
       <small v-if="forecast.input_source?.startsWith('NOAA GFS')">起报资料：NOAA 公开 GFS 气象场</small>
       <small>起报：{{ localTime(forecast.init_time_utc) }} · 提前量 {{ forecast.lead_hours }} 小时</small>
       <small>生成：{{ localTime(forecast.generated_at_utc) }}（北京时间）</small>

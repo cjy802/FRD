@@ -316,7 +316,7 @@ onBeforeUnmount(() => {
         <div class="insights-header"><span class="eyebrow">任务状态</span><h2>任务概览</h2></div>
         <div class="metric-pair"><div><span>道路路线</span><strong>{{ distance }}</strong></div><div><span>理论航时</span><strong>{{ elapsed }}</strong></div></div>
         <div v-if="preview" class="road-summary"><strong>{{ preview.road_names.join(' → ') || '未命名道路' }}</strong><span>直线 {{ preview.straight_distance_km.toFixed(2) }} km · {{ preview.building_clearance_m === null ? '在线模式未检查建筑缓冲' : `建筑缓冲 ${preview.building_clearance_m} m` }}</span><small>A/B 到道路分别约 {{ preview.start_snap_m }} m / {{ preview.end_snap_m }} m</small><small>{{ preview.data_source }}</small><small>路线数据 © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap contributors</a></small></div>
-        <WeatherPanels :altitude-m="form.altitude_m" />
+          <WeatherPanels :altitude-m="form.altitude_m" :start="form.start" :end="form.end" />
         <div class="pipeline"><h3>接下来接入</h3><div><span>01</span><p>气象网格与时间、高度对齐</p></div><div><span>02</span><p>沿线风险评分与预警</p></div><div><span>03</span><p>天气约束下的绕行与飞行窗口</p></div></div>
         <div class="decision">当前决策 <strong>数据不足，暂不可判定能否飞行</strong></div>
       </aside>

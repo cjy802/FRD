@@ -20,6 +20,7 @@ import xarray as xr
 from build_fuxi_pairs import FIELD_MAP, make_session, time_embedding
 from prepare_fuxi1_input import CHANNELS
 from run_fuxi1_short import prepare_cuda_libraries
+from weather_region import crop_region
 
 
 def inspect_input(path: Path, latitude: float, longitude: float) -> tuple[dict, int, int]:
@@ -65,7 +66,8 @@ def predict_point(args: argparse.Namespace, metadata: dict, lat_index: int, lon_
     if not np.isfinite(point).all():
         raise ValueError("FuXi point output contains non-finite values")
     assert handles is not None
-    return {**metadata, "raw": {field: float(point[CHANNELS.index(channel)]) for field, channel, _ in FIELD_MAP}}
+    region = crop_region(output[0, -1], metadata["valid_time_utc"], 6)
+    return {**metadata, "raw": {field: float(point[CHANNELS.index(channel)]) for field, channel, _ in FIELD_MAP}, "region": region}
 
 
 def main() -> int:
