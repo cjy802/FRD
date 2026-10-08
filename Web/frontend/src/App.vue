@@ -345,7 +345,7 @@ onBeforeUnmount(() => {
           <fluent-button class="primary-button" appearance="primary" type="submit" :disabled="loading">{{ loading ? '计算中…' : '计算道路路线' }}</fluent-button>
           <p v-if="error" class="form-error" role="alert">{{ error }}</p>
         </form>
-        <p class="sidebar-note">{{ roadSource === 'local' ? '本地模式读取本地 OSM 路网，并按已收录建筑轮廓排除相交路段。' : '在线模式使用 OSRM 机动车道路路线，不检查建筑缓冲。' }} 两种路线均未核实线缆、树木、空域及天气，不能直接用于飞行。</p>
+        <p class="sidebar-note">{{ roadSource === 'local' ? '本地模式读取本地 OSM 路网，并按已收录建筑轮廓排除相交路段。' : '在线模式使用 OSRM 机动车道路路线，不检查建筑缓冲。' }} 沿线天气可作有限变量初筛；线缆、树木、空域与现场起降条件仍未核验，不能直接用于飞行。</p>
       </aside>
 
       <section class="map-panel" aria-label="航线地图">

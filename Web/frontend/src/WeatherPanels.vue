@@ -9,6 +9,7 @@ type Forecast = {
   lead_hours: number; historical: boolean
   input_source?: string
   native_resolution_deg?: number; model_warning?: string
+  initialization_frames?: { valid_time_utc: string; state_cycle_utc: string; state_forecast_hours: number }[]
   point: { latitude_deg: number; longitude_deg: number }
   values: Record<Field, number>
   derived: { wind_speed_10m_m_s: number; wind_direction_from_deg: number | null }
@@ -33,6 +34,7 @@ const sampling = ref(false)
 let activeController: AbortController | null = null
 let sampleController: AbortController | null = null
 let pollTimer: ReturnType<typeof setTimeout> | null = null
+let expiryTimer: ReturnType<typeof setInterval> | null = null
 const metrics: { field: Field; label: string }[] = [
   { field: 't2m_K', label: '温度 · °C' },
   { field: 'u10_m_s', label: 'U 风 · m/s' },
@@ -150,12 +152,22 @@ async function predictWeather() {
   } catch (cause) { finishError(controller, cause) }
 }
 
-onMounted(() => { void predictWeather() })
+onMounted(() => {
+  void predictWeather()
+  expiryTimer = setInterval(() => {
+    if (forecast.value && new Date(forecast.value.valid_time_utc).getTime() <= Date.now()) {
+      forecast.value = null; completedJob.value = ''; emit('jobReady', null)
+      jobStatus.value = 'blocked'; message.value = '本次预报已过期，请点击重新预测以获取最新时次。'
+      emit('stateChanged', { status: 'blocked', message: message.value })
+    }
+  }, 30000)
+})
 watch(routePoint, () => { void sampleRouteWeather() })
 onBeforeUnmount(() => {
   activeController?.abort()
   sampleController?.abort()
   if (pollTimer) clearTimeout(pollTimer)
+  if (expiryTimer) clearInterval(expiryTimer)
 })
 </script>
 
@@ -183,6 +195,7 @@ onBeforeUnmount(() => {
       <small v-if="forecast.native_resolution_deg">原生网格 {{ forecast.native_resolution_deg }}°，空间插值不是街道级预报。</small>
       <small v-if="forecast.model_warning">{{ forecast.model_warning }}</small>
       <small v-if="forecast.input_source?.startsWith('NOAA GFS')">起报资料：NOAA 公开 GFS 气象场</small>
+      <details v-if="forecast.initialization_frames?.length" class="weather-rule-details"><summary>查看起报资料实际来源周期</summary><small v-for="frame in forecast.initialization_frames" :key="frame.valid_time_utc">有效时刻 {{ localTime(frame.valid_time_utc) }}；GFS 周期 {{ localTime(frame.state_cycle_utc) }} +{{ frame.state_forecast_hours }}h（{{ frame.state_forecast_hours === 0 ? '分析场' : '同有效时刻短时背景场' }}）。</small></details>
       <small>起报：{{ localTime(forecast.init_time_utc) }} · 提前量 {{ forecast.lead_hours }} 小时</small>
       <small>生成：{{ localTime(forecast.generated_at_utc) }}（北京时间）</small>
     </template>

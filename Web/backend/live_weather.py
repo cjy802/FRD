@@ -129,6 +129,8 @@ class ForecastJobs:
                 raise WeatherUnavailable("区域天气尚未就绪，请等待预测完成。")
             grid, model = self.grids[job_id], self.models[job_id]
             generated = self.jobs[job_id]["forecast"]["generated_at_utc"]
+        if grid.init + timedelta(hours=6) <= self.clock():
+            raise WeatherUnavailable('本次起报时次已过期，请重新预测最新天气，不复用旧任务。')
         return grid, model, generated
 
     def sample(self, job_id: str, latitude: float, longitude: float, valid_time_utc: str | None = None) -> dict:
@@ -201,9 +203,11 @@ class ForecastJobs:
             row = {**predicted, "init": init, "valid": valid}
             forecast = assemble_forecast(row, model, historical=False)
             forecast["input_source"] = predicted.get("input_source", "Configured weather initial field")
+            forecast['initialization_frames'] = predicted.get('initialization_frames', [])
             forecast["generated_at_utc"] = iso_utc(self.clock())
             if "region" in predicted:
-                grid = RegionalWeather(predicted["region"], predicted["init_time_utc"], forecast["input_source"])
+                grid = RegionalWeather(predicted["region"], predicted["init_time_utc"], forecast["input_source"],
+                                       input_frames=forecast['initialization_frames'])
                 with self.lock:
                     self.grids[job_id] = grid
                     self.models[job_id] = model
@@ -220,6 +224,8 @@ class ForecastJobs:
                     warning = str(error)
                     with self.lock: self.height_warnings[job_id] = warning
                     forecast.update({'height_status': 'unavailable', 'height_warning': warning})
+                validate_metadata(predicted, self.clock())
+                forecast['generated_at_utc'] = iso_utc(self.clock())
             self.update(job_id, status="succeeded", message="未来天气预报已生成。", forecast=forecast)
         except (WeatherUnavailable, FileNotFoundError) as error:
             self.update(job_id, status="blocked", message=str(error), forecast=None)

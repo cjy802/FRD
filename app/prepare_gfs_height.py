@@ -7,6 +7,7 @@ fields are GFS forecasts, not FuXi-corrected winds or altitude-resolved gusts.
 import argparse
 import json
 import math
+import re
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -76,6 +77,8 @@ def decode_region(path, valid, bounds=DEFAULT_BOUNDS):
                 regional = values[np.ix_(rows, cols)]
                 if not np.isfinite(regional).all(): raise ValueError('Non-finite auxiliary weather')
                 current_axes = (lats[rows].tolist(), lons[cols].tolist())
+                if current_axes[0][0] != north or current_axes[0][-1] != south or current_axes[1][0] != west or current_axes[1][-1] != east:
+                    raise ValueError('Auxiliary filter returned only partial regional coverage')
                 if axes is not None and axes != current_axes: raise ValueError('Auxiliary channels have different grids')
                 axes = current_axes
                 category, number = ec.codes_get(gid, 'parameterCategory'), ec.codes_get(gid, 'parameterNumber')
@@ -98,13 +101,44 @@ def decode_region(path, valid, bounds=DEFAULT_BOUNDS):
     return {'latitudes': axes[0], 'longitudes': axes[1], 'values': [found[channel] for channel in CHANNELS]}
 
 
+def cached_frame_valid(saved, cycle, hour):
+    try:
+        valid = cycle + timedelta(hours=hour)
+        values = np.asarray(saved['values'], dtype=float)
+        expected_lat = np.arange(DEFAULT_BOUNDS[3], DEFAULT_BOUNDS[1] - .1, -.25).tolist()
+        expected_lon = np.arange(DEFAULT_BOUNDS[0], DEFAULT_BOUNDS[2] + .1, .25).tolist()
+        return (saved.get('generator') == 'fuxi-gfs-height' and saved.get('schema_version') == 1
+                and saved['valid_time_utc'] == valid.isoformat() and saved['source_cycle_utc'] == cycle.isoformat()
+                and saved['source_forecast_hours'] == hour and saved['channels'] == list(CHANNELS)
+                and saved['latitudes'] == expected_lat and saved['longitudes'] == expected_lon
+                and values.shape == (16, len(expected_lat), len(expected_lon)) and np.isfinite(values).all()
+                and (values[-2:] >= 0).all())
+    except (ValueError, TypeError, KeyError): return False
+
+
+def prune_aux_cache(cache, now):
+    for regional in cache.glob('region_*.json'):
+        match = re.fullmatch(r'region_(\d{10})_f(\d{3})\.json', regional.name)
+        if not match: continue
+        try:
+            saved = json.loads(regional.read_text(encoding='utf-8'))
+            if saved.get('generator') != 'fuxi-gfs-height': continue
+            valid = datetime.fromisoformat(saved['valid_time_utc']).astimezone(timezone.utc)
+            if valid >= now - timedelta(hours=48): continue
+        except (ValueError, KeyError, OSError): continue
+        binary = cache / f'nomads_{match[1]}_f{match[2]}.grib2'
+        if regional.resolve().parent == cache.resolve() and binary.resolve().parent == cache.resolve():
+            binary.unlink(missing_ok=True)
+            regional.unlink()
+
+
 def fetch_frame(cycle, hour, cache):
     valid = cycle + timedelta(hours=hour)
     regional = cache / f'region_{cycle:%Y%m%d%H}_f{hour:03d}.json'
     if regional.is_file():
         try:
             saved = json.loads(regional.read_text(encoding='utf-8'))
-            if saved['valid_time_utc'] == valid.isoformat() and saved['channels'] == list(CHANNELS):
+            if cached_frame_valid(saved, cycle, hour):
                 return saved
         except (ValueError, KeyError): pass
     cache.mkdir(parents=True, exist_ok=True)
@@ -133,7 +167,8 @@ def fetch_frame(cycle, hour, cache):
         decoded = decode_region(binary, valid)
         transport = 'NOAA S3 selected byte ranges'
     result = {**decoded, 'valid_time_utc': valid.isoformat(), 'channels': list(CHANNELS),
-              'source_cycle_utc': cycle.isoformat(), 'source_forecast_hours': hour, 'transport': transport}
+              'source_cycle_utc': cycle.isoformat(), 'source_forecast_hours': hour, 'transport': transport,
+              'generator': 'fuxi-gfs-height', 'schema_version': 1}
     pending = regional.with_suffix('.pending.json')
     pending.write_text(json.dumps(result, allow_nan=False), encoding='utf-8')
     pending.replace(regional)
@@ -157,6 +192,7 @@ def prepare_height(input_path, cache):
     if any((frame['latitudes'], frame['longitudes']) != (frames[0]['latitudes'], frames[0]['longitudes']) for frame in frames):
         raise ValueError('Auxiliary forecast frames use different grids')
     GFSDownloader(cache).prune_old_cache(datetime.now(timezone.utc))
+    prune_aux_cache(cache, datetime.now(timezone.utc))
     return {'init_time_utc': init.isoformat(), 'source_cycle_utc': cycle.isoformat(), 'heights_m': list(HEIGHTS),
             'channels': list(CHANNELS), 'latitudes': frames[0]['latitudes'], 'longitudes': frames[0]['longitudes'],
             'native_resolution_deg': .25, 'height_reference': 'AGL',

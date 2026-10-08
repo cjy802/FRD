@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { RouteAssessment, WeatherLimits } from './weatherTypes'
 
 const props = defineProps<{
@@ -13,6 +13,7 @@ const pending = ref(false)
 const error = ref('')
 let controller: AbortController | null = null
 let timer: ReturnType<typeof setTimeout> | null = null
+let expiryTimer: ReturnType<typeof setInterval> | null = null
 
 function beijing(time: string) {
   return new Date(time).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
@@ -52,12 +53,21 @@ watch(() => [props.jobId, props.coordinates, props.departureBeijing, props.speed
   emit('phase', { pending: false, error: '' })
   if (props.jobId && props.coordinates) timer = setTimeout(() => { void requestAlignment() }, 250)
 }, { immediate: true, deep: true })
-onBeforeUnmount(() => { controller?.abort(); if (timer) clearTimeout(timer) })
+onMounted(() => {
+  expiryTimer = setInterval(() => {
+    if (alignment.value && new Date(alignment.value.departure_time_utc).getTime() < Date.now()) {
+      controller?.abort(); controller = null; alignment.value = null; pending.value = false
+      error.value = '出发时刻已过去，请调整任务时刻后重新初筛。'
+      emit('assessed', null); emit('phase', { pending: false, error: error.value })
+    }
+  }, 30000)
+})
+onBeforeUnmount(() => { controller?.abort(); if (timer) clearTimeout(timer); if (expiryTimer) clearInterval(expiryTimer) })
 </script>
 
 <template>
-  <div class="status-block" aria-label="沿线气象初筛">
-    <div class="status-title"><span>沿线气象初筛</span><b :class="alignment ? `risk-${alignment.weather_risk.level}` : 'pending'">{{ alignment?.weather_risk.label || '待评估' }}</b></div>
+  <div class="status-block" aria-label="气象风险">
+    <div class="status-title"><span>气象风险 · 沿线初筛</span><b :class="alignment ? `risk-${alignment.weather_risk.level}` : 'pending'">{{ alignment?.weather_risk.label || '待评估' }}</b></div>
     <template v-if="alignment">
       <p>高度风最高 {{ alignment.weather_risk.summary.max_wind_m_s?.toFixed(2) ?? '—' }} m/s · 侧风最高 {{ alignment.weather_risk.summary.max_crosswind_m_s?.toFixed(2) ?? '—' }} m/s</p>
       <small>地面阵风最高 {{ alignment.weather_risk.summary.max_surface_gust_m_s?.toFixed(2) ?? '—' }} m/s · 地面能见度最低 {{ alignment.weather_risk.summary.min_surface_visibility_m?.toFixed(0) ?? '—' }} m</small>

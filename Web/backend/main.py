@@ -1,7 +1,7 @@
 """First-stage route workspace API.
 
-Weather and route optimization are deliberately separate. This API never labels a
-route safe until a time- and height-matched weather grid is available.
+Weather screening and road comparison never grant flight permission. Aircraft,
+airspace, 3D obstacles and unmodeled hazards remain independent checks.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ class RouteRequest(BaseModel):
     start: Point
     end: Point
     road_source: Literal["local", "online"] = "local"
-    altitude_m: int = Field(default=100, ge=0, le=1000)
+    altitude_m: float = Field(default=100, ge=0, le=1000, allow_inf_nan=False)
     speed_kmh: float = Field(default=45, gt=0, le=200)
     clearance_m: float = Field(default=2.0, ge=0, le=20)
 

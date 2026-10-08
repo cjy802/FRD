@@ -1,4 +1,6 @@
 import unittest
+import json
+import math
 
 from height_weather import HeightWeather
 from regional_weather import RegionalWeather
@@ -66,6 +68,14 @@ class WeatherRiskTests(unittest.TestCase):
         for profile in ({}, {**DEMO_LIMITS, 'max_wind_m_s': 0}, {**DEMO_LIMITS, 'min_visibility_m': float('nan')},
                         {**DEMO_LIMITS, 'max_gust_m_s': True}):
             with self.assertRaises(WeatherUnavailable): resolve_limits(profile)
+
+    def test_submetre_visibility_and_extreme_positive_limits_remain_correct_and_serializable(self):
+        result = screen_values({'visibility': .4}, {**DEMO_LIMITS, 'min_visibility_m': .5})
+        self.assertEqual(result['level'], 'elevated')
+        self.assertEqual(result['score_0_100'], 62.5)
+        extreme = screen_values({'wind': 4, 'visibility': 0}, {**DEMO_LIMITS, 'max_wind_m_s': 1e-300})
+        self.assertTrue(all(math.isfinite(trigger['ratio']) for trigger in extreme['triggers']))
+        json.dumps(extreme, allow_nan=False)
 
 
 if __name__ == '__main__': unittest.main()

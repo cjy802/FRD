@@ -47,6 +47,7 @@ def inspect_input(path: Path, latitude: float, longitude: float) -> tuple[dict, 
         }
         with xr.open_dataset(path) as dataset:
             metadata["input_source"] = dataset.attrs.get("initialization_source", "Configured weather initial field")
+            metadata['initialization_frames'] = json.loads(dataset.attrs.get('source_frames', '[]'))
         return metadata, lat_index, lon_index
 
 

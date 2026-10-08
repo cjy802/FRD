@@ -61,7 +61,7 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .limits-settings > label:not(.limits-toggle) input { display: block; width: 100%; min-height: 36px; margin: 6px 0 12px; }
 .limits-toggle { display: flex; gap: 6px; align-items: flex-start; margin-top: 12px; }
 .limits-settings .coordinate-row { margin-top: 10px; }
-.weather-map-legend { position: absolute; left: 20px; bottom: 75px; max-width: calc(100% - 40px); padding: 8px 10px; background: #fffffff0; color: #424242; font-size: var(--font-caption); pointer-events: none; }
+.weather-map-legend { position: absolute; left: 20px; bottom: 100px; max-width: calc(100% - 40px); padding: 8px 10px; background: #fffffff0; color: #424242; font-size: var(--font-caption); pointer-events: none; }
 .decision small { display: block; margin-top: 8px; color: var(--ui-muted); font-size: var(--font-caption); font-weight: 400; }
 .decision details { margin-top: 10px; font-size: var(--font-caption); }
 .decision summary { cursor: pointer; }
@@ -133,6 +133,7 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .pending { color: #835400; }
 .weather-state { color: var(--ui-accent); }
 .risk-attention, .risk-elevated { color: #835400; }
+.risk-elevated { color: #b42318; }
 .risk-no_trigger { color: var(--ui-muted); }
 .weather-triggers { margin: 8px 0; padding-left: 18px; }
 .weather-scope { color: var(--ui-muted); }
@@ -155,6 +156,13 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .weather-forecast-time { color: var(--ui-accent); font-size: var(--font-caption); }
 .weather-choice-controls select:focus-visible, .weather-rule-details summary:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 2px; }
 .status-block small { display: block; margin-top: 9px; color: var(--ui-muted); font-size: var(--font-caption); }
+.status-title span { min-width: 0; }
+.status-title b { max-width: 65%; white-space: normal; text-align: right; }
+.status-block p, .status-block small, .decision strong, .weather-triggers li { overflow-wrap: anywhere; }
+.weather-refresh:disabled { cursor: default; opacity: .6; }
+@media (min-width: 1101px) {
+  .map-panel { position: sticky; top: 0; height: calc(100dvh - 68px); min-height: 560px; align-self: start; }
+}
 .pipeline { margin-top: 24px; }
 .pipeline h3 { margin: 0 0 12px; font-size: var(--font-body); font-weight: 600; }
 .pipeline > div { display: grid; grid-template-columns: 22px 1fr; align-items: baseline; gap: 8px; min-height: 37px; }

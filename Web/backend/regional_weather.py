@@ -13,12 +13,13 @@ CALIBRATION_POINT = (31.5, 119.5)
 
 
 class RegionalWeather:
-    def __init__(self, payload: dict, init_time: str, input_source: str, required_channels=None):
+    def __init__(self, payload: dict, init_time: str, input_source: str, required_channels=None, input_frames=None):
         self.latitudes = np.asarray(payload["latitudes"], dtype=float)
         self.longitudes = np.asarray(payload["longitudes"], dtype=float)
         self.channels = list(payload["channels"])
         self.init = utc_timestamp(init_time)
         self.input_source = input_source
+        self.input_frames = input_frames or []
         if (self.latitudes.ndim != 1 or self.longitudes.ndim != 1
                 or len(self.latitudes) < 2 or len(self.longitudes) < 2
                 or not np.isfinite(self.latitudes).all() or not np.isfinite(self.longitudes).all()
@@ -102,6 +103,7 @@ class RegionalWeather:
                "latitude_deg": latitude, "longitude_deg": longitude, "raw": raw}
         result = assemble_forecast(row, model if applicable else None, historical=False)
         result.update({"input_source": self.input_source, "spatial_method": "bilinear_native_grid",
+                       'initialization_frames': self.input_frames,
                        "native_resolution_deg": .25, "corrector_applicable": applicable,
                        "time_method": "native_time" if left is right else "linear_time_estimate",
                        "time_bracket_utc": [left['valid'].isoformat(), right['valid'].isoformat()],

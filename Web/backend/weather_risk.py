@@ -56,7 +56,10 @@ def screen_values(values, limits):
         if value is None: continue
         if not math.isfinite(value) or value < 0: raise WeatherUnavailable('初筛变量无效。')
         limit = limits[limit_field]
-        ratio = limit / max(1., value) if field == 'visibility' else value / limit
+        ratio = (limit / value if value else math.inf) if field == 'visibility' else value / limit
+        # Preserve threshold direction for sub-metre visibility and tiny custom
+        # limits, but keep serialized ratios finite (scores already cap at 100).
+        ratio = min(1e12, ratio)
         ratios.append(ratio)
         if ratio >= .8 - 1e-12:
             elevated = ratio >= 1. - 1e-12
@@ -65,7 +68,7 @@ def screen_values(values, limits):
             triggers.append({'field': field, 'label': label, 'value': value, 'unit': unit,
                              'threshold': threshold, 'limit': limit, 'operator': operator,
                              'level': 'elevated' if elevated else 'attention', 'ratio': ratio,
-                             'reason': f'{label} {value:.2f} {unit} {operator} {threshold:.2f} {unit}'})
+                             'reason': f'{label} {value:.4g} {unit} {operator} {threshold:.4g} {unit}'})
     level = 'elevated' if any(item['level'] == 'elevated' for item in triggers) else 'attention' if triggers else 'no_trigger'
     return {'level': level, 'score_0_100': round(min(100., max(ratios, default=0.) * 50), 1), 'triggers': triggers}
 

@@ -49,7 +49,7 @@ onBeforeUnmount(() => { controller?.abort(); if (timer) clearTimeout(timer) })
     <template v-else>
       <p>{{ result.reason }}</p>
       <ol class="weather-window-list"><li v-for="candidate in result.candidates" :key="candidate.route_id"><strong>{{ candidate.label }} · {{ candidate.route.distance_km.toFixed(2) }} km</strong><span>{{ candidate.route.road_names.join(' → ') || '未命名道路' }}</span><span>{{ candidate.weather.label }} · {{ candidate.weather.score_0_100 === null ? '缺测，不评分' : `参考分 ${candidate.weather.score_0_100.toFixed(1)}` }}</span><span>高度风 {{ candidate.weather.summary.max_wind_m_s?.toFixed(2) ?? '—' }} m/s · 地面能见度 {{ candidate.weather.summary.min_surface_visibility_m?.toFixed(0) ?? '—' }} m</span><span v-if="candidate.route_id === result.recommended_route_id">{{ result.state === 'candidate_lower_screening' ? '相对较低初筛分备选（不是飞行许可）' : '比较器保留道路基线' }}</span><button type="button" class="weather-refresh" :disabled="isCurrent(candidate) || !candidate.weather.coverage_complete" @click="emit('choose', candidate.route)">{{ isCurrent(candidate) ? '当前道路参考线' : '采用并重新初筛' }}</button></li></ol>
-      <small>备选均来自所选路网；不生成穿越建筑的直线捷径。在线机动车路线仍不核验建筑缓冲或空中障碍。</small><small>{{ result.message }}</small>
+      <small>备选来自所选道路数据源，不以两点直线代替缺失道路。在线机动车路线未检查建筑缓冲或空中障碍。</small><small>{{ result.message }}</small>
     </template>
   </div>
 </template>
