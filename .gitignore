@@ -8,6 +8,7 @@
 /.playwright-cli/
 /output/
 /app/point_data/
+/Web/mode/output_year_transfer_*/
 /help/backfill/
 /help/data/
 /help/output/
