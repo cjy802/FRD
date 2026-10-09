@@ -27,7 +27,7 @@ async function compare() {
       body: JSON.stringify({ coordinates: props.coordinates, departure_time_utc: departure.toISOString(), speed_kmh: props.speedKmh, altitude_m: props.altitudeM, profile: props.limits }),
     })
     const payload = await response.json()
-    if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : '候选出发时次比较失败。')
+    if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : '出发时刻比较失败。')
     if (current.signal.aborted || current !== controller) return
     result.value = payload
     emit('state', payload.state)
@@ -44,12 +44,13 @@ onBeforeUnmount(() => { controller?.abort(); if (timer) clearTimeout(timer) })
 </script>
 
 <template>
-  <div class="status-block" aria-label="候选飞行时次">
-    <div class="status-title"><span>候选出发时次</span><b class="pending">{{ pending ? '比较中' : result ? `${result.covered_count} 个有完整覆盖` : '待比较' }}</b></div>
+  <div class="status-block" aria-label="出发时刻选择">
+    <div class="status-title"><span>出发时刻选择</span><b class="pending">{{ pending ? '比较中' : result ? `${result.covered_count} 个可比较` : '待比较' }}</b></div>
     <p v-if="error" role="alert">{{ error }}</p>
     <p v-else-if="!result">{{ pending ? '正在用已有天气比较出发时次…' : '等待当前道路路线与区域天气。' }}</p>
     <template v-else>
-      <small>按结果优先级排序；原生时次间隔 6 小时，不是连续可飞行窗口。</small>
+      <p class="weather-choice-current">当前选择：{{ beijing(props.departureBeijing + ':00+08:00') }}（北京时间）</p>
+      <small>出发时刻由左侧输入框控制；列表中的原生时次只是资料覆盖较完整的参考选项。</small>
       <ol class="weather-window-list"><li v-for="candidate in result.candidates" :key="candidate.departure_time_utc"><strong>{{ beijing(candidate.departure_time_utc) }}（北京时间）</strong><span>{{ candidate.selected ? '当前选择' : '候选' }} · {{ candidate.native_departure ? '原生出发时次' : '时次间估计' }}</span><span>{{ candidate.covered ? `${candidate.label} · 参考分 ${candidate.score_0_100?.toFixed(1)}` : candidate.reason }}</span><button type="button" class="weather-refresh" :disabled="!candidate.covered || candidate.selected" @click="emit('choose', candidate.departure_time_utc)">{{ candidate.selected ? '当前时刻' : '选用并重新初筛' }}</button></li></ol>
       <small>{{ result.ranking_basis }}</small><small>{{ result.message }}</small>
     </template>

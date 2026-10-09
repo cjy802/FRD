@@ -40,7 +40,9 @@ const customLimitsEnabled = ref(false)
 const customLimits = reactive<WeatherLimits>({ name: '自定义阈值', max_wind_m_s: 12, max_crosswind_m_s: 8,
   max_headwind_m_s: 12, max_gust_m_s: 15, max_rain_6h_mm: 5, min_visibility_m: 3000 })
 const activeLimits = computed(() => customLimitsEnabled.value ? customLimits : null)
-const departureBeijing = ref(new Date(Date.now() + 30 * 60 * 1000 + 8 * 3600 * 1000).toISOString().slice(0, 16))
+// Datetime-local only keeps minutes; use the next minute so the initial value
+// remains a future departure while the weather requests are being prepared.
+const departureBeijing = ref(new Date(Date.now() + 60 * 1000 + 8 * 3600 * 1000).toISOString().slice(0, 16))
 const loading = ref(false)
 const checkingPoint = ref(false)
 const error = ref('')
