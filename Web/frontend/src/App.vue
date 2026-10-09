@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import WeatherPanels from './WeatherPanels.vue'
 import RouteWeatherPanel from './RouteWeatherPanel.vue'
 import WeatherWindowsPanel from './WeatherWindowsPanel.vue'
@@ -8,6 +8,8 @@ import type { RouteAssessment, WeatherLimits } from './weatherTypes'
 import type { RoadPreview as Preview } from './routeTypes'
 
 type Point = { latitude: number; longitude: number }
+const workspacePanel = ref<'settings' | 'map' | 'overview'>('overview')
+const settingsPage = ref<'points' | 'mission'>('points')
 type LandingCheck = {
   state: 'mapped_building' | 'road_nearby' | 'no_road'
   search_radius_m: number
@@ -83,6 +85,19 @@ watch(routeKey, () => {
   if (preview.value && previewKey.value !== routeKey.value) { preview.value = null; routeAssessment.value = null; drawCesiumRoute(false) }
 })
 watch(routeAssessment, () => { drawCesiumRoute(false) })
+watch(workspacePanel, async () => {
+  await nextTick()
+  if (workspacePanel.value === 'map') viewer?.resize()
+})
+
+function revealInvalidSetting(event: Event) {
+  const control = event.target as HTMLInputElement
+  const group = control.closest<HTMLElement>('[data-settings-page]')
+  if (!group || control.getClientRects().length) return
+  event.preventDefault()
+  settingsPage.value = group.dataset.settingsPage === 'mission' ? 'mission' : 'points'
+  void nextTick(() => { control.focus({ preventScroll: true }) })
+}
 
 function formatted(point: Point) {
   return `${point.latitude.toFixed(4)}°N, ${point.longitude.toFixed(4)}°E`
@@ -323,11 +338,20 @@ onBeforeUnmount(() => {
       <div class="top-actions"><span class="prototype-tag">道路参考路线</span><span class="connection">原型阶段</span></div>
     </header>
 
+    <nav class="workspace-tabs" aria-label="工作区面板">
+      <button type="button" :aria-pressed="workspacePanel === 'settings'" aria-controls="mission-sidebar" @click="workspacePanel = 'settings'">航线设置</button>
+      <button type="button" :aria-pressed="workspacePanel === 'map'" aria-controls="route-map" @click="workspacePanel = 'map'">航线地图</button>
+      <button type="button" :aria-pressed="workspacePanel === 'overview'" aria-controls="mission-insights" @click="workspacePanel = 'overview'">任务概览</button>
+    </nav>
+
     <main class="layout">
-      <aside class="sidebar">
+      <aside id="mission-sidebar" class="sidebar" :class="{ 'panel-active': workspacePanel === 'settings' }" aria-label="航线设置">
         <div class="section-heading"><span class="eyebrow">航线设置</span><h1>规划一次飞行</h1><p>默认点位位于常州信息职业技术大学。沿校园道路计算参考路线。</p></div>
 
-        <form class="route-form" @submit.prevent="calculate">
+        <form class="route-form" @submit.prevent="calculate" @invalid.capture="revealInvalidSetting">
+          <nav class="settings-pages" aria-label="航线设置分组"><button type="button" :aria-pressed="settingsPage === 'points'" @click="settingsPage = 'points'">起点与终点</button><button type="button" :aria-pressed="settingsPage === 'mission'" @click="settingsPage = 'mission'">飞行参数</button></nav>
+          <div class="settings-fields">
+          <div class="settings-group" data-settings-page="points" :class="{ 'settings-active': settingsPage === 'points' }">
           <div class="point-heading"><span class="point-mark point-a">A</span><div><strong>起点</strong><small>{{ formatted(form.start) }}</small></div><button type="button" class="range-toggle" :class="{ active: showStartRange }" :aria-pressed="showStartRange" :disabled="loading || checkingPoint" title="显示或隐藏 35 米接路搜索范围" @click="toggleRange('start')">范围：{{ showStartRange ? '开' : '关' }}</button></div>
           <div class="coordinate-row"><label>纬度<input v-model.number="form.start.latitude" type="number" step="0.00001" min="-90" max="90" required :disabled="loading" /></label><label>经度<input v-model.number="form.start.longitude" type="number" step="0.00001" min="-180" max="180" required :disabled="loading" /></label></div>
 
@@ -335,20 +359,22 @@ onBeforeUnmount(() => {
 
           <div class="point-heading"><span class="point-mark point-b">B</span><div><strong>终点</strong><small>{{ formatted(form.end) }}</small></div><button type="button" class="range-toggle" :class="{ active: showEndRange }" :aria-pressed="showEndRange" :disabled="loading || checkingPoint" title="显示或隐藏 35 米接路搜索范围" @click="toggleRange('end')">范围：{{ showEndRange ? '开' : '关' }}</button></div>
           <div class="coordinate-row"><label>纬度<input v-model.number="form.end.latitude" type="number" step="0.00001" min="-90" max="90" required :disabled="loading" /></label><label>经度<input v-model.number="form.end.longitude" type="number" step="0.00001" min="-180" max="180" required :disabled="loading" /></label></div>
+          </div>
 
+          <div class="settings-group" data-settings-page="mission" :class="{ 'settings-active': settingsPage === 'mission' }">
           <div class="form-line"></div>
           <div class="coordinate-row"><label>离地高度 AGL · 米<input v-model.number="form.altitude_m" type="number" min="0" max="1000" required :disabled="loading" /></label><label>巡航速度 · km/h<input v-model.number="form.speed_kmh" type="number" min="1" max="200" step="0.5" required :disabled="loading" /></label></div>
           <small class="form-scope-note">目前高度风覆盖 10–100 米；范围外会标记缺测。</small>
           <label class="departure-field">出发时刻 · 北京时间<input v-model="departureBeijing" type="datetime-local" required /><small>沿线 ETA 按填写速度估算，不含风对地速的影响。</small></label>
           <div class="clearance-row"><label>建筑缓冲 · 米（演示）<input v-model.number="form.clearance_m" type="number" min="0" max="20" step="0.5" required :disabled="loading || roadSource === 'online'" /></label><span>{{ roadSource === 'local' ? '用于排除靠近建筑的道路段' : '在线机动车路线不使用此参数' }}</span></div>
-          <details class="limits-settings"><summary>天气初筛阈值</summary><label class="limits-toggle"><input v-model="customLimitsEnabled" type="checkbox" /> 填写自定义限值（需核验机型手册）</label><p>关闭时使用演示规则。填写后也不代表机型或放飞条件已验证。</p><template v-if="customLimitsEnabled"><label>限值名称<input v-model="customLimits.name" maxlength="80" /></label><div class="coordinate-row"><label>最大高度风 · m/s<input v-model.number="customLimits.max_wind_m_s" type="number" min="0.1" max="200" step="0.1" required /></label><label>最大侧风 · m/s<input v-model.number="customLimits.max_crosswind_m_s" type="number" min="0.1" max="200" step="0.1" required /></label></div><div class="coordinate-row"><label>最大逆风 · m/s<input v-model.number="customLimits.max_headwind_m_s" type="number" min="0.1" max="200" step="0.1" required /></label><label>最大地面阵风 · m/s<input v-model.number="customLimits.max_gust_m_s" type="number" min="0.1" max="200" step="0.1" required /></label></div><div class="coordinate-row"><label>最大雨量 · mm/6h<input v-model.number="customLimits.max_rain_6h_mm" type="number" min="0.1" max="500" step="0.1" required /></label><label>最低地面能见度 · m<input v-model.number="customLimits.min_visibility_m" type="number" min="1" max="100000" step="1" required /></label></div></template></details>
+          </div>
+          </div>
           <fluent-button class="primary-button" appearance="primary" type="submit" :disabled="loading">{{ loading ? '计算中…' : '计算道路路线' }}</fluent-button>
           <p v-if="error" class="form-error" role="alert">{{ error }}</p>
         </form>
-        <p class="sidebar-note">{{ roadSource === 'local' ? '本地模式读取本地 OSM 路网，并按已收录建筑轮廓排除相交路段。' : '在线模式使用 OSRM 机动车道路路线，不检查建筑缓冲。' }} 沿线天气可作有限变量初筛；线缆、树木、空域与现场起降条件仍未核验，不能直接用于飞行。</p>
       </aside>
 
-      <section class="map-panel" aria-label="航线地图">
+      <section id="route-map" class="map-panel" :class="{ 'panel-active': workspacePanel === 'map' }" aria-label="航线地图">
         <div ref="mapElement" class="cesium-map" :class="{ visible: mapReady }"></div>
         <div v-if="!mapReady" class="map-fallback">
           <div class="grid-lines"></div>
@@ -369,9 +395,10 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <aside class="insights">
+      <aside id="mission-insights" class="insights" :class="{ 'panel-active': workspacePanel === 'overview' }" aria-label="任务概览" tabindex="0">
         <div class="insights-header"><span class="eyebrow">任务状态</span><h2>任务概览</h2></div>
         <div class="metric-pair"><div><span>道路路线</span><strong>{{ distance }}</strong></div><div><span>理论航时</span><strong>{{ elapsed }}</strong></div></div>
+        <details class="limits-settings"><summary>天气初筛阈值</summary><label class="limits-toggle"><input v-model="customLimitsEnabled" type="checkbox" /> 填写自定义限值（需核验机型手册）</label><p>关闭时使用演示规则。填写后也不代表机型或放飞条件已验证。</p><template v-if="customLimitsEnabled"><label>限值名称<input v-model="customLimits.name" maxlength="80" /></label><div class="coordinate-row"><label>最大高度风 · m/s<input v-model.number="customLimits.max_wind_m_s" type="number" min="0.1" max="200" step="0.1" required /></label><label>最大侧风 · m/s<input v-model.number="customLimits.max_crosswind_m_s" type="number" min="0.1" max="200" step="0.1" required /></label></div><div class="coordinate-row"><label>最大逆风 · m/s<input v-model.number="customLimits.max_headwind_m_s" type="number" min="0.1" max="200" step="0.1" required /></label><label>最大地面阵风 · m/s<input v-model.number="customLimits.max_gust_m_s" type="number" min="0.1" max="200" step="0.1" required /></label></div><div class="coordinate-row"><label>最大雨量 · mm/6h<input v-model.number="customLimits.max_rain_6h_mm" type="number" min="0.1" max="500" step="0.1" required /></label><label>最低地面能见度 · m<input v-model.number="customLimits.min_visibility_m" type="number" min="1" max="100000" step="1" required /></label></div></template><p class="sidebar-note">{{ roadSource === 'local' ? '本地模式读取本地 OSM 路网，并按已收录建筑轮廓排除相交路段。' : '在线模式使用 OSRM 机动车道路路线，不检查建筑缓冲。' }} 沿线天气可作有限变量初筛；线缆、树木、空域与现场起降条件仍未核验，不能直接用于飞行。</p></details>
         <div v-if="preview" class="road-summary"><strong>{{ preview.road_names.join(' → ') || '未命名道路' }}</strong><span>直线 {{ preview.straight_distance_km.toFixed(2) }} km · {{ preview.building_clearance_m === null ? '在线模式未检查建筑缓冲' : `建筑缓冲 ${preview.building_clearance_m} m` }}</span><small>A/B 到道路分别约 {{ preview.start_snap_m }} m / {{ preview.end_snap_m }} m</small><small>{{ preview.data_source }}</small><small>路线数据 © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap contributors</a></small></div>
         <WeatherPanels :altitude-m="form.altitude_m" :start="form.start" :end="form.end" @job-ready="weatherJobId = $event" @state-changed="weatherState = $event" />
         <RouteWeatherPanel :job-id="weatherJobId" :coordinates="weatherCoordinates" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" :limits="activeLimits" @assessed="routeAssessment = $event" @phase="routePhase = $event" />
