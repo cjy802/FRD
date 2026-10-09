@@ -42,7 +42,7 @@ const metrics: { field: Field; label: string }[] = [
   { field: 'msl_Pa', label: '气压 · Pa' },
   { field: 'tp_6h_mm', label: '6 小时降水 · mm' },
 ]
-const weatherLabel = computed(() => loading.value ? '预测中' : forecast.value ? '+6h 预报' : '等待最新起报场')
+const weatherLabel = computed(() => loading.value ? '预测中' : sampling.value ? '位置匹配中' : forecast.value ? '+6h 预报' : '等待最新起报场')
 const routePoint = computed(() => ({
   latitude: (props.start.latitude + props.end.latitude) / 2,
   longitude: (props.start.longitude + props.end.longitude) / 2,
@@ -54,7 +54,6 @@ async function sampleRouteWeather() {
   const controller = new AbortController()
   sampleController = controller
   sampling.value = true
-  forecast.value = null
   error.value = ''
   try {
     const query = new URLSearchParams({ latitude: String(routePoint.value.latitude), longitude: String(routePoint.value.longitude) })
@@ -188,6 +187,7 @@ onBeforeUnmount(() => {
     <div class="status-title"><span>天气数据</span><b class="weather-state">{{ weatherLabel }}</b></div>
     <p v-if="!forecast" :role="jobStatus === 'failed' || error ? 'alert' : 'status'">{{ error || (sampling ? '正在查询航线位置的区域天气…' : message) }}</p>
     <template v-if="forecast">
+      <p v-if="sampling" class="weather-refreshing" role="status">正在根据新的航线中点重新匹配天气，当前结果暂时保留。</p>
       <p class="weather-forecast-time">有效时刻：{{ localTime(forecast.valid_time_utc) }}（北京时间）</p>
       <table class="weather-values"><caption>未来天气预报</caption><thead><tr><th scope="col">变量</th><th scope="col">预报值</th></tr></thead><tbody><tr v-for="metric in metrics" :key="metric.field"><th scope="row">{{ metric.label }}</th><td>{{ metricValue(metric.field, forecast.values[metric.field]) }}</td></tr></tbody></table>
       <div class="weather-derived"><span>10 米风速 <strong>{{ forecast.derived.wind_speed_10m_m_s.toFixed(2) }} m/s</strong></span><span>风向（来向）<strong>{{ forecast.derived.wind_direction_from_deg === null ? '静风' : `${forecast.derived.wind_direction_from_deg.toFixed(0)}°` }}</strong></span></div>
