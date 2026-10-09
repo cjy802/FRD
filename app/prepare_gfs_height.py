@@ -9,6 +9,7 @@ import json
 import math
 import re
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -24,6 +25,10 @@ from weather_region import DEFAULT_BOUNDS
 HEIGHTS = (10, 20, 30, 40, 50, 80, 100)
 CHANNELS = tuple(f'{component}{height}' for height in HEIGHTS for component in ('U', 'V')) + ('GUST', 'VIS')
 FILTER_URL = 'https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl'
+# The Windows ecCodes build can race while initializing/parsing definitions.
+# Serialize its full handle lifecycle, not just file opening. HTTP downloads
+# still run concurrently; each process owns a separate native decoder context.
+_GRIB_DECODE_LOCK = threading.Lock()
 
 
 def select_height_records(records):
@@ -45,6 +50,11 @@ def select_height_records(records):
 
 
 def decode_region(path, valid, bounds=DEFAULT_BOUNDS):
+    with _GRIB_DECODE_LOCK:
+        return _decode_region(path, valid, bounds)
+
+
+def _decode_region(path, valid, bounds):
     import eccodes as ec
     found, axes = {}, None
     with path.open('rb') as handle:

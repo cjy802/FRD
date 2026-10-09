@@ -5,6 +5,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from prepare_gfs_height import CHANNELS, HEIGHTS, cached_frame_valid, decode_region, select_height_records
 import copy
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import patch
 import numpy as np
 from datetime import datetime, timezone
 
@@ -22,6 +26,31 @@ def inventory():
 
 
 class HeightProviderTests(unittest.TestCase):
+    def test_native_decoder_handle_lifecycle_is_serial_even_with_parallel_callers(self):
+        counter_lock = threading.Lock()
+        counts = {'active': 0, 'max_active': 0, 'calls': 0}
+        def native_decoder(path, valid, bounds):
+            with counter_lock:
+                counts['active'] += 1
+                counts['max_active'] = max(counts['max_active'], counts['active'])
+            try:
+                time.sleep(.01)
+                return {'path': path}
+            finally:
+                with counter_lock:
+                    counts['active'] -= 1
+                    counts['calls'] += 1
+        with patch('prepare_gfs_height._decode_region', side_effect=native_decoder):
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                results = list(executor.map(lambda number: decode_region(number, None), range(12)))
+        self.assertEqual(counts, {'active': 0, 'max_active': 1, 'calls': 12})
+        self.assertEqual([result['path'] for result in results], list(range(12)))
+
+    def test_decoder_lock_is_released_after_decode_error(self):
+        with patch('prepare_gfs_height._decode_region', side_effect=[ValueError('invalid GRIB'), {'ok': True}]):
+            with self.assertRaises(ValueError): decode_region(None, None)
+            self.assertEqual(decode_region(None, None), {'ok': True})
+
     def test_explicit_height_fields_without_pressure_level_substitution(self):
         records = select_height_records(inventory())
         self.assertEqual({record['channel'] for record in records}, set(CHANNELS))
@@ -37,6 +66,15 @@ class HeightProviderTests(unittest.TestCase):
         data = decode_region(path, datetime(2026, 10, 8, 6, tzinfo=timezone.utc))
         self.assertEqual((len(data['values']), len(data['latitudes']), len(data['longitudes'])), (16, 23, 27))
         self.assertEqual((data['latitudes'][0], data['longitudes'][0]), (35.5, 116))
+
+    def test_real_cached_grib_with_concurrent_callers_optional(self):
+        cache = Path(__file__).resolve().parents[1] / 'prepared/gfs_aux_cache'
+        inputs = [(cache / 'nomads_2026100818_f006.grib2', datetime(2026, 10, 9, tzinfo=timezone.utc)),
+                  (cache / 'nomads_2026100818_f012.grib2', datetime(2026, 10, 9, 6, tzinfo=timezone.utc))]
+        if not all(path.is_file() for path, _ in inputs): self.skipTest('Current live GRIB fixtures not present')
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            decoded = list(executor.map(lambda args: decode_region(*args), inputs * 4))
+        self.assertTrue(all(len(frame['values']) == 16 for frame in decoded))
 
     def test_cached_frame_requires_provenance_complete_grid_and_finite_values(self):
         cycle = datetime(2026, 10, 8, tzinfo=timezone.utc)

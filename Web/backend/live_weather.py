@@ -79,15 +79,24 @@ def prepare_latest_input(output: Path) -> Path:
 
 def prepare_height_weather(input_path: Path) -> dict:
     python = configured_path('FUXI_PYTHON', Path('D:/anaconda/envs/fuxi_onnx/python.exe'))
-    completed = subprocess.run(
-        [str(python), '-B', str(PROJECT_ROOT / 'app/prepare_gfs_height.py'), '--input', str(input_path)],
-        capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=600,
-        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
-    )
+    try:
+        completed = subprocess.run(
+            [str(python), '-X', 'faulthandler', '-B', str(PROJECT_ROOT / 'app/prepare_gfs_height.py'), '--input', str(input_path)],
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=600,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+        )
+    except subprocess.TimeoutExpired as error:
+        raise WeatherUnavailable('高度天气获取超过 600 秒，请检查 NOAA 连接后重新预测。') from error
+    diagnostics = f'退出码 {completed.returncode} (0x{completed.returncode & 0xffffffff:08X})'
+    if completed.stderr.strip():
+        diagnostics += f"；错误输出：{completed.stderr.strip()[-1800:]}"
     try: payload = json.loads(completed.stdout)
-    except ValueError as error: raise WeatherUnavailable('近地高度天气进程未返回有效数据。') from error
+    except ValueError as error:
+        raise WeatherUnavailable(f'近地高度天气进程未返回有效 JSON；{diagnostics}') from error
+    if not isinstance(payload, dict):
+        raise WeatherUnavailable(f'高度天气进程返回的数据结构无效；{diagnostics}')
     if completed.returncode or 'error' in payload:
-        raise WeatherUnavailable(f"高度天气获取失败：{payload.get('error', 'NOAA 辅助资料不可用')}")
+        raise WeatherUnavailable(f"高度天气获取失败：{payload.get('error', 'NOAA 辅助资料不可用')}；{diagnostics}")
     return payload
 
 
