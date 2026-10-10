@@ -196,7 +196,7 @@ async function exportDjiKmz() {
   }
 }
 
-async function calculate() {
+async function calculate(flyToRoute: boolean | SubmitEvent = true) {
   if (loading.value) return
   const controller = new AbortController()
   const requestVersion = ++routeRequestVersion
@@ -223,7 +223,7 @@ async function calculate() {
     if (controller.signal.aborted || requestVersion !== routeRequestVersion) return
     preview.value = result
     previewKey.value = requestedKey
-    drawCesiumRoute()
+    drawCesiumRoute(typeof flyToRoute === 'boolean' ? flyToRoute : true)
   } catch (cause) {
     if (controller.signal.aborted || requestVersion !== routeRequestVersion) return
     error.value = cause instanceof Error ? cause.message : '无法生成航线预览。'
@@ -350,7 +350,9 @@ async function chooseMapPoint(point: Point) {
       return
     }
 
-    void calculate()
+    // A map click changes the route, but should not reset the camera the user
+    // is currently inspecting.
+    void calculate(false)
     if (mode === 'end' && inspection.state === 'road_nearby') {
       pointHint.value = `终点 B 距已收录道路约 ${inspection.road_distance_m} 米；仅是候选落点，仍需现场核验。`
     }
@@ -369,7 +371,6 @@ function drawCesiumRoute(flyToRoute = true) {
   const routeAltitude = Math.max(10, Number(form.altitude_m) || 100)
   const routeColor = Cesium.Color.fromCssColorString('#00e5a8')
   const routeShadow = Cesium.Color.fromCssColorString('#062d2d').withAlpha(0.48)
-  const white = Cesium.Color.WHITE.withAlpha(0.88)
   function addRange(point: Point, name: string, color: string) {
     viewer.entities.add({
       name,
@@ -440,7 +441,7 @@ function drawCesiumRoute(flyToRoute = true) {
     },
   })
 
-  // Drop lines make the height legible while the base imagery remains flat.
+  // Drop lines connect sampled elevated waypoints back to the flat 2D map.
   const dropStep = Math.max(1, Math.ceil(coordinates.length / 12))
   const waypointIndexes = Array.from(new Set([
     0,
@@ -455,10 +456,10 @@ function drawCesiumRoute(flyToRoute = true) {
       name: `航点 ${index + 1} 垂直投影`,
       polyline: {
         positions: [ground, elevated],
-        width: 2,
-        material: white,
+        width: 1.5,
+        material: Cesium.Color.fromCssColorString('#e8fff8').withAlpha(0.78),
         clampToGround: false,
-        depthFailMaterial: white.withAlpha(0.55),
+        depthFailMaterial: Cesium.Color.fromCssColorString('#e8fff8').withAlpha(0.55),
       },
     })
     viewer.entities.add({
