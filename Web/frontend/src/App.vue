@@ -50,6 +50,9 @@ const departureBeijing = ref(latestDepartureBeijing.value)
 const departureAutoManaged = ref(true)
 let departureClockTimer: ReturnType<typeof setTimeout> | null = null
 const loading = ref(false)
+const kmzLoading = ref(false)
+const kmzError = ref('')
+const djiModel = ref<'m30' | 'm3e'>('m30')
 const checkingPoint = ref(false)
 const error = ref('')
 const pointHint = ref('')
@@ -164,6 +167,35 @@ function chooseRoad(route: Preview) {
   drawCesiumRoute()
 }
 
+async function exportDjiKmz() {
+  if (!preview.value || kmzLoading.value) return
+  kmzLoading.value = true
+  kmzError.value = ''
+  try {
+    const response = await fetch('/api/routes/export-kmz', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ coordinates: preview.value.geometry.coordinates, altitude_m: form.altitude_m, speed_kmh: form.speed_kmh, drone_model: djiModel.value }),
+    })
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}))
+      throw new Error(typeof payload.detail === 'string' ? payload.detail : 'DJI KMZ 导出失败。')
+    }
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'dji_waypoint_draft.kmz'
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+  } catch (cause) {
+    kmzError.value = cause instanceof Error ? cause.message : 'DJI KMZ 导出失败。'
+  } finally {
+    kmzLoading.value = false
+  }
+}
+
 async function calculate() {
   if (loading.value) return
   const controller = new AbortController()
@@ -172,6 +204,7 @@ async function calculate() {
   routeController = controller
   loading.value = true
   error.value = ''
+  kmzError.value = ''
   pointHint.value = ''
   preview.value = null
   drawCesiumRoute()
@@ -527,7 +560,7 @@ onBeforeUnmount(() => {
         </details>
         <details class="overview-group"><summary><span>调整出发时间或路线</span><small>可选参考，不会自动替换当前设置</small></summary><div class="overview-group-body overview-planning"><WeatherWindowsPanel :job-id="weatherJobId" :coordinates="weatherCoordinates" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" :limits="activeLimits" @choose="chooseDeparture" @state="windowPhase = $event" /><RoadWeatherComparison :job-id="weatherJobId" :can-compare="!!weatherCoordinates" :current-coordinates="weatherCoordinates" :start="form.start" :end="form.end" :road-source="roadSource" :clearance-m="form.clearance_m" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" :limits="activeLimits" @choose="chooseRoad" @state="comparisonPhase = $event" /></div></details>
         <details class="overview-group"><summary><span>天气规则和技术状态</span><small>仅在需要核对时查看</small></summary><div class="overview-group-body"><details class="limits-settings"><summary>天气初筛阈值</summary><label class="limits-toggle"><input v-model="customLimitsEnabled" type="checkbox" /> 填写自定义气象阈值</label><p>关闭时使用演示阈值。阈值用于天气提示与比较，参考分不是事故概率。</p><template v-if="customLimitsEnabled"><label>阈值名称<input v-model="customLimits.name" maxlength="80" /></label><div class="coordinate-row"><label>最大高度风 · m/s<input v-model.number="customLimits.max_wind_m_s" type="number" min="0.1" max="200" step="0.1" required /></label><label>最大侧风 · m/s<input v-model.number="customLimits.max_crosswind_m_s" type="number" min="0.1" max="200" step="0.1" required /></label></div><div class="coordinate-row"><label>最大逆风 · m/s<input v-model.number="customLimits.max_headwind_m_s" type="number" min="0.1" max="200" step="0.1" required /></label><label>最大地面阵风 · m/s<input v-model.number="customLimits.max_gust_m_s" type="number" min="0.1" max="200" step="0.1" required /></label></div><div class="coordinate-row"><label>最大雨量 · mm/6h<input v-model.number="customLimits.max_rain_6h_mm" type="number" min="0.1" max="500" step="0.1" required /></label><label>最低地面能见度 · m<input v-model.number="customLimits.min_visibility_m" type="number" min="1" max="100000" step="1" required /></label></div></template></details><div class="pipeline"><h3>系统状态</h3><div><span>01</span><p>{{ alignmentProgress }}</p></div><div><span>02</span><p>{{ routeAssessment ? decisionTitle : '沿线初筛等待资料' }}</p></div><div><span>03</span><p>{{ planningProgress }}</p></div></div></div></details>
-        <div v-if="preview" class="road-summary"><strong>当前路线：{{ preview.road_names.join(' → ') || '未命名道路' }}</strong><span>{{ distance }} · 预计用时 {{ elapsed }}</span><details><summary>查看路线数据</summary><small>直线 {{ preview.straight_distance_km.toFixed(2) }} km · {{ preview.building_clearance_m === null ? '在线模式未检查建筑缓冲' : `建筑缓冲 ${preview.building_clearance_m} m` }}</small><small>A/B 到道路分别约 {{ preview.start_snap_m }} m / {{ preview.end_snap_m }} m</small><small>{{ preview.data_source }}</small><small>路线数据 © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap contributors</a></small></details></div>
+        <div v-if="preview" class="road-summary"><strong>当前路线：{{ preview.road_names.join(' → ') || '未命名道路' }}</strong><span>{{ distance }} · 预计用时 {{ elapsed }}</span><details><summary>查看路线数据</summary><small>直线 {{ preview.straight_distance_km.toFixed(2) }} km · {{ preview.building_clearance_m === null ? '在线模式未检查建筑缓冲' : `建筑缓冲 ${preview.building_clearance_m} m` }}</small><small>A/B 到道路分别约 {{ preview.start_snap_m }} m / {{ preview.end_snap_m }} m</small><small>{{ preview.data_source }}</small><small>路线数据 © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap contributors</a></small></details><div class="route-export"><label>DJI 机型模板<select v-model="djiModel"><option value="m30">M30 / M30T</option><option value="m3e">Mavic 3E / 3T / 3M</option></select></label><button type="button" class="weather-refresh" :disabled="kmzLoading || loading" @click="exportDjiKmz">{{ kmzLoading ? '正在生成 KMZ…' : '导出 DJI KMZ 草稿' }}</button><small>按相对起飞点高度生成。{{ roadSource === 'online' ? '当前是在线机动车道路参考，不应直接作为飞行线。' : '当前是道路走廊参考，不代表已核实飞行航线。' }}导入 DJI Pilot 2 后仍需核对机型、动作、返航、空域和现场条件；文件不是放飞许可。</small><small v-if="kmzError" class="form-error" role="alert">{{ kmzError }}</small></div></div>
       </aside>
     </main>
   </div>

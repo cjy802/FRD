@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -23,6 +24,7 @@ from weather_service import weather_store
 from live_weather import forecast_jobs
 from route_candidates import local_road_candidates
 from weather_routes import compare_road_weather
+from dji_kmz import KmzExportError, build_dji_kmz
 
 
 app = FastAPI(title="低空飞行决策工作台", version="0.1.0")
@@ -75,6 +77,13 @@ class WeatherRouteComparisonRequest(RouteRequest):
     weather_job_id: str
     departure_time_utc: str
     profile: WeatherLimits | None = None
+
+
+class KmzExportRequest(BaseModel):
+    coordinates: list[tuple[float, float]] = Field(min_length=2, max_length=65535)
+    altitude_m: float = Field(gt=0, le=1500, allow_inf_nan=False)
+    speed_kmh: float = Field(gt=0, le=200, allow_inf_nan=False)
+    drone_model: Literal["m30", "m3e"] = "m30"
 
 
 @lru_cache(maxsize=1)
@@ -255,6 +264,19 @@ def plan_road_route(route: RouteRequest):
     except RouteUnavailable as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     return route_response(route, result)
+
+
+@app.post("/api/routes/export-kmz")
+def export_dji_kmz(request: KmzExportRequest):
+    try:
+        payload = build_dji_kmz(request.coordinates, request.altitude_m, request.speed_kmh, request.drone_model)
+    except KmzExportError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return Response(
+        content=payload,
+        media_type="application/vnd.google-earth.kmz",
+        headers={"Content-Disposition": 'attachment; filename="dji_waypoint_draft.kmz"'},
+    )
 
 
 def route_response(route, result):

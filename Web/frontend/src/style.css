@@ -176,6 +176,9 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .road-summary strong { display: block; color: var(--ui-accent); font-size: var(--font-body); font-weight: 600; }
 .road-summary span, .road-summary small { display: block; margin-top: 7px; color: var(--ui-muted); font-size: var(--font-caption); line-height: 1.5; }
 .road-summary a { color: var(--ui-accent); }
+.route-export { display: grid; gap: 7px; margin-top: 12px; padding-top: 12px; border-top: 1px solid #edf0f2; }
+.route-export label { color: var(--ui-muted); font-size: var(--font-caption); font-weight: 600; }
+.route-export select { display: block; width: 100%; margin-top: 5px; padding: 7px 8px; border: 1px solid var(--ui-line); border-radius: var(--ui-radius); background: #fff; color: inherit; font: inherit; font-size: var(--font-caption); }
 .status-block { margin: 12px 0; padding: 16px; border: 1px solid #e1e6eb; border-radius: 10px; background: #fff; box-shadow: 0 2px 8px #172b4d0a; }
 .status-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: -2px 0 13px; padding-bottom: 10px; border-bottom: 1px solid #edf0f2; }
 .status-title span { font-size: var(--font-body); font-weight: 600; }
