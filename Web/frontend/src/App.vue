@@ -5,7 +5,7 @@ import RouteWeatherPanel from './RouteWeatherPanel.vue'
 import WeatherWindowsPanel from './WeatherWindowsPanel.vue'
 import RoadWeatherComparison from './RoadWeatherComparison.vue'
 import type { RouteAssessment, WeatherLimits } from './weatherTypes'
-import { weatherOnlyChecks, weatherSummary } from './weatherPresentation'
+import { weatherOnlyChecks } from './weatherPresentation'
 import type { RoadPreview as Preview } from './routeTypes'
 
 type Point = { latitude: number; longitude: number }
@@ -63,14 +63,32 @@ const elapsed = computed(() => preview.value && form.speed_kmh > 0 ? `${(preview
 const distance = computed(() => preview.value ? `${preview.value.distance_km.toFixed(2)} km` : '待计算')
 const routeKey = computed(() => JSON.stringify([form.start, form.end, roadSource.value, form.clearance_m]))
 const weatherCoordinates = computed(() => preview.value && previewKey.value === routeKey.value ? preview.value.geometry.coordinates : null)
-const decisionLabel = computed(() => {
-  if (!weatherCoordinates.value) return '请先计算与当前起终点一致的道路路线'
-  if (routeAssessment.value) return weatherSummary(routeAssessment.value.weather_risk)
-  if (routePhase.value.error) return `沿线评估未完成：${routePhase.value.error}`
-  if (routePhase.value.pending) return '正在计算沿线气象初筛'
-  if (['blocked', 'failed'].includes(weatherState.value.status)) return `天气预测不可用：${weatherState.value.message}`
-  if (!weatherJobId.value) return '天气资料处理中，等待气象结果'
-  return '等待沿线天气匹配'
+const decisionTone = computed(() => {
+  if (routeAssessment.value) return `risk-${routeAssessment.value.weather_risk.level}`
+  return routePhase.value.error || ['blocked', 'failed'].includes(weatherState.value.status) ? 'risk-incomplete' : 'pending'
+})
+const decisionTitle = computed(() => {
+  if (!weatherCoordinates.value) return '先计算道路路线'
+  if (['blocked', 'failed'].includes(weatherState.value.status)) return '天气预测不可用'
+  if (routePhase.value.error) return '沿线天气检查未完成'
+  if (routePhase.value.pending) return '正在检查沿线天气'
+  if (!routeAssessment.value) return weatherJobId.value ? '等待沿线天气结果' : '正在准备天气资料'
+  return ({
+    no_trigger: '当前规则下没有明显天气提醒',
+    attention: '有天气因素需要留意',
+    elevated: '发现较强天气提醒',
+    incomplete: '天气资料不完整，暂不能判断',
+  } as Record<string, string>)[routeAssessment.value.weather_risk.level] || '天气初筛已完成'
+})
+const decisionDescription = computed(() => {
+  if (!weatherCoordinates.value) return '先在左侧完成起点、终点和飞行参数，系统才能沿路线匹配天气。'
+  if (['blocked', 'failed'].includes(weatherState.value.status)) return weatherState.value.message
+  if (routePhase.value.error) return routePhase.value.error
+  if (routePhase.value.pending) return '系统正在按出发时间、飞行高度和路线逐点检查天气。'
+  if (!routeAssessment.value) return '结果出来后，这里会先告诉你是否有需要留意的天气因素。'
+  if (routeAssessment.value.weather_risk.level === 'no_trigger') return '已覆盖的风、降雨、阵风和能见度没有触发当前规则。仍需结合机型和现场情况核验。'
+  if (routeAssessment.value.weather_risk.level === 'incomplete') return '部分路线缺少可用的高度或时间资料，不能把“没有提醒”理解为安全。'
+  return '请展开下方的沿线天气检查，查看触发因素和出现位置。这个结果只是天气初筛。'
 })
 const weatherChecks = computed(() => routeAssessment.value ? weatherOnlyChecks(routeAssessment.value.decision) : [])
 const alignmentProgress = computed(() => routeAssessment.value?.coverage.flight_height ? '沿线位置、时间与高度风已匹配'
@@ -400,26 +418,21 @@ onBeforeUnmount(() => {
       </section>
 
       <aside id="mission-insights" class="insights" :class="{ 'panel-active': workspacePanel === 'overview' }" aria-label="任务概览" tabindex="0">
-        <div class="insights-header"><span class="eyebrow">任务状态</span><h2>任务概览</h2></div>
+        <div class="insights-header"><span class="eyebrow">任务状态</span><h2>先看天气结论</h2><p>先看结论，需要细节时再展开。</p></div>
         <section class="overview-hero" aria-label="天气结论概览">
-        <div class="metric-pair"><div><span>道路路线</span><strong>{{ distance }}</strong></div><div><span>理论航时</span><strong>{{ elapsed }}</strong></div></div>
-        <div class="decision" aria-live="polite"><span class="decision-kicker">气象结论</span><strong>{{ decisionLabel }}</strong><small>只反映已覆盖天气指标；详细数值和缺测原因见下方。</small><details v-if="routeAssessment"><summary>查看气象数据状态</summary><div v-for="check in weatherChecks" :key="check.key" class="decision-check"><b>{{ check.label }}</b><span :class="check.state === 'ready' ? 'check-ready' : 'check-pending'">{{ check.state === 'ready' ? '资料已就绪' : check.state === 'no_trigger' ? '未触发当前阈值' : check.state === 'elevated' ? '较强提示' : check.state === 'attention' ? '关注' : '数据待补齐' }}</span><small>{{ check.detail }}</small></div></details></div>
+        <div class="mission-facts"><div><span>路线长度</span><strong>{{ distance }}</strong></div><div><span>预计用时</span><strong>{{ elapsed }}</strong></div><div><span>计划出发</span><strong>{{ departureBeijing.replace('T', ' ') }}</strong><small>北京时间</small></div></div>
+        <div class="decision" :class="decisionTone" aria-live="polite"><span class="decision-kicker">气象初筛</span><strong>{{ decisionTitle }}</strong><p>{{ decisionDescription }}</p><small>这里只反映已覆盖的天气指标，不等于放飞许可。</small><details v-if="routeAssessment"><summary>查看判断依据</summary><div v-for="check in weatherChecks" :key="check.key" class="decision-check"><b>{{ check.label }}</b><span :class="check.state === 'ready' ? 'check-ready' : 'check-pending'">{{ check.state === 'ready' ? '资料已就绪' : check.state === 'no_trigger' ? '未触发当前阈值' : check.state === 'elevated' ? '较强提示' : check.state === 'attention' ? '需要留意' : '资料待补齐' }}</span><small>{{ check.detail }}</small></div></details></div>
         </section>
-        <details class="limits-settings"><summary>天气初筛阈值</summary><label class="limits-toggle"><input v-model="customLimitsEnabled" type="checkbox" /> 填写自定义气象阈值</label><p>关闭时使用演示阈值。阈值用于天气提示与比较，参考分不是事故概率。</p><template v-if="customLimitsEnabled"><label>阈值名称<input v-model="customLimits.name" maxlength="80" /></label><div class="coordinate-row"><label>最大高度风 · m/s<input v-model.number="customLimits.max_wind_m_s" type="number" min="0.1" max="200" step="0.1" required /></label><label>最大侧风 · m/s<input v-model.number="customLimits.max_crosswind_m_s" type="number" min="0.1" max="200" step="0.1" required /></label></div><div class="coordinate-row"><label>最大逆风 · m/s<input v-model.number="customLimits.max_headwind_m_s" type="number" min="0.1" max="200" step="0.1" required /></label><label>最大地面阵风 · m/s<input v-model.number="customLimits.max_gust_m_s" type="number" min="0.1" max="200" step="0.1" required /></label></div><div class="coordinate-row"><label>最大雨量 · mm/6h<input v-model.number="customLimits.max_rain_6h_mm" type="number" min="0.1" max="500" step="0.1" required /></label><label>最低地面能见度 · m<input v-model.number="customLimits.min_visibility_m" type="number" min="1" max="100000" step="1" required /></label></div></template></details>
-        <div v-if="preview" class="road-summary"><strong>{{ preview.road_names.join(' → ') || '未命名道路' }}</strong><span>直线 {{ preview.straight_distance_km.toFixed(2) }} km · {{ preview.building_clearance_m === null ? '在线模式未检查建筑缓冲' : `建筑缓冲 ${preview.building_clearance_m} m` }}</span><small>A/B 到道路分别约 {{ preview.start_snap_m }} m / {{ preview.end_snap_m }} m</small><small>{{ preview.data_source }}</small><small>路线数据 © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap contributors</a></small></div>
-        <section class="overview-section overview-weather" aria-label="天气数据与沿线初筛">
-        <div class="overview-section-heading"><span class="eyebrow">实时天气</span><h3>沿线气象</h3><p>起终点中点、经过时刻和任务高度的天气结果。</p></div>
-        <WeatherPanels :altitude-m="form.altitude_m" :start="form.start" :end="form.end" @job-ready="weatherJobId = $event" @state-changed="weatherState = $event" />
-        <RouteWeatherPanel :job-id="weatherJobId" :coordinates="weatherCoordinates" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" :limits="activeLimits" @assessed="routeAssessment = $event" @phase="routePhase = $event" />
-        </section>
-        <section class="overview-section overview-planning" aria-label="候选时次与道路天气比较">
-        <div class="overview-section-heading"><span class="eyebrow">任务规划</span><h3>时次与路线比较</h3><p>使用已有天气预测比较候选任务安排。</p></div>
-        <WeatherWindowsPanel :job-id="weatherJobId" :coordinates="weatherCoordinates" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" :limits="activeLimits" @choose="chooseDeparture" @state="windowPhase = $event" />
-        <RoadWeatherComparison :job-id="weatherJobId" :can-compare="!!weatherCoordinates" :current-coordinates="weatherCoordinates" :start="form.start" :end="form.end" :road-source="roadSource" :clearance-m="form.clearance_m" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" :limits="activeLimits" @choose="chooseRoad" @state="comparisonPhase = $event" />
-        </section>
-        <section class="overview-footer" aria-label="接入进度">
-        <div class="pipeline"><h3>接入进度</h3><div><span>01</span><p>{{ alignmentProgress }}</p></div><div><span>02</span><p>{{ routeAssessment?.weather_risk.label || '沿线初筛等待资料' }}</p></div><div><span>03</span><p>{{ planningProgress }}</p></div></div>
-        </section>
+        <details class="overview-group" open>
+          <summary><span>沿线天气检查</span><small>风、降雨、阵风和能见度</small></summary>
+          <div class="overview-group-body overview-weather">
+            <WeatherPanels :altitude-m="form.altitude_m" :start="form.start" :end="form.end" @job-ready="weatherJobId = $event" @state-changed="weatherState = $event" />
+            <RouteWeatherPanel :job-id="weatherJobId" :coordinates="weatherCoordinates" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" :limits="activeLimits" @assessed="routeAssessment = $event" @phase="routePhase = $event" />
+          </div>
+        </details>
+        <details class="overview-group"><summary><span>调整出发时间或路线</span><small>可选参考，不会自动替换当前设置</small></summary><div class="overview-group-body overview-planning"><WeatherWindowsPanel :job-id="weatherJobId" :coordinates="weatherCoordinates" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" :limits="activeLimits" @choose="chooseDeparture" @state="windowPhase = $event" /><RoadWeatherComparison :job-id="weatherJobId" :can-compare="!!weatherCoordinates" :current-coordinates="weatherCoordinates" :start="form.start" :end="form.end" :road-source="roadSource" :clearance-m="form.clearance_m" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" :limits="activeLimits" @choose="chooseRoad" @state="comparisonPhase = $event" /></div></details>
+        <details class="overview-group"><summary><span>天气规则和技术状态</span><small>仅在需要核对时查看</small></summary><div class="overview-group-body"><details class="limits-settings"><summary>天气初筛阈值</summary><label class="limits-toggle"><input v-model="customLimitsEnabled" type="checkbox" /> 填写自定义气象阈值</label><p>关闭时使用演示阈值。阈值用于天气提示与比较，参考分不是事故概率。</p><template v-if="customLimitsEnabled"><label>阈值名称<input v-model="customLimits.name" maxlength="80" /></label><div class="coordinate-row"><label>最大高度风 · m/s<input v-model.number="customLimits.max_wind_m_s" type="number" min="0.1" max="200" step="0.1" required /></label><label>最大侧风 · m/s<input v-model.number="customLimits.max_crosswind_m_s" type="number" min="0.1" max="200" step="0.1" required /></label></div><div class="coordinate-row"><label>最大逆风 · m/s<input v-model.number="customLimits.max_headwind_m_s" type="number" min="0.1" max="200" step="0.1" required /></label><label>最大地面阵风 · m/s<input v-model.number="customLimits.max_gust_m_s" type="number" min="0.1" max="200" step="0.1" required /></label></div><div class="coordinate-row"><label>最大雨量 · mm/6h<input v-model.number="customLimits.max_rain_6h_mm" type="number" min="0.1" max="500" step="0.1" required /></label><label>最低地面能见度 · m<input v-model.number="customLimits.min_visibility_m" type="number" min="1" max="100000" step="1" required /></label></div></template></details><div class="pipeline"><h3>系统状态</h3><div><span>01</span><p>{{ alignmentProgress }}</p></div><div><span>02</span><p>{{ routeAssessment ? decisionTitle : '沿线初筛等待资料' }}</p></div><div><span>03</span><p>{{ planningProgress }}</p></div></div></div></details>
+        <div v-if="preview" class="road-summary"><strong>当前路线：{{ preview.road_names.join(' → ') || '未命名道路' }}</strong><span>{{ distance }} · 预计用时 {{ elapsed }}</span><details><summary>查看路线数据</summary><small>直线 {{ preview.straight_distance_km.toFixed(2) }} km · {{ preview.building_clearance_m === null ? '在线模式未检查建筑缓冲' : `建筑缓冲 ${preview.building_clearance_m} m` }}</small><small>A/B 到道路分别约 {{ preview.start_snap_m }} m / {{ preview.end_snap_m }} m</small><small>{{ preview.data_source }}</small><small>路线数据 © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap contributors</a></small></details></div>
       </aside>
     </main>
   </div>

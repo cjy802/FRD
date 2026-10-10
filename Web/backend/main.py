@@ -168,6 +168,16 @@ def sample_regional_weather(job_id: str, latitude: float, longitude: float, vali
         raise HTTPException(status_code=422, detail=str(error)) from error
 
 
+@app.get("/api/weather/predictions/{job_id}/series")
+def sample_ground_weather_series(job_id: str, latitude: float, longitude: float, hours: int = 6):
+    try:
+        return forecast_jobs.series(job_id, latitude, longitude, hours)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="天气预测任务不存在，请重新预测。") from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
 @app.post("/api/weather/predictions/{job_id}/route")
 def align_route_weather(job_id: str, request: RouteWeatherRequest):
     try:

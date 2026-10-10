@@ -16,6 +16,15 @@ const error = ref('')
 let controller: AbortController | null = null
 let timer: ReturnType<typeof setTimeout> | null = null
 function isCurrent(candidate: Candidate) { return JSON.stringify(candidate.route.geometry.coordinates) === JSON.stringify(props.currentCoordinates) }
+function comparisonSummary(state: string) {
+  return ({
+    candidate_lower_screening: '备选路线的天气提醒较少，仍需人工确认。',
+    no_alternative: '没有找到合适的其他道路。',
+    coverage_incomplete: '部分路线天气资料不完整。',
+    no_resolvable_weather_difference: '现有路线的天气差异不足以支持绕行。',
+    no_material_improvement: '备选路线没有明显改善。',
+  } as Record<string, string>)[state] || '路线天气比较已完成，请按需查看备选。'
+}
 async function compare() {
   if (!props.jobId || !props.canCompare) return
   const current = new AbortController(); controller = current; pending.value = true; emit('state', 'pending')
@@ -43,13 +52,12 @@ onBeforeUnmount(() => { controller?.abort(); if (timer) clearTimeout(timer) })
 
 <template>
   <div class="status-block" aria-label="天气约束路线比较">
-    <div class="status-title"><span>道路天气比较</span><b class="pending">{{ pending ? '比较中' : result ? '候选已比较' : '待比较' }}</b></div>
+    <div class="status-title"><span>路线备选</span><b class="pending">{{ pending ? '比较中' : result ? '已完成比较' : '待比较' }}</b></div>
     <p v-if="error" role="alert">{{ error }}</p>
-    <p v-else-if="!result">{{ pending ? '正在生成真实道路备选并比较天气暴露…' : '等待当前道路路线与区域天气。' }}</p>
+    <p v-else-if="!result">{{ pending ? '正在生成路线备选并比较天气…' : '如需比较其他道路，先完成当前路线和天气检查。' }}</p>
     <template v-else>
-      <p>{{ result.reason }}</p>
-      <ol class="weather-window-list"><li v-for="candidate in result.candidates" :key="candidate.route_id"><strong>{{ candidate.label }} · {{ candidate.route.distance_km.toFixed(2) }} km</strong><span>{{ candidate.route.road_names.join(' → ') || '未命名道路' }}</span><span>{{ candidate.weather.label }} · {{ candidate.weather.score_0_100 === null ? '缺测，不评分' : `参考分 ${candidate.weather.score_0_100.toFixed(1)}` }}</span><span>高度风 {{ candidate.weather.summary.max_wind_m_s?.toFixed(2) ?? '—' }} m/s · 地面能见度 {{ candidate.weather.summary.min_surface_visibility_m?.toFixed(0) ?? '—' }} m</span><span v-if="candidate.route_id === result.recommended_route_id">{{ result.state === 'candidate_lower_screening' ? '相对较低初筛分备选（不是飞行许可）' : '比较器保留道路基线' }}</span><button type="button" class="weather-refresh" :disabled="isCurrent(candidate) || !candidate.weather.coverage_complete" @click="emit('choose', candidate.route)">{{ isCurrent(candidate) ? '当前道路参考线' : '采用并重新初筛' }}</button></li></ol>
-      <small>备选来自所选道路数据源，天气比较受 0.25° 原生网格和资料覆盖范围限制。</small><small>{{ result.message }}</small>
+      <p class="plain-summary">{{ comparisonSummary(result.state) }}</p>
+      <details class="weather-rule-details"><summary>查看路线备选（{{ result.candidates.length }} 条）</summary><p>{{ result.reason }}</p><ol class="weather-window-list"><li v-for="candidate in result.candidates" :key="candidate.route_id"><strong>{{ candidate.label }} · {{ candidate.route.distance_km.toFixed(2) }} km</strong><span>{{ candidate.weather.label }} · {{ candidate.weather.coverage_complete ? '天气资料完整' : '天气资料不完整' }}</span><span v-if="candidate.route_id === result.recommended_route_id">{{ result.state === 'candidate_lower_screening' ? '相对较低的天气初筛提醒' : '当前路线仍是基线' }}</span><details><summary>查看路线和详细数值</summary><small>{{ candidate.route.road_names.join(' → ') || '未命名道路' }}</small><small>飞行高度风 {{ candidate.weather.summary.max_wind_m_s?.toFixed(1) ?? '—' }} m/s · 地面能见度 {{ candidate.weather.summary.min_surface_visibility_m?.toFixed(0) ?? '—' }} m</small><small>内部参考分：{{ candidate.weather.score_0_100 === null ? '缺测，不评分' : candidate.weather.score_0_100.toFixed(1) }}（不是安全概率）</small></details><button type="button" class="weather-refresh" :disabled="isCurrent(candidate) || !candidate.weather.coverage_complete" @click="emit('choose', candidate.route)">{{ isCurrent(candidate) ? '当前道路参考线' : '采用并重新初筛' }}</button></li></ol><small>备选来自所选道路数据源，天气比较受 0.25° 网格和资料覆盖范围限制。</small><small>{{ result.message }}</small></details>
     </template>
   </div>
 </template>

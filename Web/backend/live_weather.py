@@ -14,7 +14,7 @@ from pathlib import Path
 
 from weather_service import (
     DEFAULT_MODEL, PROJECT_ROOT, WeatherUnavailable, assemble_forecast,
-    configured_path, iso_utc, load_corrector, utc_timestamp,
+    configured_path, iso_utc, load_corrector, point_risk, utc_timestamp,
 )
 from regional_weather import RegionalWeather
 from route_weather import align_route
@@ -149,6 +149,44 @@ class ForecastJobs:
             raise WeatherUnavailable("区域预报已过期，请重新预测。")
         result["generated_at_utc"] = generated
         return result
+
+    def series(self, job_id: str, latitude: float, longitude: float, hours: int = 6) -> dict:
+        if not isinstance(hours, int) or not 1 <= hours <= 6:
+            raise WeatherUnavailable('地面趋势仅支持未来 1–6 小时。')
+        grid, model, generated = self.regional_job(job_id)
+        start = self.clock()
+        samples = []
+        for offset in range(1, hours + 1):
+            when = start + timedelta(hours=offset)
+            sample = grid.sample(latitude, longitude, model, iso_utc(when))
+            samples.append({
+                'offset_hours': offset,
+                'interval_label': f'{offset - 1}–{offset}h',
+                'valid_time_utc': sample['valid_time_utc'],
+                'time_method': sample['time_method'],
+                'values': {key: sample['values'][key] for key in ('t2m_K', 'u10_m_s', 'v10_m_s', 'msl_Pa', 'tp_6h_mm')},
+                'derived': sample['derived'],
+                'rain_interval': sample['rain_interval'],
+            })
+        max_wind = max(sample['derived']['wind_speed_10m_m_s'] for sample in samples)
+        max_rain = max(sample['values']['tp_6h_mm'] for sample in samples)
+        return {
+            'point': {'latitude_deg': latitude, 'longitude_deg': longitude},
+            'window_start_utc': iso_utc(start),
+            'window_end_utc': iso_utc(start + timedelta(hours=hours)),
+            'samples': samples,
+            'rain': {
+                'total_mm_6h': max_rain,
+                'interval_start_utc': samples[0]['rain_interval']['start_utc'],
+                'interval_end_utc': samples[0]['rain_interval']['end_utc'],
+                'is_hourly_allocation': False,
+                'note': '当前资料提供六小时累计降水，未提供 0–1 小时逐小时分配。',
+            },
+            'ground_risk': point_risk(max_wind, max_rain),
+            'native_time_step_hours': 6,
+            'time_method': 'hourly_samples_between_native_6h_forecasts',
+            'generated_at_utc': generated,
+        }
 
     def route(self, job_id: str, coordinates, departure_time_utc: str, speed_kmh: float, altitude_m: float, profile=None):
         grid, model, generated = self.regional_job(job_id)

@@ -50,9 +50,8 @@ onBeforeUnmount(() => { controller?.abort(); if (timer) clearTimeout(timer) })
     <p v-else-if="!result">{{ pending ? '正在用已有天气比较出发时次…' : '等待当前道路路线与区域天气。' }}</p>
     <template v-else>
       <p class="weather-choice-current">当前选择：{{ beijing(props.departureBeijing + ':00+08:00') }}（北京时间）</p>
-      <small>出发时刻由左侧输入框控制；列表中的原生时次只是资料覆盖较完整的参考选项。</small>
-      <ol class="weather-window-list"><li v-for="candidate in result.candidates" :key="candidate.departure_time_utc"><strong>{{ beijing(candidate.departure_time_utc) }}（北京时间）</strong><span>{{ candidate.selected ? '当前选择' : '候选' }} · {{ candidate.native_departure ? '原生出发时次' : '时次间估计' }}</span><span>{{ candidate.covered ? `${candidate.label} · 参考分 ${candidate.score_0_100?.toFixed(1)}` : candidate.reason }}</span><button type="button" class="weather-refresh" :disabled="!candidate.covered || candidate.selected" @click="emit('choose', candidate.departure_time_utc)">{{ candidate.selected ? '当前时刻' : '选用并重新初筛' }}</button></li></ol>
-      <small>{{ result.ranking_basis }}</small><small>{{ result.message }}</small>
+      <small>出发时刻由左侧输入框控制。下面的时间只是资料较完整的参考选项，不会自动替换当前选择。</small>
+      <details class="weather-rule-details"><summary>查看可比较的其他出发时间（{{ result.covered_count }} 个）</summary><ol class="weather-window-list"><li v-for="candidate in result.candidates" :key="candidate.departure_time_utc"><strong>{{ beijing(candidate.departure_time_utc) }}（北京时间）</strong><span>{{ candidate.selected ? '当前时间' : candidate.covered ? '资料完整，可比较' : '资料不足，暂不能评估' }}</span><span>{{ candidate.covered ? candidate.label : candidate.reason }}</span><button type="button" class="weather-refresh" :disabled="!candidate.covered || candidate.selected" @click="emit('choose', candidate.departure_time_utc)">{{ candidate.selected ? '当前时间' : '采用这个时间' }}</button></li></ol><small>{{ result.ranking_basis }}</small><small>{{ result.message }}</small></details>
     </template>
   </div>
 </template>
