@@ -116,6 +116,7 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .sidebar-note { margin: 24px 0 0; padding: 16px 0 0; border-top: 1px solid var(--ui-line); color: var(--ui-muted); font-size: var(--font-caption); line-height: 1.6; }
 .map-panel { position: relative; overflow: hidden; min-height: 0; min-width: 0; background: #eaf0f6; }
 .column-resizer { position: absolute; top: 0; bottom: 0; z-index: 12; width: 16px; transform: translateX(-50%); cursor: col-resize; outline: 0; touch-action: none; }
+.column-resizer-right { transform: translateX(50%); }
 .column-resizer::before { content: ''; position: absolute; top: 0; bottom: 0; left: 7px; width: 2px; background: transparent; transition: background-color .15s ease-out, width .15s ease-out; }
 .column-resizer:hover::before, .column-resizer:focus-visible::before, .is-resizing-columns .column-resizer::before { left: 6px; width: 4px; background: var(--ui-accent); }
 .column-resizer:focus-visible { box-shadow: 0 0 0 2px #fff, 0 0 0 4px #3b82f6; }

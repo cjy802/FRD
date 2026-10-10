@@ -199,15 +199,21 @@ function chooseRoadSource(source: 'local' | 'online') {
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(Math.max(value, minimum), maximum)
 }
+function minimumWidth(side: ResizeSide) {
+  return side === 'left' ? 260 : 280
+}
 function widthLimit(side: ResizeSide) {
   const mapMinimum = 420
   const other = side === 'left' ? insightsWidth.value : sidebarWidth.value
-  return Math.min(480, Math.max(260, window.innerWidth - other - mapMinimum))
+  return Math.min(480, Math.max(minimumWidth(side), window.innerWidth - other - mapMinimum))
+}
+function resizeViewer() {
+  requestAnimationFrame(() => { if (viewer && !viewer.isDestroyed()) viewer.resize() })
 }
 function setColumnWidth(side: ResizeSide, value: number) {
-  if (side === 'left') sidebarWidth.value = clamp(value, 260, widthLimit('left'))
-  else insightsWidth.value = clamp(value, 260, widthLimit('right'))
-  requestAnimationFrame(() => viewer?.resize())
+  if (side === 'left') sidebarWidth.value = clamp(value, minimumWidth('left'), widthLimit('left'))
+  else insightsWidth.value = clamp(value, minimumWidth('right'), widthLimit('right'))
+  resizeViewer()
 }
 function onColumnResize(event: PointerEvent) {
   if (!resizingSide.value) return
@@ -225,6 +231,8 @@ function stopColumnResize() {
 function startColumnResize(side: ResizeSide, event: PointerEvent) {
   if (window.innerWidth <= 1100) return
   event.preventDefault()
+  const handle = event.currentTarget as HTMLElement | null
+  handle?.setPointerCapture?.(event.pointerId)
   resizingSide.value = side
   resizeStartX = event.clientX
   resizeStartWidth = side === 'left' ? sidebarWidth.value : insightsWidth.value
@@ -242,13 +250,13 @@ function resizeColumnByKeyboard(side: ResizeSide, event: KeyboardEvent) {
     setColumnWidth(side, current + direction * step)
   } else if (event.key === 'Home' || event.key === 'End') {
     event.preventDefault()
-    setColumnWidth(side, event.key === 'Home' ? 260 : widthLimit(side))
+    setColumnWidth(side, event.key === 'Home' ? minimumWidth(side) : widthLimit(side))
   }
 }
 function resetColumnWidths() {
   sidebarWidth.value = 328
   insightsWidth.value = 320
-  requestAnimationFrame(() => viewer?.resize())
+  resizeViewer()
 }
 function toggleRange(point: 'start' | 'end') {
   if (point === 'start') showStartRange.value = !showStartRange.value
@@ -479,8 +487,8 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <div class="column-resizer column-resizer-left" role="separator" aria-orientation="vertical" aria-label="调整航线设置栏宽度" :aria-valuenow="Math.round(sidebarWidth)" aria-valuemin="260" :aria-valuemax="Math.round(widthLimit('left'))" tabindex="0" title="拖动调整航线设置栏宽度，双击恢复默认" :style="{ left: `${sidebarWidth}px` }" @pointerdown="startColumnResize('left', $event)" @dblclick="resetColumnWidths" @keydown="resizeColumnByKeyboard('left', $event)"></div>
-      <div class="column-resizer column-resizer-right" role="separator" aria-orientation="vertical" aria-label="调整任务概览栏宽度" :aria-valuenow="Math.round(insightsWidth)" aria-valuemin="260" :aria-valuemax="Math.round(widthLimit('right'))" tabindex="0" title="拖动调整任务概览栏宽度，双击恢复默认" :style="{ right: `${insightsWidth}px` }" @pointerdown="startColumnResize('right', $event)" @dblclick="resetColumnWidths" @keydown="resizeColumnByKeyboard('right', $event)"></div>
+      <div class="column-resizer column-resizer-left" role="separator" aria-orientation="vertical" aria-label="调整航线设置栏宽度" aria-controls="mission-sidebar route-map" :aria-valuenow="Math.round(sidebarWidth)" aria-valuemin="260" :aria-valuemax="Math.round(widthLimit('left'))" tabindex="0" title="拖动调整航线设置栏宽度，双击恢复默认" :style="{ left: `${sidebarWidth}px` }" @pointerdown="startColumnResize('left', $event)" @dblclick="resetColumnWidths" @keydown="resizeColumnByKeyboard('left', $event)"></div>
+      <div class="column-resizer column-resizer-right" role="separator" aria-orientation="vertical" aria-label="调整任务概览栏宽度" aria-controls="route-map mission-insights" :aria-valuenow="Math.round(insightsWidth)" :aria-valuemin="minimumWidth('right')" :aria-valuemax="Math.round(widthLimit('right'))" tabindex="0" title="拖动调整任务概览栏宽度，双击恢复默认" :style="{ right: `${insightsWidth}px` }" @pointerdown="startColumnResize('right', $event)" @dblclick="resetColumnWidths" @keydown="resizeColumnByKeyboard('right', $event)"></div>
 
       <aside id="mission-insights" class="insights" :class="{ 'panel-active': workspacePanel === 'overview' }" aria-label="任务概览" tabindex="0">
         <div class="insights-header"><span class="eyebrow">任务状态</span><h2>先看天气结论</h2><p>先看结论，需要细节时再展开。</p></div>
