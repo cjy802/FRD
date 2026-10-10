@@ -366,6 +366,10 @@ function drawCesiumRoute(flyToRoute = true) {
   viewer.entities.removeAll()
   const start = form.start
   const end = form.end
+  const routeAltitude = Math.max(10, Number(form.altitude_m) || 100)
+  const routeColor = Cesium.Color.fromCssColorString('#00e5a8')
+  const routeShadow = Cesium.Color.fromCssColorString('#062d2d').withAlpha(0.48)
+  const white = Cesium.Color.WHITE.withAlpha(0.88)
   function addRange(point: Point, name: string, color: string) {
     viewer.entities.add({
       name,
@@ -394,28 +398,106 @@ function drawCesiumRoute(flyToRoute = true) {
     label: { text: 'B  终点', font: '600 14px sans-serif', fillColor: Cesium.Color.fromCssColorString('#242424'), outlineColor: Cesium.Color.WHITE, outlineWidth: 3, style: Cesium.LabelStyle.FILL_AND_OUTLINE, pixelOffset: new Cesium.Cartesian2(0, -27) },
   })
   if (!preview.value) return
+  const coordinates = preview.value.geometry.coordinates
+  const groundPositions = Cesium.Cartesian3.fromDegreesArray(
+    coordinates.flatMap(([longitude, latitude]) => [longitude, latitude]),
+  )
+  const elevatedPositions = Cesium.Cartesian3.fromDegreesArrayHeights(
+    coordinates.flatMap(([longitude, latitude]) => [longitude, latitude, routeAltitude]),
+  )
+
+  // Keep a low-contrast ground trace so the route remains readable against the 2D imagery.
   viewer.entities.add({
-    name: '道路参考路线 · 未验证飞行安全',
+    name: '2D 地面参考路线',
     polyline: {
-      positions: Cesium.Cartesian3.fromDegreesArray(preview.value.geometry.coordinates.flatMap(([longitude, latitude]) => [longitude, latitude])),
-      width: 8,
-      material: Cesium.Color.fromCssColorString('#0f6cbd'),
+      positions: groundPositions,
+      width: 3,
+      material: routeShadow,
       clampToGround: true,
     },
   })
+  // The route floats at the requested AGL. The glow + core lines create a dimensional neon trace.
+  viewer.entities.add({
+    name: `3D 航线外光 · ${routeAltitude} m AGL`,
+    polyline: {
+      positions: elevatedPositions,
+      width: 16,
+      material: Cesium.PolylineGlowMaterialProperty
+        ? new Cesium.PolylineGlowMaterialProperty({ glowPower: 0.22, taperPower: 0.55, color: routeColor.withAlpha(0.72) })
+        : routeColor.withAlpha(0.35),
+      clampToGround: false,
+      depthFailMaterial: routeColor.withAlpha(0.28),
+    },
+  })
+  viewer.entities.add({
+    name: `3D 航线主线 · ${routeAltitude} m AGL`,
+    polyline: {
+      positions: elevatedPositions,
+      width: 5,
+      material: routeColor,
+      clampToGround: false,
+      depthFailMaterial: routeColor.withAlpha(0.74),
+    },
+  })
+
+  // Drop lines make the height legible while the base imagery remains flat.
+  const dropStep = Math.max(1, Math.ceil(coordinates.length / 12))
+  const waypointIndexes = Array.from(new Set([
+    0,
+    ...coordinates.map((_, index) => index).filter(index => index % dropStep === 0),
+    coordinates.length - 1,
+  ]))
+  waypointIndexes.forEach((index) => {
+    const [longitude, latitude] = coordinates[index]
+    const ground = Cesium.Cartesian3.fromDegrees(longitude, latitude, 0)
+    const elevated = Cesium.Cartesian3.fromDegrees(longitude, latitude, routeAltitude)
+    viewer.entities.add({
+      name: `航点 ${index + 1} 垂直投影`,
+      polyline: {
+        positions: [ground, elevated],
+        width: 2,
+        material: white,
+        clampToGround: false,
+        depthFailMaterial: white.withAlpha(0.55),
+      },
+    })
+    viewer.entities.add({
+      name: `航点 ${index + 1}`,
+      position: elevated,
+      point: { pixelSize: index === 0 || index === coordinates.length - 1 ? 13 : 10, color: routeColor, outlineColor: Cesium.Color.WHITE, outlineWidth: 2 },
+      label: {
+        text: index === 0 ? 'A 3D 起点' : index === coordinates.length - 1 ? 'B 3D 终点' : `W${String(index + 1).padStart(2, '0')}`,
+        font: '600 12px sans-serif',
+        fillColor: Cesium.Color.WHITE,
+        outlineColor: Cesium.Color.fromCssColorString('#12343b'),
+        outlineWidth: 3,
+        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+        pixelOffset: new Cesium.Cartesian2(0, -19),
+        showBackground: true,
+        backgroundColor: Cesium.Color.fromCssColorString('#12343b').withAlpha(0.82),
+        backgroundPadding: new Cesium.Cartesian2(6, 4),
+      },
+    })
+  })
+
   if (routeAssessment.value && weatherCoordinates.value) {
     const colors: Record<string, string> = { no_trigger: '#0f6cbd', attention: '#b66a00', elevated: '#b42318', incomplete: '#6e7781' }
     for (const segment of routeAssessment.value.weather_risk.segments) {
       viewer.entities.add({ name: `气象初筛第 ${segment.index + 1} 段 · ${segment.level}（非街道级预报）`,
-        polyline: { positions: Cesium.Cartesian3.fromDegreesArray([...segment.start, ...segment.end]), width: 5,
-          material: Cesium.Color.fromCssColorString(colors[segment.level] || '#6e7781'), clampToGround: true } })
+        polyline: { positions: Cesium.Cartesian3.fromDegreesArrayHeights([...segment.start, routeAltitude, ...segment.end, routeAltitude]), width: 5,
+          material: Cesium.Color.fromCssColorString(colors[segment.level] || '#6e7781'), clampToGround: false,
+          depthFailMaterial: Cesium.Color.fromCssColorString(colors[segment.level] || '#6e7781').withAlpha(0.6) } })
     }
   }
   const centerLongitude = (start.longitude + end.longitude) / 2
   const centerLatitude = (start.latitude + end.latitude) / 2
-  const cameraHeight = Math.max(620, preview.value.straight_distance_km * 2600)
+  const cameraHeight = Math.max(760, preview.value.straight_distance_km * 3200, routeAltitude * 5.5)
   if (flyToRoute) {
-    viewer.camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(centerLongitude, centerLatitude, cameraHeight), duration: 0.8 })
+    viewer.camera.flyTo({
+      destination: Cesium.Cartesian3.fromDegrees(centerLongitude, centerLatitude, cameraHeight),
+      orientation: { heading: Cesium.Math.toRadians(0), pitch: Cesium.Math.toRadians(-34), roll: 0 },
+      duration: 0.8,
+    })
   }
 }
 
@@ -443,7 +525,10 @@ function initMap() {
       credit: new Cesium.Credit('<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">© OpenStreetMap contributors</a>', true),
     }))
     viewer.scene.globe.depthTestAgainstTerrain = false
-    viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(119.95050, 31.67980, 900) })
+    viewer.camera.setView({
+      destination: Cesium.Cartesian3.fromDegrees(119.95050, 31.67980, 1100),
+      orientation: { heading: Cesium.Math.toRadians(0), pitch: Cesium.Math.toRadians(-34), roll: 0 },
+    })
     const clickHandler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas)
     clickHandler.setInputAction((event: any) => {
       const cartesian = viewer.camera.pickEllipsoid(event.position, viewer.scene.globe.ellipsoid)
@@ -527,7 +612,7 @@ onBeforeUnmount(() => {
           <div class="grid-lines"></div>
           <p>地图底图加载中</p><small>道路路线按所选数据源计算</small>
         </div>
-        <div class="map-top"><div class="map-title-group"><span class="map-badge"><i></i> 道路参考路线 · 未验证飞行安全</span><div class="map-source-switch" aria-label="路线数据源"><button type="button" :class="{ active: roadSource === 'local' }" :aria-pressed="roadSource === 'local'" :disabled="loading || checkingPoint" @click="chooseRoadSource('local')">本地</button><button type="button" :class="{ active: roadSource === 'online' }" :aria-pressed="roadSource === 'online'" :disabled="loading || checkingPoint" @click="chooseRoadSource('online')">在线</button></div></div><span class="map-caption">{{ checkingPoint ? '正在检查点位…' : `地图点击可设置 ${mapMode === 'start' ? '起点 A' : '终点 B'}` }}</span></div>
+        <div class="map-top"><div class="map-title-group"><span class="map-badge"><i></i> 2D 底图 · 3D 航线预览</span><span class="map-mode-chip">{{ form.altitude_m }} m AGL</span><div class="map-source-switch" aria-label="路线数据源"><button type="button" :class="{ active: roadSource === 'local' }" :aria-pressed="roadSource === 'local'" :disabled="loading || checkingPoint" @click="chooseRoadSource('local')">本地</button><button type="button" :class="{ active: roadSource === 'online' }" :aria-pressed="roadSource === 'online'" :disabled="loading || checkingPoint" @click="chooseRoadSource('online')">在线</button></div></div><span class="map-caption">{{ checkingPoint ? '正在检查点位…' : `地图点击可设置 ${mapMode === 'start' ? '起点 A' : '终点 B'}` }}</span></div>
         <div v-if="error" class="map-alert" role="alert">{{ error }}</div>
         <div v-else-if="pointHint" class="map-point-hint" role="status">{{ pointHint }}</div>
         <div class="map-bottom"><div class="map-switch"><button :class="{ active: mapMode === 'start' }" :disabled="checkingPoint" @click="mapMode = 'start'">设置起点 A</button><button :class="{ active: mapMode === 'end' }" :disabled="checkingPoint" @click="mapMode = 'end'">设置终点 B</button></div><span class="map-radius">接路判定 {{ landingSearchRadiusM }} m</span><span class="map-scale">任务高度 {{ form.altitude_m }} m</span></div>

@@ -131,9 +131,10 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .map-top { top: 20px; gap: 12px; align-items: flex-start; }
 .map-bottom { bottom: 20px; gap: 8px; }
 .map-title-group { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 8px; }
-.map-badge, .map-caption, .map-scale, .map-radius, .map-switch, .map-source-switch { padding: 8px 11px; border: 1px solid var(--ui-line); border-radius: var(--ui-radius); background: #fff; box-shadow: 0 1px 4px #17324d1a; color: #424242; font-size: var(--font-caption); white-space: nowrap; }
+.map-badge, .map-caption, .map-scale, .map-radius, .map-switch, .map-source-switch, .map-mode-chip { padding: 8px 11px; border: 1px solid var(--ui-line); border-radius: var(--ui-radius); background: #fff; box-shadow: 0 1px 4px #17324d1a; color: #424242; font-size: var(--font-caption); white-space: nowrap; }
 .map-badge { font-weight: 600; }
 .map-badge i { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: var(--ui-accent); }
+.map-mode-chip { border-color: #9ee7d1; background: #effcf8; color: #067a63; font-weight: 700; font-variant-numeric: tabular-nums; }
 .map-switch, .map-source-switch { display: flex; gap: 2px; padding: 3px; pointer-events: auto; }
 .map-switch button, .map-source-switch button { padding: 7px 10px; border: 0; border-radius: var(--ui-radius); background: transparent; color: #424242; font-size: var(--font-caption); }
 .map-switch button:hover, .map-source-switch button:hover { background: #f3f5f7; }
