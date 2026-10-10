@@ -371,6 +371,21 @@ function drawCesiumRoute(flyToRoute = true) {
   const routeAltitude = Math.max(10, Number(form.altitude_m) || 100)
   const routeColor = Cesium.Color.fromCssColorString('#00e5a8')
   const routeShadow = Cesium.Color.fromCssColorString('#062d2d').withAlpha(0.48)
+  function addGroundPoint(position: number[], name: string, color: any, pixelSize = 9) {
+    const [longitude, latitude] = position
+    viewer.entities.add({
+      name,
+      position: Cesium.Cartesian3.fromDegrees(longitude, latitude, 0),
+      point: {
+        pixelSize,
+        color,
+        outlineColor: Cesium.Color.WHITE,
+        outlineWidth: 2,
+        heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      },
+    })
+  }
   function addRange(point: Point, name: string, color: string) {
     viewer.entities.add({
       name,
@@ -462,6 +477,11 @@ function drawCesiumRoute(flyToRoute = true) {
         depthFailMaterial: Cesium.Color.fromCssColorString('#e8fff8').withAlpha(0.55),
       },
     })
+    // Mirror interior waypoints on the ground so turns remain readable when
+    // the elevated route is visually separated from the map surface.
+    if (index > 0 && index < coordinates.length - 1) {
+      addGroundPoint([longitude, latitude], `地面航点 ${index + 1}`, routeColor.withAlpha(0.88))
+    }
     viewer.entities.add({
       name: `航点 ${index + 1}`,
       position: elevated,
@@ -484,10 +504,13 @@ function drawCesiumRoute(flyToRoute = true) {
   if (routeAssessment.value && weatherCoordinates.value) {
     const colors: Record<string, string> = { no_trigger: '#0f6cbd', attention: '#b66a00', elevated: '#b42318', incomplete: '#6e7781' }
     for (const segment of routeAssessment.value.weather_risk.segments) {
+      const segmentColor = Cesium.Color.fromCssColorString(colors[segment.level] || '#6e7781')
       viewer.entities.add({ name: `气象初筛第 ${segment.index + 1} 段 · ${segment.level}（非街道级预报）`,
         polyline: { positions: Cesium.Cartesian3.fromDegreesArrayHeights([...segment.start, routeAltitude, ...segment.end, routeAltitude]), width: 5,
-          material: Cesium.Color.fromCssColorString(colors[segment.level] || '#6e7781'), clampToGround: false,
-          depthFailMaterial: Cesium.Color.fromCssColorString(colors[segment.level] || '#6e7781').withAlpha(0.6) } })
+          material: segmentColor, clampToGround: false,
+          depthFailMaterial: segmentColor.withAlpha(0.6) } })
+      addGroundPoint(segment.start, `气象初筛地面点 ${segment.index + 1} 起`, segmentColor.withAlpha(0.9), 8)
+      addGroundPoint(segment.end, `气象初筛地面点 ${segment.index + 1} 止`, segmentColor.withAlpha(0.9), 8)
     }
   }
   const centerLongitude = (start.longitude + end.longitude) / 2
