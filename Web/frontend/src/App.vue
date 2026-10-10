@@ -54,6 +54,12 @@ const mapElement = ref<HTMLElement | null>(null)
 const landingSearchRadiusM = ref(35)
 const showStartRange = ref(false)
 const showEndRange = ref(false)
+type ResizeSide = 'left' | 'right'
+const sidebarWidth = ref(328)
+const insightsWidth = ref(320)
+const resizingSide = ref<ResizeSide | null>(null)
+let resizeStartX = 0
+let resizeStartWidth = 0
 let viewer: any = null
 let Cesium: any = null
 let routeController: AbortController | null = null
@@ -61,6 +67,7 @@ let routeRequestVersion = 0
 
 const elapsed = computed(() => preview.value && form.speed_kmh > 0 ? `${(preview.value.distance_km / form.speed_kmh * 60).toFixed(2)} 分钟` : '待计算')
 const distance = computed(() => preview.value ? `${preview.value.distance_km.toFixed(2)} km` : '待计算')
+const layoutStyle = computed(() => ({ '--sidebar-width': `${sidebarWidth.value}px`, '--insights-width': `${insightsWidth.value}px` }))
 const routeKey = computed(() => JSON.stringify([form.start, form.end, roadSource.value, form.clearance_m]))
 const weatherCoordinates = computed(() => preview.value && previewKey.value === routeKey.value ? preview.value.geometry.coordinates : null)
 const decisionTone = computed(() => {
@@ -189,6 +196,60 @@ function chooseRoadSource(source: 'local' | 'online') {
   calculate()
 }
 
+function clamp(value: number, minimum: number, maximum: number) {
+  return Math.min(Math.max(value, minimum), maximum)
+}
+function widthLimit(side: ResizeSide) {
+  const mapMinimum = 420
+  const other = side === 'left' ? insightsWidth.value : sidebarWidth.value
+  return Math.min(480, Math.max(260, window.innerWidth - other - mapMinimum))
+}
+function setColumnWidth(side: ResizeSide, value: number) {
+  if (side === 'left') sidebarWidth.value = clamp(value, 260, widthLimit('left'))
+  else insightsWidth.value = clamp(value, 260, widthLimit('right'))
+  requestAnimationFrame(() => viewer?.resize())
+}
+function onColumnResize(event: PointerEvent) {
+  if (!resizingSide.value) return
+  const delta = event.clientX - resizeStartX
+  setColumnWidth(resizingSide.value, resizeStartWidth + (resizingSide.value === 'left' ? delta : -delta))
+}
+function stopColumnResize() {
+  if (!resizingSide.value) return
+  window.removeEventListener('pointermove', onColumnResize)
+  window.removeEventListener('pointerup', stopColumnResize)
+  window.removeEventListener('pointercancel', stopColumnResize)
+  document.body.classList.remove('is-resizing-columns')
+  resizingSide.value = null
+}
+function startColumnResize(side: ResizeSide, event: PointerEvent) {
+  if (window.innerWidth <= 1100) return
+  event.preventDefault()
+  resizingSide.value = side
+  resizeStartX = event.clientX
+  resizeStartWidth = side === 'left' ? sidebarWidth.value : insightsWidth.value
+  document.body.classList.add('is-resizing-columns')
+  window.addEventListener('pointermove', onColumnResize)
+  window.addEventListener('pointerup', stopColumnResize)
+  window.addEventListener('pointercancel', stopColumnResize)
+}
+function resizeColumnByKeyboard(side: ResizeSide, event: KeyboardEvent) {
+  const step = event.shiftKey ? 48 : 16
+  const current = side === 'left' ? sidebarWidth.value : insightsWidth.value
+  if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+    event.preventDefault()
+    const direction = side === 'left' ? (event.key === 'ArrowRight' ? 1 : -1) : (event.key === 'ArrowLeft' ? 1 : -1)
+    setColumnWidth(side, current + direction * step)
+  } else if (event.key === 'Home' || event.key === 'End') {
+    event.preventDefault()
+    setColumnWidth(side, event.key === 'Home' ? 260 : widthLimit(side))
+  }
+}
+function resetColumnWidths() {
+  sidebarWidth.value = 328
+  insightsWidth.value = 320
+  requestAnimationFrame(() => viewer?.resize())
+}
 function toggleRange(point: 'start' | 'end') {
   if (point === 'start') showStartRange.value = !showStartRange.value
   else showEndRange.value = !showEndRange.value
@@ -347,6 +408,7 @@ onMounted(() => {
   else window.addEventListener('load', initMap, { once: true })
 })
 onBeforeUnmount(() => {
+  stopColumnResize()
   cancelCalculation()
   window.removeEventListener('load', initMap)
   if (viewer && !viewer.isDestroyed()) viewer.destroy()
@@ -366,7 +428,7 @@ onBeforeUnmount(() => {
       <button type="button" :aria-pressed="workspacePanel === 'overview'" aria-controls="mission-insights" @click="workspacePanel = 'overview'">任务概览</button>
     </nav>
 
-    <main class="layout">
+    <main class="layout" :style="layoutStyle">
       <aside id="mission-sidebar" class="sidebar" :class="{ 'panel-active': workspacePanel === 'settings' }" aria-label="航线设置">
         <div class="section-heading"><span class="eyebrow">航线设置</span><h1>规划一次飞行</h1><p>默认点位位于常州信息职业技术大学。沿校园道路计算参考路线。</p></div>
 
@@ -416,6 +478,9 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </section>
+
+      <div class="column-resizer column-resizer-left" role="separator" aria-orientation="vertical" aria-label="调整航线设置栏宽度" :aria-valuenow="Math.round(sidebarWidth)" aria-valuemin="260" :aria-valuemax="Math.round(widthLimit('left'))" tabindex="0" title="拖动调整航线设置栏宽度，双击恢复默认" :style="{ left: `${sidebarWidth}px` }" @pointerdown="startColumnResize('left', $event)" @dblclick="resetColumnWidths" @keydown="resizeColumnByKeyboard('left', $event)"></div>
+      <div class="column-resizer column-resizer-right" role="separator" aria-orientation="vertical" aria-label="调整任务概览栏宽度" :aria-valuenow="Math.round(insightsWidth)" aria-valuemin="260" :aria-valuemax="Math.round(widthLimit('right'))" tabindex="0" title="拖动调整任务概览栏宽度，双击恢复默认" :style="{ right: `${insightsWidth}px` }" @pointerdown="startColumnResize('right', $event)" @dblclick="resetColumnWidths" @keydown="resizeColumnByKeyboard('right', $event)"></div>
 
       <aside id="mission-insights" class="insights" :class="{ 'panel-active': workspacePanel === 'overview' }" aria-label="任务概览" tabindex="0">
         <div class="insights-header"><span class="eyebrow">任务状态</span><h2>先看天气结论</h2><p>先看结论，需要细节时再展开。</p></div>

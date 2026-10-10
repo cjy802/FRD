@@ -31,7 +31,7 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .top-actions { display: flex; align-items: center; gap: 14px; color: var(--ui-muted); font-size: var(--font-caption); }
 .prototype-tag { padding-right: 14px; border-right: 1px solid var(--ui-line); color: var(--ui-accent); font-weight: 600; }
 .connection { color: var(--ui-muted); }
-.layout { flex: 1; min-height: 0; min-width: 0; overflow: hidden; display: grid; grid-template-columns: 328px minmax(0, 1fr) 320px; grid-template-rows: minmax(0, 1fr); }
+.layout { position: relative; flex: 1; min-height: 0; min-width: 0; overflow: hidden; display: grid; grid-template-columns: var(--sidebar-width, 328px) minmax(420px, 1fr) var(--insights-width, 320px); grid-template-rows: minmax(0, 1fr); }
 .sidebar, .insights { background: #fff; padding: 28px 24px; }
 .sidebar { min-height: 0; min-width: 0; overflow: clip; display: flex; flex-direction: column; padding: 20px; border-right: 1px solid var(--ui-line); }
 .insights { min-height: 0; min-width: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: contain; scrollbar-gutter: stable; border-left: 1px solid var(--ui-line); padding: 20px 18px 36px; background: #f7f9fb; }
@@ -115,6 +115,11 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .form-error { color: #a4262c; font-size: var(--font-caption); }
 .sidebar-note { margin: 24px 0 0; padding: 16px 0 0; border-top: 1px solid var(--ui-line); color: var(--ui-muted); font-size: var(--font-caption); line-height: 1.6; }
 .map-panel { position: relative; overflow: hidden; min-height: 0; min-width: 0; background: #eaf0f6; }
+.column-resizer { position: absolute; top: 0; bottom: 0; z-index: 12; width: 16px; transform: translateX(-50%); cursor: col-resize; outline: 0; touch-action: none; }
+.column-resizer::before { content: ''; position: absolute; top: 0; bottom: 0; left: 7px; width: 2px; background: transparent; transition: background-color .15s ease-out, width .15s ease-out; }
+.column-resizer:hover::before, .column-resizer:focus-visible::before, .is-resizing-columns .column-resizer::before { left: 6px; width: 4px; background: var(--ui-accent); }
+.column-resizer:focus-visible { box-shadow: 0 0 0 2px #fff, 0 0 0 4px #3b82f6; }
+.is-resizing-columns, .is-resizing-columns * { cursor: col-resize !important; user-select: none !important; }
 .cesium-map { position: absolute; inset: 0; opacity: 0; }
 .cesium-map.visible { opacity: 1; }
 .map-fallback { position: absolute; inset: 0; display: grid; place-content: center; overflow: hidden; text-align: center; background: #edf4fa; }
@@ -244,6 +249,7 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .cesium-credit-textContainer a { color: #424242 !important; text-decoration: none; }
 @media (max-width: 1100px) {
   .layout { grid-template-columns: 280px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
+  .column-resizer { display: none; }
   .sidebar { grid-column: 1; grid-row: 1 / -1; }
   .map-panel { grid-column: 2; grid-row: 1; }
   .insights { grid-column: 2; grid-row: 2; border-top: 1px solid var(--ui-line); border-left: 0; }
