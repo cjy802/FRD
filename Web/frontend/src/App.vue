@@ -40,9 +40,15 @@ const customLimitsEnabled = ref(false)
 const customLimits = reactive<WeatherLimits>({ name: '自定义阈值', max_wind_m_s: 12, max_crosswind_m_s: 8,
   max_headwind_m_s: 12, max_gust_m_s: 15, max_rain_6h_mm: 5, min_visibility_m: 3000 })
 const activeLimits = computed(() => customLimitsEnabled.value ? customLimits : null)
-// Datetime-local only keeps minutes; use the next minute so the initial value
-// remains a future departure while the weather requests are being prepared.
-const departureBeijing = ref(new Date(Date.now() + 60 * 1000 + 8 * 3600 * 1000).toISOString().slice(0, 16))
+function currentDepartureBeijing() {
+  // Datetime-local only keeps minutes; use the next minute so the value stays
+  // valid while the weather requests are being prepared.
+  return new Date(Date.now() + 60 * 1000 + 8 * 3600 * 1000).toISOString().slice(0, 16)
+}
+const latestDepartureBeijing = ref(currentDepartureBeijing())
+const departureBeijing = ref(latestDepartureBeijing.value)
+const departureAutoManaged = ref(true)
+let departureClockTimer: ReturnType<typeof setTimeout> | null = null
 const loading = ref(false)
 const checkingPoint = ref(false)
 const error = ref('')
@@ -132,7 +138,21 @@ function formatted(point: Point) {
   return `${point.latitude.toFixed(4)}°N, ${point.longitude.toFixed(4)}°E`
 }
 
+function refreshDepartureClock() {
+  const latest = currentDepartureBeijing()
+  latestDepartureBeijing.value = latest
+  if (departureAutoManaged.value && departureBeijing.value < latest) departureBeijing.value = latest
+}
+function scheduleDepartureClock() {
+  refreshDepartureClock()
+  const delay = 60_000 - (Date.now() % 60_000)
+  departureClockTimer = setTimeout(scheduleDepartureClock, delay)
+}
+function markDepartureManual() {
+  departureAutoManaged.value = false
+}
 function chooseDeparture(time: string) {
+  departureAutoManaged.value = false
   departureBeijing.value = new Date(new Date(time).getTime() + 8 * 3600 * 1000).toISOString().slice(0, 16)
 }
 
@@ -411,11 +431,13 @@ function initMap() {
 }
 
 onMounted(() => {
+  scheduleDepartureClock()
   void calculate()
   if ((window as any).Cesium) initMap()
   else window.addEventListener('load', initMap, { once: true })
 })
 onBeforeUnmount(() => {
+  if (departureClockTimer) clearTimeout(departureClockTimer)
   stopColumnResize()
   cancelCalculation()
   window.removeEventListener('load', initMap)
@@ -457,7 +479,7 @@ onBeforeUnmount(() => {
           <div class="form-line"></div>
           <div class="coordinate-row"><label>离地高度 AGL · 米<input v-model.number="form.altitude_m" type="number" min="0" max="1000" required :disabled="loading" /></label><label>巡航速度 · km/h<input v-model.number="form.speed_kmh" type="number" min="1" max="200" step="0.5" required :disabled="loading" /></label></div>
           <small class="form-scope-note">目前高度风覆盖 10–100 米；范围外会标记缺测。</small>
-          <label class="departure-field">出发时刻 · 北京时间<input v-model="departureBeijing" type="datetime-local" required /><small>沿线 ETA 按填写速度估算，不含风对地速的影响。</small></label>
+          <label class="departure-field">出发时刻 · 北京时间<input v-model="departureBeijing" type="datetime-local" :min="latestDepartureBeijing" required @input="markDepartureManual" /><small>{{ departureAutoManaged ? '默认跟随当前北京时间，每分钟更新一次。' : '已使用手动选择的出发时间。' }}沿线 ETA 按填写速度估算，不含风对地速的影响。</small></label>
           <div class="clearance-row"><label>建筑缓冲 · 米（演示）<input v-model.number="form.clearance_m" type="number" min="0" max="20" step="0.5" required :disabled="loading || roadSource === 'online'" /></label><span>{{ roadSource === 'local' ? '用于排除靠近建筑的道路段' : '在线机动车路线不使用此参数' }}</span></div>
           </div>
           </div>
