@@ -1,4 +1,4 @@
-﻿[CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
@@ -7,6 +7,7 @@ param(
     [string]$RemoteFileName,
     [string]$WaypointPath = 'Android/data/dji.go.v5/files/waypoint',
     [string]$BackupRoot = (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'DjiRc2MtpBackups'),
+    [string]$WpdHelperPath,
     [int]$TimeoutSeconds = 60,
     [switch]$ReplaceExisting,
     [switch]$ListOnly,
@@ -19,6 +20,11 @@ param(
 # so the old file is preserved locally instead of being deleted on the device.
 $ErrorActionPreference = 'Stop'
 $CopyFlags = 1044 # FOF_SILENT | FOF_NOCONFIRMATION | FOF_NOERRORUI
+$WpdHelperPath = if ([string]::IsNullOrWhiteSpace($WpdHelperPath)) {
+    Join-Path $PSScriptRoot 'bin\wpd_mtp_write.exe'
+} else {
+    (Resolve-Path -LiteralPath $WpdHelperPath).Path
+}
 
 function Get-ChildItemByName {
     param([object]$Folder, [string]$Name)
@@ -169,18 +175,16 @@ try {
         Write-Host "已备份旧文件: $backupPath ($backupHash)"
     }
 
-    if (-not $PSCmdlet.ShouldProcess($RemoteFileName, '覆盖 KMZ（旧文件已备份）')) { return }
-
-    if ($existing) {
-        try {
-            Remove-RemoteItem $existing $targetFolder $TimeoutSeconds
-            Write-Host "已从 RC 2 删除旧文件：$RemoteFileName"
-        } catch {
-            throw "MTP 不允许删除旧文件，无法安全替换 $RemoteFileName。请先在 Windows 资源管理器中手动删除旧 KMZ，再重新运行。原始错误：$($_.Exception.Message)"
-        }
+    if (-not (Test-Path -LiteralPath $WpdHelperPath -PathType Leaf)) {
+        throw "找不到 WPD 写入助手：$WpdHelperPath。请先运行 tools/build_wpd_mtp_helper.ps1。"
     }
 
-    $targetFolder.CopyHere($SourceKmz, $CopyFlags)
+    # 用原生 WPD 数据流覆盖现有对象，绕开 Explorer/MTP 删除动作和确认弹窗。
+    & $WpdHelperPath $DeviceName $WaypointPath $RemoteFileName $SourceKmz
+    if ($LASTEXITCODE -ne 0) {
+        throw "WPD 写入助手失败，退出码 $LASTEXITCODE。RC 2 文件未被确认替换。"
+    }
+
     $remoteFinal = Wait-RemoteItem $targetFolder $RemoteFileName $TimeoutSeconds
     if ($null -eq $remoteFinal) { throw "上传最终文件超时: $RemoteFileName" }
     $readbackFinalDir = Join-Path $localWork 'readback-final'
@@ -192,6 +196,13 @@ try {
 } finally {
     Remove-Item -LiteralPath $localWork -Recurse -Force -Confirm:$false -ErrorAction SilentlyContinue
 }
+
+
+
+
+
+
+
 
 
 
