@@ -22,7 +22,7 @@ class DjiKmzTests(unittest.TestCase):
         self.assertEqual(simplified[-1], tuple(coordinates[-1]))
 
     def test_builds_wpml_archive_with_matching_waypoints(self):
-        payload = build_dji_kmz([[119.95, 31.67], [119.951, 31.672], [119.952, 31.672]], 80, 36)
+        payload = build_dji_kmz([[119.95, 31.67], [119.951, 31.672], [119.952, 31.672]], 80, 36, "m30")
         with ZipFile(BytesIO(payload)) as archive:
             self.assertIsNone(archive.testzip())
             self.assertEqual(sorted(archive.namelist()), ["wpmz/template.kml", "wpmz/waylines.wpml"])
@@ -35,6 +35,17 @@ class DjiKmzTests(unittest.TestCase):
         indices = waylines.findall(".//wpml:index", namespace)
         self.assertEqual([item.text for item in indices], ["0", "1", "2"])
         self.assertEqual(waylines.findall(".//kml:coordinates", namespace)[0].text, "119.95,31.67")
+
+    def test_builds_dji_fly_profile_without_enterprise_payload(self):
+        payload = build_dji_kmz([[119.95, 31.67], [119.951, 31.672], [119.952, 31.672]], 80, 36, "fly")
+        with ZipFile(BytesIO(payload)) as archive:
+            template = archive.read("wpmz/template.kml").decode("utf-8")
+            waylines = archive.read("wpmz/waylines.wpml").decode("utf-8")
+        self.assertIn('xmlns:wpml="http://www.uav.com/wpmz/1.0.2"', template)
+        self.assertIn("<wpml:author>fly</wpml:author>", template)
+        self.assertIn("<wpml:droneEnumValue>68</wpml:droneEnumValue>", waylines)
+        self.assertIn("<wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>", waylines)
+        self.assertNotIn("payloadInfo", template)
 
     def test_rejects_speed_above_dji_waypoint_limit(self):
         with self.assertRaises(KmzExportError):

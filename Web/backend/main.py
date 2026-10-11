@@ -83,7 +83,7 @@ class KmzExportRequest(BaseModel):
     coordinates: list[tuple[float, float]] = Field(min_length=2, max_length=65535)
     altitude_m: float = Field(gt=0, le=1500, allow_inf_nan=False)
     speed_kmh: float = Field(gt=0, le=200, allow_inf_nan=False)
-    drone_model: Literal["m30", "m3e"] = "m30"
+    drone_model: Literal["fly", "m30", "m3e"] = "fly"
 
 
 @lru_cache(maxsize=1)

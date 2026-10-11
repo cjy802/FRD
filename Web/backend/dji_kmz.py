@@ -2,7 +2,7 @@
 
 The route geometry in this project is a road reference line. The generated
 file is therefore intentionally labelled as a draft that must be reviewed in
-DJI Pilot 2 before any operation.
+DJI Fly or DJI Pilot 2 before any operation.
 """
 
 from __future__ import annotations
@@ -14,10 +14,15 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from typing import Literal
 
 
-WPML_NAMESPACE = "http://www.dji.com/wpmz/1.0.2"
+PILOT2_NAMESPACE = "http://www.dji.com/wpmz/1.0.2"
+FLY_NAMESPACE = "http://www.uav.com/wpmz/1.0.2"
 DRONE_PROFILES = {
-    "m30": {"enum": 67, "sub_enum": 0, "payload": 52},
-    "m3e": {"enum": 77, "sub_enum": 0, "payload": 66},
+    "m30": {"namespace": PILOT2_NAMESPACE, "author": "Low Altitude Flight Decision Workbench", "enum": 67, "sub_enum": 0, "payload": 52, "fly": False},
+    "m3e": {"namespace": PILOT2_NAMESPACE, "author": "Low Altitude Flight Decision Workbench", "enum": 77, "sub_enum": 0, "payload": 66, "fly": False},
+    # DJI Fly on RC 2 uses a consumer WPML namespace and does not include
+    # enterprise payloadInfo. Air 3/Air 3S use the same consumer waypoint
+    # profile as the RC 2 waypoint files currently available to this project.
+    "fly": {"namespace": FLY_NAMESPACE, "author": "fly", "enum": 68, "sub_enum": 0, "payload": None, "fly": True},
 }
 
 # Road geometry contains many short OSM/OSRM segments. DJI renders every
@@ -114,7 +119,14 @@ def _simplify_coordinates(coordinates: list[tuple[float, float]]) -> list[tuple[
     return [filtered[index] for index in indices]
 
 
-def _mission_config(speed_m_s: float, rth_height_m: float, drone: dict[str, int]) -> str:
+def _mission_config(speed_m_s: float, rth_height_m: float, drone: dict[str, object]) -> str:
+    payload = ""
+    if drone["payload"] is not None:
+        payload = f"""  <wpml:payloadInfo>
+    <wpml:payloadEnumValue>{drone['payload']}</wpml:payloadEnumValue>
+    <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
+  </wpml:payloadInfo>
+"""
     return f"""<wpml:missionConfig>
   <wpml:flyToWaylineMode>safely</wpml:flyToWaylineMode>
   <wpml:finishAction>goHome</wpml:finishAction>
@@ -127,23 +139,42 @@ def _mission_config(speed_m_s: float, rth_height_m: float, drone: dict[str, int]
     <wpml:droneEnumValue>{drone['enum']}</wpml:droneEnumValue>
     <wpml:droneSubEnumValue>{drone['sub_enum']}</wpml:droneSubEnumValue>
   </wpml:droneInfo>
-  <wpml:payloadInfo>
-    <wpml:payloadEnumValue>{drone['payload']}</wpml:payloadEnumValue>
-    <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
-  </wpml:payloadInfo>
-</wpml:missionConfig>"""
+{payload}</wpml:missionConfig>"""
 
 
-def _template_waypoint(index: int, longitude: float, latitude: float, altitude_m: float) -> str:
+def _heading_param() -> str:
+    return """  <wpml:waypointHeadingParam>
+    <wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode>
+    <wpml:waypointHeadingAngle>0</wpml:waypointHeadingAngle>
+    <wpml:waypointPoiPoint>0.000000,0.000000,0.000000</wpml:waypointPoiPoint>
+    <wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>
+  </wpml:waypointHeadingParam>"""
+
+
+def _template_waypoint(index: int, longitude: float, latitude: float, altitude_m: float, speed_m_s: float, fly_profile: bool) -> str:
+    if fly_profile:
+        settings = f"""  <wpml:useGlobalHeight>0</wpml:useGlobalHeight>
+  <wpml:useGlobalSpeed>0</wpml:useGlobalSpeed>
+{_heading_param()}
+  <wpml:useGlobalHeadingParam>0</wpml:useGlobalHeadingParam>
+  <wpml:useGlobalTurnParam>0</wpml:useGlobalTurnParam>
+  <wpml:waypointSpeed>{_number(speed_m_s)}</wpml:waypointSpeed>
+  <wpml:waypointTurnParam>
+    <wpml:waypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:waypointTurnMode>
+    <wpml:waypointTurnDampingDist>0</wpml:waypointTurnDampingDist>
+  </wpml:waypointTurnParam>
+  <wpml:gimbalPitchAngle>0</wpml:gimbalPitchAngle>"""
+    else:
+        settings = """  <wpml:useGlobalHeight>1</wpml:useGlobalHeight>
+  <wpml:useGlobalSpeed>1</wpml:useGlobalSpeed>
+  <wpml:useGlobalHeadingParam>1</wpml:useGlobalHeadingParam>
+  <wpml:useGlobalTurnParam>1</wpml:useGlobalTurnParam>"""
     return f"""<Placemark>
   <Point><coordinates>{_number(longitude, 7)},{_number(latitude, 7)}</coordinates></Point>
   <wpml:index>{index}</wpml:index>
   <wpml:ellipsoidHeight>{_number(altitude_m)}</wpml:ellipsoidHeight>
   <wpml:height>{_number(altitude_m)}</wpml:height>
-  <wpml:useGlobalHeight>1</wpml:useGlobalHeight>
-  <wpml:useGlobalSpeed>1</wpml:useGlobalSpeed>
-  <wpml:useGlobalHeadingParam>1</wpml:useGlobalHeadingParam>
-  <wpml:useGlobalTurnParam>1</wpml:useGlobalTurnParam>
+{settings}
 </Placemark>"""
 
 
@@ -153,7 +184,7 @@ def _wayline_waypoint(index: int, longitude: float, latitude: float, altitude_m:
   <wpml:index>{index}</wpml:index>
   <wpml:executeHeight>{_number(altitude_m)}</wpml:executeHeight>
   <wpml:waypointSpeed>{_number(speed_m_s)}</wpml:waypointSpeed>
-  <wpml:waypointHeadingParam><wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode></wpml:waypointHeadingParam>
+{_heading_param()}
   <wpml:waypointTurnParam>
     <wpml:waypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:waypointTurnMode>
     <wpml:waypointTurnDampingDist>0</wpml:waypointTurnDampingDist>
@@ -162,12 +193,14 @@ def _wayline_waypoint(index: int, longitude: float, latitude: float, altitude_m:
 </Placemark>"""
 
 
-def _template_kml(coordinates: list[tuple[float, float]], altitude_m: float, speed_m_s: float, rth_height_m: float, timestamp_ms: int, drone: dict[str, int]) -> str:
-    placemarks = "\n".join(_template_waypoint(i, lon, lat, altitude_m) for i, (lon, lat) in enumerate(coordinates))
+def _template_kml(coordinates: list[tuple[float, float]], altitude_m: float, speed_m_s: float, rth_height_m: float, timestamp_ms: int, drone: dict[str, object]) -> str:
+    placemarks = "\n".join(_template_waypoint(i, lon, lat, altitude_m, speed_m_s, bool(drone["fly"])) for i, (lon, lat) in enumerate(coordinates))
+    global_heading = _heading_param().replace("waypointHeadingParam", "globalWaypointHeadingParam", 2) if drone["fly"] else "      <wpml:globalWaypointHeadingParam><wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode></wpml:globalWaypointHeadingParam>"
+    gimbal_mode = "usePointSetting" if drone["fly"] else "manual"
     return f"""<?xml version="1.0" encoding="UTF-8"?>
-<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="{WPML_NAMESPACE}">
+<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="{drone['namespace']}">
   <Document>
-    <wpml:author>Low Altitude Flight Decision Workbench</wpml:author>
+    <wpml:author>{drone['author']}</wpml:author>
     <wpml:createTime>{timestamp_ms}</wpml:createTime>
     <wpml:updateTime>{timestamp_ms}</wpml:updateTime>
     {_mission_config(speed_m_s, rth_height_m, drone)}
@@ -181,8 +214,8 @@ def _template_kml(coordinates: list[tuple[float, float]], altitude_m: float, spe
       </wpml:waylineCoordinateSysParam>
       <wpml:globalHeight>{_number(altitude_m)}</wpml:globalHeight>
       <wpml:autoFlightSpeed>{_number(speed_m_s)}</wpml:autoFlightSpeed>
-      <wpml:gimbalPitchMode>manual</wpml:gimbalPitchMode>
-      <wpml:globalWaypointHeadingParam><wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode></wpml:globalWaypointHeadingParam>
+      <wpml:gimbalPitchMode>{gimbal_mode}</wpml:gimbalPitchMode>
+{global_heading}
       <wpml:globalWaypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:globalWaypointTurnMode>
       <wpml:globalUseStraightLine>1</wpml:globalUseStraightLine>
       {placemarks}
@@ -192,10 +225,10 @@ def _template_kml(coordinates: list[tuple[float, float]], altitude_m: float, spe
 """
 
 
-def _waylines_wpml(coordinates: list[tuple[float, float]], altitude_m: float, speed_m_s: float, rth_height_m: float, drone: dict[str, int]) -> str:
+def _waylines_wpml(coordinates: list[tuple[float, float]], altitude_m: float, speed_m_s: float, rth_height_m: float, drone: dict[str, object]) -> str:
     placemarks = "\n".join(_wayline_waypoint(i, lon, lat, altitude_m, speed_m_s) for i, (lon, lat) in enumerate(coordinates))
     return f"""<?xml version="1.0" encoding="UTF-8"?>
-<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="{WPML_NAMESPACE}">
+<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="{drone['namespace']}">
   <Document>
     {_mission_config(speed_m_s, rth_height_m, drone)}
     <Folder>
@@ -210,7 +243,7 @@ def _waylines_wpml(coordinates: list[tuple[float, float]], altitude_m: float, sp
 """
 
 
-def build_dji_kmz(coordinates, altitude_m: float, speed_kmh: float, drone_model: Literal["m30", "m3e"] = "m30") -> bytes:
+def build_dji_kmz(coordinates, altitude_m: float, speed_kmh: float, drone_model: Literal["fly", "m30", "m3e"] = "fly") -> bytes:
     if not isinstance(coordinates, list) or len(coordinates) < 2 or len(coordinates) > 65535:
         raise KmzExportError("DJI 航点草稿至少需要 2 个、最多 65535 个路线点。")
     if not isfinite(altitude_m) or not 0 < altitude_m <= 1500:
