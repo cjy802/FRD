@@ -67,7 +67,7 @@ function Copy-RemoteItemToLocal {
 function Remove-RemoteItem {
     param([object]$RemoteItem, [object]$Folder, [int]$Timeout)
     $verb = @($RemoteItem.Verbs()) | Where-Object {
-        $_.Name.Trim() -match '^(delete|删除)$'
+        $_.Name.Trim() -match '(?i)delete|删除'
     } | Select-Object -First 1
     if ($null -eq $verb) { throw "找不到 MTP 删除操作: $($RemoteItem.Name)" }
     $verb.DoIt()
@@ -136,6 +136,7 @@ if ($ListOnly) {
             Type = $_.Type
             IsFolder = $_.IsFolder
             Path = $_.Path
+            Verbs = (@($_.Verbs() | ForEach-Object { $_.Name.Trim() }) -join ' | ')
         }
     } | Format-Table -AutoSize
     return
@@ -155,7 +156,7 @@ if ($existing) { Write-Host "目标已存在: $($existing.Name)" }
 
 if ($DryRun) {
     Write-Host 'DryRun：未写入、删除或备份任何文件。'
-    Remove-Item -LiteralPath $localWork -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $localWork -Recurse -Force -Confirm:$false -ErrorAction SilentlyContinue
     return
 }
 if ($existing -and -not $ReplaceExisting) { throw '目标文件已存在。请显式指定 -ReplaceExisting；当前未修改设备。' }
@@ -168,9 +169,17 @@ try {
         Write-Host "已备份旧文件: $backupPath ($backupHash)"
     }
 
-    # RC 2 的 MTP Shell 通常不暴露删除 verb，因此不能依赖“上传临时文件→删除旧文件→改名”。
-    # 这里先完成本地备份，再让 MTP 以同名文件覆盖；完成后回读目标文件校验内容。
     if (-not $PSCmdlet.ShouldProcess($RemoteFileName, '覆盖 KMZ（旧文件已备份）')) { return }
+
+    if ($existing) {
+        try {
+            Remove-RemoteItem $existing $targetFolder $TimeoutSeconds
+            Write-Host "已从 RC 2 删除旧文件：$RemoteFileName"
+        } catch {
+            throw "MTP 不允许删除旧文件，无法安全替换 $RemoteFileName。请先在 Windows 资源管理器中手动删除旧 KMZ，再重新运行。原始错误：$($_.Exception.Message)"
+        }
+    }
+
     $targetFolder.CopyHere($SourceKmz, $CopyFlags)
     $remoteFinal = Wait-RemoteItem $targetFolder $RemoteFileName $TimeoutSeconds
     if ($null -eq $remoteFinal) { throw "上传最终文件超时: $RemoteFileName" }
@@ -181,8 +190,9 @@ try {
     if ($finalHash -ne $sourceHash) { throw "最终文件回读校验失败: $finalHash != $sourceHash" }
     Write-Host "上传完成，SHA-256 已验证: $finalHash"
 } finally {
-    Remove-Item -LiteralPath $localWork -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $localWork -Recurse -Force -Confirm:$false -ErrorAction SilentlyContinue
 }
+
 
 
 
