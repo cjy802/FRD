@@ -243,12 +243,12 @@ function cameraFrustum(index: number, routeAltitude: number) {
     const distance = Math.hypot(east, north)
     const bearing = Math.atan2(east, north) * 180 / Math.PI
     const point = offsetCoordinate(longitude, latitude, bearing, distance)
-    return Cesium.Cartesian3.fromDegrees(point[0], point[1], Math.max(8, altitude + up))
+    return Cesium.Cartesian3.fromDegrees(point[0], point[1], Math.max(0, altitude + up))
   }
   const atDistance = (vector: LocalVector, distance: number) => toCartesian(vector.east * distance, vector.north * distance, vector.up * distance)
-  const farDistance = 80
-  const far = corners.map((vector) => atDistance(vector, farDistance))
-  return { origin: Cesium.Cartesian3.fromDegrees(longitude, latitude, altitude), far, farCenter: atDistance(forward, farDistance), heading: yaw * 180 / Math.PI, pitch: pitch * 180 / Math.PI }
+  const ground = corners.map((vector) => atDistance(vector, vector.up < -0.08 ? Math.min(420, Math.max(40, altitude / -vector.up)) : 260))
+  const groundCenter = atDistance(forward, forward.up < -0.08 ? Math.min(420, Math.max(40, altitude / -forward.up)) : 260)
+  return { origin: Cesium.Cartesian3.fromDegrees(longitude, latitude, altitude), ground, groundCenter, heading: yaw * 180 / Math.PI, pitch: pitch * 180 / Math.PI }
 }
 
 function adjustSelectedWaypoint(change: Partial<WaypointSetting>) {
@@ -663,20 +663,16 @@ function drawCesiumRoute(flyToRoute = true) {
         const viewColor = Cesium.Color.fromCssColorString('#ffb547').withAlpha(0.82)
         viewer.entities.add({
           name: `航点 ${index + 1} 视角方向`,
-          polyline: { positions: [frustum.origin, frustum.farCenter], width: 4, material: Cesium.PolylineDashMaterialProperty ? new Cesium.PolylineDashMaterialProperty({ color: viewColor, dashLength: 12 }) : viewColor, clampToGround: false },
+          polyline: { positions: [frustum.origin, frustum.groundCenter], width: 4, material: Cesium.PolylineDashMaterialProperty ? new Cesium.PolylineDashMaterialProperty({ color: viewColor, dashLength: 12 }) : viewColor, clampToGround: false },
         })
-        const faces = [[frustum.origin, frustum.far[0], frustum.far[1]], [frustum.origin, frustum.far[1], frustum.far[2]], [frustum.origin, frustum.far[2], frustum.far[3]], [frustum.origin, frustum.far[3], frustum.far[0]]]
+        const faces = [[frustum.origin, frustum.ground[0], frustum.ground[1]], [frustum.origin, frustum.ground[1], frustum.ground[2]], [frustum.origin, frustum.ground[2], frustum.ground[3]], [frustum.origin, frustum.ground[3], frustum.ground[0]]]
       faces.forEach((face, faceIndex) => viewer.entities.add({
           name: `航点 ${index + 1} 视锥体侧面 ${faceIndex + 1}`,
-          polygon: { hierarchy: face, material: Cesium.Color.fromCssColorString(faceIndex % 2 ? '#15d6b1' : '#5ee7d1').withAlpha(0.12), outline: true, outlineColor: viewColor.withAlpha(0.55), outlineWidth: 1 },
+          polygon: { hierarchy: face, material: Cesium.Color.fromCssColorString(faceIndex % 2 ? '#15d6b1' : '#5ee7d1').withAlpha(0.18), outline: true, outlineColor: viewColor.withAlpha(0.62), outlineWidth: 1 },
         }))
-        const sightRays = frustum.far.flatMap((corner) => [frustum.origin, corner])
+        const sightRays = frustum.ground.flatMap((corner) => [frustum.origin, corner])
         viewer.entities.add({ name: `航点 ${index + 1} 视场四角连线`, polyline: { positions: sightRays, width: 2, material: viewColor, clampToGround: false } })
-        viewer.entities.add({
-          name: `航点 ${index + 1} 摄像头远平面`,
-          polygon: { hierarchy: frustum.far, material: Cesium.Color.fromCssColorString('#36dfba').withAlpha(0.14), outline: true, outlineColor: Cesium.Color.fromCssColorString('#36dfba').withAlpha(0.78), outlineWidth: 2 },
-        })
-        viewer.entities.add({ name: `航点 ${index + 1} 摄像头远平面边框`, polyline: { positions: [...frustum.far, frustum.far[0]], width: 2, material: Cesium.Color.fromCssColorString('#36dfba').withAlpha(0.78), clampToGround: false } })
+        viewer.entities.add({ name: `航点 ${index + 1} 地面视场边框`, polyline: { positions: [...frustum.ground, frustum.ground[0]], width: 2, material: Cesium.Color.fromCssColorString('#36dfba').withAlpha(0.78), clampToGround: false } })
         viewer.entities.add({
           name: `航点 ${index + 1} 拖动镜头`,
           properties: { cameraIndex: index },
