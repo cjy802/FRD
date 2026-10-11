@@ -7,7 +7,6 @@ param(
     [string]$RemoteFileName,
     [string]$WaypointPath = 'Android/data/dji.go.v5/files/waypoint',
     [string]$BackupRoot = (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'DjiRc2MtpBackups'),
-    [string]$WpdHelperPath,
     [string]$SilentHelperPath,
     [int]$TimeoutSeconds = 60,
     [switch]$ReplaceExisting,
@@ -15,17 +14,12 @@ param(
     [switch]$DryRun
 )
 
-# MTP devices do not have a drive letter. This prototype uses Shell/WPD.
-# It backs up the existing file, overwrites the requested name, and reads it back
-# to check SHA-256. WPD Shell does not reliably expose delete/rename operations,
-# so the old file is preserved locally instead of being deleted on the device.
+# MTP devices do not have a drive letter. This script uses Windows Shell/WPD
+# enumeration for discovery and a native silent IFileOperation helper for replacement.
+# It backs up the existing file and reads the replacement back to check SHA-256.
 $ErrorActionPreference = 'Stop'
 $CopyFlags = 1044 # FOF_SILENT | FOF_NOCONFIRMATION | FOF_NOERRORUI
-$WpdHelperPath = if ([string]::IsNullOrWhiteSpace($WpdHelperPath)) {
-    Join-Path $PSScriptRoot 'bin\wpd_mtp_write.exe'
-} else {
-    (Resolve-Path -LiteralPath $WpdHelperPath).Path
-}
+
 $SilentHelperPath = if ([string]::IsNullOrWhiteSpace($SilentHelperPath)) {
     Join-Path $PSScriptRoot 'bin\silent_mtp_replace.exe'
 } else {
@@ -209,6 +203,10 @@ try {
 } finally {
     Remove-Item -LiteralPath $localWork -Recurse -Force -Confirm:$false -ErrorAction SilentlyContinue
 }
+
+
+
+
 
 
 
