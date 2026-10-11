@@ -246,13 +246,9 @@ function cameraFrustum(index: number, routeAltitude: number) {
     return Cesium.Cartesian3.fromDegrees(point[0], point[1], Math.max(8, altitude + up))
   }
   const atDistance = (vector: LocalVector, distance: number) => toCartesian(vector.east * distance, vector.north * distance, vector.up * distance)
-  const nearDistance = 8
   const farDistance = 80
-  const near = corners.map((vector) => atDistance(vector, nearDistance))
   const far = corners.map((vector) => atDistance(vector, farDistance))
-  const ground = corners.map((vector) => atDistance(vector, vector.up < -0.08 ? Math.min(260, Math.max(40, altitude / -vector.up)) : farDistance))
-  const centerDistance = forward.up < -0.08 ? Math.min(260, Math.max(40, altitude / -forward.up)) : farDistance
-  return { origin: Cesium.Cartesian3.fromDegrees(longitude, latitude, altitude), near, far, ground, center: atDistance(forward, centerDistance), farCenter: atDistance(forward, farDistance), heading: yaw * 180 / Math.PI, pitch: pitch * 180 / Math.PI }
+  return { origin: Cesium.Cartesian3.fromDegrees(longitude, latitude, altitude), far, farCenter: atDistance(forward, farDistance), heading: yaw * 180 / Math.PI, pitch: pitch * 180 / Math.PI }
 }
 
 function adjustSelectedWaypoint(change: Partial<WaypointSetting>) {
