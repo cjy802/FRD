@@ -243,11 +243,11 @@ function cameraFrustum(index: number, routeAltitude: number) {
     const distance = Math.hypot(east, north)
     const bearing = Math.atan2(east, north) * 180 / Math.PI
     const point = offsetCoordinate(longitude, latitude, bearing, distance)
-    return Cesium.Cartesian3.fromDegrees(point[0], point[1], Math.max(0, altitude + up))
+    return Cesium.Cartesian3.fromDegrees(point[0], point[1], Math.max(8, altitude + up))
   }
   const atDistance = (vector: LocalVector, distance: number) => toCartesian(vector.east * distance, vector.north * distance, vector.up * distance)
   const nearDistance = 8
-  const farDistance = 120
+  const farDistance = 80
   const near = corners.map((vector) => atDistance(vector, nearDistance))
   const far = corners.map((vector) => atDistance(vector, farDistance))
   const ground = corners.map((vector) => atDistance(vector, vector.up < -0.08 ? Math.min(260, Math.max(40, altitude / -vector.up)) : farDistance))
@@ -267,6 +267,22 @@ function selectWaypoint(index: number) {
   selectedWaypointIndex.value = index
   mapEditMode.value = 'node'
   drawCesiumRoute(false)
+  focusSelectedWaypoint()
+}
+
+function focusSelectedWaypoint() {
+  if (!viewer || !preview.value || selectedWaypointIndex.value === null || !Cesium) return
+  const index = selectedWaypointIndex.value
+  const [longitude, latitude] = preview.value.geometry.coordinates[index]
+  const setting = waypointSettings.value[index]
+  const altitude = setting?.altitude_m ?? form.altitude_m
+  const heading = waypointHeading(index)
+  const rear = offsetCoordinate(longitude, latitude, (heading + 180) % 360, 220)
+  viewer.camera.flyTo({
+    destination: Cesium.Cartesian3.fromDegrees(rear[0], rear[1], altitude + 150),
+    orientation: { heading: Cesium.Math.toRadians(heading), pitch: Cesium.Math.toRadians(-26), roll: 0 },
+    duration: 0.65,
+  })
 }
 
 function handleWaypointKeydown(event: KeyboardEvent) {
