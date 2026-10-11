@@ -623,7 +623,7 @@ function drawCesiumRoute(flyToRoute = true) {
       name: `航点 ${index + 1}`,
       properties: { waypointIndex: index },
       position: elevated,
-      point: { pixelSize: selectedWaypointIndex.value === index ? 16 : index === 0 || index === coordinates.length - 1 ? 13 : 10, color: selectedWaypointIndex.value === index ? Cesium.Color.fromCssColorString('#ffb547') : routeColor, outlineColor: Cesium.Color.WHITE, outlineWidth: 2 },
+      point: { show: mapEditMode.value !== 'node', pixelSize: selectedWaypointIndex.value === index ? 16 : index === 0 || index === coordinates.length - 1 ? 13 : 10, color: selectedWaypointIndex.value === index ? Cesium.Color.fromCssColorString('#ffb547') : routeColor, outlineColor: Cesium.Color.WHITE, outlineWidth: 2 },
       label: {
         text: index === 0 ? 'A 3D 起点' : index === coordinates.length - 1 ? 'B 3D 终点' : `W${String(index + 1).padStart(2, '0')}`,
         font: '600 12px sans-serif',
@@ -637,13 +637,20 @@ function drawCesiumRoute(flyToRoute = true) {
         backgroundPadding: new Cesium.Cartesian2(6, 4),
       },
     })
-    const frustum = cameraFrustum(index, routeAltitude)
-    const viewColor = selectedWaypointIndex.value === index ? Cesium.Color.fromCssColorString('#ffb547').withAlpha(0.82) : Cesium.Color.fromCssColorString('#8cefe0').withAlpha(0.62)
-    viewer.entities.add({
-      name: `航点 ${index + 1} 视角方向`,
-      polyline: { positions: [frustum.origin, frustum.center], width: selectedWaypointIndex.value === index ? 4 : 2, material: selectedWaypointIndex.value === index && Cesium.PolylineDashMaterialProperty ? new Cesium.PolylineDashMaterialProperty({ color: viewColor, dashLength: 12 }) : viewColor, clampToGround: false },
-    })
-    if (selectedWaypointIndex.value === index) {
+    if (mapEditMode.value === 'node') {
+      const frustum = cameraFrustum(index, routeAltitude)
+      const viewColor = selectedWaypointIndex.value === index ? Cesium.Color.fromCssColorString('#ffb547').withAlpha(0.82) : Cesium.Color.fromCssColorString('#8cefe0').withAlpha(0.62)
+      viewer.entities.add({
+        name: `航点 ${index + 1} 方向箭头`,
+        properties: { waypointIndex: index },
+        position: frustum.origin,
+        billboard: { image: '/svg/jiantou.svg', width: selectedWaypointIndex.value === index ? 30 : 22, height: selectedWaypointIndex.value === index ? 30 : 22, rotation: Cesium.Math.toRadians(frustum.heading - 90), verticalOrigin: Cesium.VerticalOrigin.CENTER, horizontalOrigin: Cesium.HorizontalOrigin.CENTER, disableDepthTestDistance: Number.POSITIVE_INFINITY, color: selectedWaypointIndex.value === index ? Cesium.Color.fromCssColorString('#ffb547') : Cesium.Color.WHITE },
+      })
+      viewer.entities.add({
+        name: `航点 ${index + 1} 视角方向`,
+        polyline: { positions: [frustum.origin, frustum.center], width: selectedWaypointIndex.value === index ? 4 : 2, material: selectedWaypointIndex.value === index && Cesium.PolylineDashMaterialProperty ? new Cesium.PolylineDashMaterialProperty({ color: viewColor, dashLength: 12 }) : viewColor, clampToGround: false },
+      })
+      if (selectedWaypointIndex.value === index) {
       const faces = [[frustum.near[0], frustum.near[1], frustum.far[1], frustum.far[0]], [frustum.near[1], frustum.near[2], frustum.far[2], frustum.far[1]], [frustum.near[2], frustum.near[3], frustum.far[3], frustum.far[2]], [frustum.near[3], frustum.near[0], frustum.far[0], frustum.far[3]]]
       faces.forEach((face, faceIndex) => viewer.entities.add({
         name: `航点 ${index + 1} 视锥体侧面 ${faceIndex + 1}`,
@@ -654,13 +661,14 @@ function drawCesiumRoute(flyToRoute = true) {
         polygon: { hierarchy: frustum.ground, material: Cesium.Color.fromCssColorString('#36dfba').withAlpha(0.16), outline: true, outlineColor: Cesium.Color.fromCssColorString('#36dfba').withAlpha(0.72), outlineWidth: 2 },
       })
       viewer.entities.add({ name: `航点 ${index + 1} 视锥体边框`, polyline: { positions: [frustum.near[0], frustum.near[1], frustum.near[2], frustum.near[3], frustum.near[0], frustum.far[0], frustum.far[1], frustum.far[2], frustum.far[3], frustum.far[0]], width: 2, material: viewColor, clampToGround: false } })
-      viewer.entities.add({
-        name: `航点 ${index + 1} 拖动镜头`,
-        properties: { cameraIndex: index },
-        position: frustum.center,
-        point: { pixelSize: 13, color: Cesium.Color.fromCssColorString('#ffb547'), outlineColor: Cesium.Color.WHITE, outlineWidth: 2, disableDepthTestDistance: Number.POSITIVE_INFINITY },
-        label: { text: '镜头', font: '600 11px sans-serif', fillColor: Cesium.Color.WHITE, outlineColor: Cesium.Color.fromCssColorString('#12343b'), outlineWidth: 3, style: Cesium.LabelStyle.FILL_AND_OUTLINE, pixelOffset: new Cesium.Cartesian2(0, -18) },
-      })
+        viewer.entities.add({
+          name: `航点 ${index + 1} 拖动镜头`,
+          properties: { cameraIndex: index },
+          position: frustum.center,
+          point: { pixelSize: 13, color: Cesium.Color.fromCssColorString('#ffb547'), outlineColor: Cesium.Color.WHITE, outlineWidth: 2, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+          label: { text: '镜头', font: '600 11px sans-serif', fillColor: Cesium.Color.WHITE, outlineColor: Cesium.Color.fromCssColorString('#12343b'), outlineWidth: 3, style: Cesium.LabelStyle.FILL_AND_OUTLINE, pixelOffset: new Cesium.Cartesian2(0, -18) },
+        })
+      }
     }
   })
 
