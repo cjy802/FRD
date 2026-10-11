@@ -181,7 +181,7 @@ function syncWaypointSettings(route: Preview) {
     altitude_m: form.altitude_m,
     heading_mode: 'followWayline',
     heading_angle: 0,
-    gimbal_pitch_angle: 0,
+    gimbal_pitch_angle: -30,
   }))
 }
 
@@ -213,6 +213,46 @@ function offsetCoordinate(longitude: number, latitude: number, bearing: number, 
   const lat2 = Math.asin(Math.sin(lat1) * Math.cos(angularDistance) + Math.cos(lat1) * Math.sin(angularDistance) * Math.cos(bearingRad))
   const lon2 = lon1 + Math.atan2(Math.sin(bearingRad) * Math.sin(angularDistance) * Math.cos(lat1), Math.cos(angularDistance) - Math.sin(lat1) * Math.sin(lat2))
   return [lon2 * 180 / Math.PI, lat2 * 180 / Math.PI]
+}
+
+type LocalVector = { east: number; north: number; up: number }
+
+function cameraFrustum(index: number, routeAltitude: number) {
+  const coordinates = preview.value?.geometry.coordinates ?? []
+  const [longitude, latitude] = coordinates[index] ?? [0, 0]
+  const setting = waypointSettings.value[index]
+  const altitude = setting?.altitude_m ?? routeAltitude
+  const yaw = waypointHeading(index) * Math.PI / 180
+  const pitch = (setting?.gimbal_pitch_angle ?? -30) * Math.PI / 180
+  const halfHorizontal = 78 * Math.PI / 360
+  const halfVertical = 58 * Math.PI / 360
+  const forward: LocalVector = { east: Math.sin(yaw) * Math.cos(pitch), north: Math.cos(yaw) * Math.cos(pitch), up: Math.sin(pitch) }
+  const right: LocalVector = { east: Math.cos(yaw), north: -Math.sin(yaw), up: 0 }
+  const top: LocalVector = { east: -Math.sin(yaw) * Math.sin(pitch), north: -Math.cos(yaw) * Math.sin(pitch), up: Math.cos(pitch) }
+  const normalize = (vector: LocalVector): LocalVector => {
+    const length = Math.hypot(vector.east, vector.north, vector.up) || 1
+    return { east: vector.east / length, north: vector.north / length, up: vector.up / length }
+  }
+  const direction = (horizontal: number, vertical: number) => normalize({
+    east: forward.east + right.east * horizontal * Math.tan(halfHorizontal) + top.east * vertical * Math.tan(halfVertical),
+    north: forward.north + right.north * horizontal * Math.tan(halfHorizontal) + top.north * vertical * Math.tan(halfVertical),
+    up: forward.up + right.up * horizontal * Math.tan(halfHorizontal) + top.up * vertical * Math.tan(halfVertical),
+  })
+  const corners = [direction(-1, 1), direction(1, 1), direction(1, -1), direction(-1, -1)]
+  const toCartesian = (east: number, north: number, up: number) => {
+    const distance = Math.hypot(east, north)
+    const bearing = Math.atan2(east, north) * 180 / Math.PI
+    const point = offsetCoordinate(longitude, latitude, bearing, distance)
+    return Cesium.Cartesian3.fromDegrees(point[0], point[1], Math.max(0, altitude + up))
+  }
+  const atDistance = (vector: LocalVector, distance: number) => toCartesian(vector.east * distance, vector.north * distance, vector.up * distance)
+  const nearDistance = 8
+  const farDistance = 120
+  const near = corners.map((vector) => atDistance(vector, nearDistance))
+  const far = corners.map((vector) => atDistance(vector, farDistance))
+  const ground = corners.map((vector) => atDistance(vector, vector.up < -0.08 ? Math.min(420, altitude / -vector.up) : farDistance))
+  const centerDistance = forward.up < -0.08 ? Math.min(420, altitude / -forward.up) : farDistance
+  return { origin: Cesium.Cartesian3.fromDegrees(longitude, latitude, altitude), near, far, ground, center: atDistance(forward, centerDistance), heading: yaw * 180 / Math.PI, pitch: pitch * 180 / Math.PI }
 }
 
 function adjustSelectedWaypoint(change: Partial<WaypointSetting>) {
@@ -562,7 +602,8 @@ function drawCesiumRoute(flyToRoute = true) {
   displayedWaypointIndexes.forEach((index) => {
     const [longitude, latitude] = coordinates[index]
     const ground = Cesium.Cartesian3.fromDegrees(longitude, latitude, 0)
-    const elevated = Cesium.Cartesian3.fromDegrees(longitude, latitude, routeAltitude)
+    const waypointAltitude = waypointSettings.value[index]?.altitude_m ?? routeAltitude
+    const elevated = Cesium.Cartesian3.fromDegrees(longitude, latitude, waypointAltitude)
     viewer.entities.add({
       name: `航点 ${index + 1} 垂直投影`,
       polyline: {
@@ -596,24 +637,27 @@ function drawCesiumRoute(flyToRoute = true) {
         backgroundPadding: new Cesium.Cartesian2(6, 4),
       },
     })
-    const heading = waypointHeading(index)
-    const forward = offsetCoordinate(longitude, latitude, heading, selectedWaypointIndex.value === index ? 38 : 24)
-    const left = offsetCoordinate(longitude, latitude, heading - 22, selectedWaypointIndex.value === index ? 26 : 16)
-    const right = offsetCoordinate(longitude, latitude, heading + 22, selectedWaypointIndex.value === index ? 26 : 16)
-    const viewColor = selectedWaypointIndex.value === index ? Cesium.Color.fromCssColorString('#ffb547').withAlpha(0.8) : Cesium.Color.fromCssColorString('#8cefe0').withAlpha(0.62)
+    const frustum = cameraFrustum(index, routeAltitude)
+    const viewColor = selectedWaypointIndex.value === index ? Cesium.Color.fromCssColorString('#ffb547').withAlpha(0.82) : Cesium.Color.fromCssColorString('#8cefe0').withAlpha(0.62)
     viewer.entities.add({
       name: `航点 ${index + 1} 视角方向`,
-      polyline: { positions: [elevated, Cesium.Cartesian3.fromDegrees(forward[0], forward[1], routeAltitude)], width: selectedWaypointIndex.value === index ? 4 : 2, material: viewColor, clampToGround: false },
+      polyline: { positions: [frustum.origin, frustum.center], width: selectedWaypointIndex.value === index ? 4 : 2, material: selectedWaypointIndex.value === index && Cesium.PolylineDashMaterialProperty ? new Cesium.PolylineDashMaterialProperty({ color: viewColor, dashLength: 12 }) : viewColor, clampToGround: false },
     })
     if (selectedWaypointIndex.value === index) {
+      const faces = [[frustum.near[0], frustum.near[1], frustum.far[1], frustum.far[0]], [frustum.near[1], frustum.near[2], frustum.far[2], frustum.far[1]], [frustum.near[2], frustum.near[3], frustum.far[3], frustum.far[2]], [frustum.near[3], frustum.near[0], frustum.far[0], frustum.far[3]]]
+      faces.forEach((face, faceIndex) => viewer.entities.add({
+        name: `航点 ${index + 1} 视锥体侧面 ${faceIndex + 1}`,
+        polygon: { hierarchy: face, material: Cesium.Color.fromCssColorString(faceIndex % 2 ? '#15d6b1' : '#5ee7d1').withAlpha(0.12), outline: true, outlineColor: viewColor.withAlpha(0.55), outlineWidth: 1 },
+      }))
       viewer.entities.add({
-        name: `航点 ${index + 1} 摄像头视野`,
-        polygon: { hierarchy: Cesium.Cartesian3.fromDegreesArrayHeights([longitude, latitude, routeAltitude, left[0], left[1], routeAltitude, forward[0], forward[1], routeAltitude, right[0], right[1], routeAltitude]), material: Cesium.Color.fromCssColorString('#ffb547').withAlpha(0.18), outline: true, outlineColor: Cesium.Color.fromCssColorString('#ffb547').withAlpha(0.78), outlineWidth: 2 },
+        name: `航点 ${index + 1} 地面视场`,
+        polygon: { hierarchy: frustum.ground, material: Cesium.Color.fromCssColorString('#36dfba').withAlpha(0.16), outline: true, outlineColor: Cesium.Color.fromCssColorString('#36dfba').withAlpha(0.72), outlineWidth: 2 },
       })
+      viewer.entities.add({ name: `航点 ${index + 1} 视锥体边框`, polyline: { positions: [frustum.near[0], frustum.near[1], frustum.near[2], frustum.near[3], frustum.near[0], frustum.far[0], frustum.far[1], frustum.far[2], frustum.far[3], frustum.far[0]], width: 2, material: viewColor, clampToGround: false } })
       viewer.entities.add({
         name: `航点 ${index + 1} 拖动镜头`,
         properties: { cameraIndex: index },
-        position: Cesium.Cartesian3.fromDegrees(forward[0], forward[1], routeAltitude),
+        position: frustum.center,
         point: { pixelSize: 13, color: Cesium.Color.fromCssColorString('#ffb547'), outlineColor: Cesium.Color.WHITE, outlineWidth: 2, disableDepthTestDistance: Number.POSITIVE_INFINITY },
         label: { text: '镜头', font: '600 11px sans-serif', fillColor: Cesium.Color.WHITE, outlineColor: Cesium.Color.fromCssColorString('#12343b'), outlineWidth: 3, style: Cesium.LabelStyle.FILL_AND_OUTLINE, pixelOffset: new Cesium.Cartesian2(0, -18) },
       })
