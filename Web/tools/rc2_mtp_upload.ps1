@@ -14,9 +14,9 @@ param(
 )
 
 # MTP devices do not have a drive letter. This prototype uses Shell/WPD.
-# It stages a unique remote file, reads it back and checks SHA-256, then writes
-# the requested name. WPD Shell has no reliable atomic rename; replacement has
-# a short gap, so the old file is backed up before deletion.
+# It backs up the existing file, overwrites the requested name, and reads it back
+# to check SHA-256. WPD Shell does not reliably expose delete/rename operations,
+# so the old file is preserved locally instead of being deleted on the device.
 $ErrorActionPreference = 'Stop'
 $CopyFlags = 1044 # FOF_SILENT | FOF_NOCONFIRMATION | FOF_NOERRORUI
 
@@ -168,23 +168,9 @@ try {
         Write-Host "已备份旧文件: $backupPath ($backupHash)"
     }
 
-    $tempName = ".$RemoteFileName.uploading-$operationId.kmz"
-    $tempSource = Join-Path $localWork $tempName
-    Copy-Item -LiteralPath $SourceKmz -Destination $tempSource
-    $targetFolder.CopyHere($tempSource, $CopyFlags)
-    $remoteTemp = Wait-RemoteItem $targetFolder $tempName $TimeoutSeconds
-    if ($null -eq $remoteTemp) { throw "上传临时文件超时: $tempName" }
-    $readbackTempDir = Join-Path $localWork 'readback-temp'
-    New-Item -ItemType Directory -Path $readbackTempDir -Force | Out-Null
-    $readbackTemp = Copy-RemoteItemToLocal $remoteTemp $readbackTempDir $tempName $TimeoutSeconds
-    $tempHash = (Get-FileHash -LiteralPath $readbackTemp -Algorithm SHA256).Hash
-    if ($tempHash -ne $sourceHash) { throw "临时文件回读校验失败: $tempHash != $sourceHash" }
-    Write-Host '临时文件上传及回读校验通过。'
-
-    if ($existing) {
-        if (-not $PSCmdlet.ShouldProcess($RemoteFileName, '删除旧 KMZ（已备份）')) { return }
-        Remove-RemoteItem $existing $targetFolder $TimeoutSeconds
-    }
+    # RC 2 的 MTP Shell 通常不暴露删除 verb，因此不能依赖“上传临时文件→删除旧文件→改名”。
+    # 这里先完成本地备份，再让 MTP 以同名文件覆盖；完成后回读目标文件校验内容。
+    if (-not $PSCmdlet.ShouldProcess($RemoteFileName, '覆盖 KMZ（旧文件已备份）')) { return }
     $targetFolder.CopyHere($SourceKmz, $CopyFlags)
     $remoteFinal = Wait-RemoteItem $targetFolder $RemoteFileName $TimeoutSeconds
     if ($null -eq $remoteFinal) { throw "上传最终文件超时: $RemoteFileName" }
@@ -194,10 +180,10 @@ try {
     $finalHash = (Get-FileHash -LiteralPath $readbackFinal -Algorithm SHA256).Hash
     if ($finalHash -ne $sourceHash) { throw "最终文件回读校验失败: $finalHash != $sourceHash" }
     Write-Host "上传完成，SHA-256 已验证: $finalHash"
-    Remove-RemoteItem $remoteTemp $targetFolder $TimeoutSeconds
 } finally {
     Remove-Item -LiteralPath $localWork -Recurse -Force -ErrorAction SilentlyContinue
 }
+
 
 
 
