@@ -46,7 +46,7 @@ npm run dev
 - `POST /api/weather/predictions/{job_id}/windows`：同样的任务参数，比较当前选定出发时间与未来原生时次；任务结束越过资料截止时刻的候选被排除。返回排序依据、完整覆盖数及不能评估的原因；不是连续可飞窗口。
 - `POST /api/routes/compare-weather`：包含 `weather_job_id`、起终点、道路来源、缓冲、高度、速度、`departure_time_utc` 和可选 `profile`。生成真实道路备选并比较天气；不能证明有可分辨改善时保留道路基线。不会自动改变当前路线，须显式采用。
 - `POST /api/routes/plan`：请求体的 `road_source` 为 `local`（默认）或 `online`。本地模式从索引按 A/B 范围加缓冲提取路网；在线模式向 OSRM 请求完整道路几何。两种模式均输出 GeoJSON 路线、道路名称、道路/直线距离、端点接入距离和未评估标记。端点离所选道路网络超过 35 米时返回 422；在线服务不可用时返回 503。
-- `POST /api/routes/export-kmz`：将当前道路参考几何抽稀后导出 DJI WPML 航点 KMZ 草稿。默认 `fly` 模板面向 DJI RC 2 上的 DJI Fly（Air 3/Air 3S/Mini 4 Pro 通用消费级格式）；`m30`/`m3e` 模板面向 DJI Pilot 2 企业机型。DJI Fly 航线需要先在遥控器中创建占位航线，再保持 UUID 文件名替换 `Android/data/dji.go.v5/files/waypoint/` 下的 KMZ。文件使用相对起飞点高度，仍需核对机型、动作、高度、返航、空域和现场条件；道路参考线不等于已批准的飞行航线。
+- `POST /api/routes/export-kmz`：将当前道路参考几何抽稀后导出 DJI WPML 航点 KMZ 草稿。默认 `fly` 模板面向 DJI RC 2 上的 DJI Fly（Air 3/Air 3S/Mini 4 Pro 通用消费级格式）；`m30`/`m3e` 模板面向 DJI Pilot 2 企业机型。请求可通过 `waypoint_settings` 为每个原始点指定相对高度、机头方向模式/角度和摄像头俯仰角；DJI Fly 航线需要先在遥控器中创建占位航线，再保持 UUID 文件名替换 `Android/data/dji.go.v5/files/waypoint/` 下的 KMZ。文件使用相对起飞点高度，仍需核对机型、动作、高度、返航、空域和现场条件；道路参考线不等于已批准的飞行航线。
 - `POST /api/landing/check`：用本地索引对候选点做快速初筛，返回 `mapped_building`、`road_nearby` 或 `no_road`，以及 35 米接路半径和最近道路点。`landing_verified` 始终为 `false`。
 - `POST /api/routes/preview`：保留原有的两点直线基线接口
 

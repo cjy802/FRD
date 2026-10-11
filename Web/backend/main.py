@@ -79,11 +79,20 @@ class WeatherRouteComparisonRequest(RouteRequest):
     profile: WeatherLimits | None = None
 
 
+class KmzWaypointSetting(BaseModel):
+    altitude_m: float | None = Field(default=None, gt=0, le=1500, allow_inf_nan=False)
+    heading_mode: Literal["followWayline", "manually", "fixed", "smoothTransition", "towardPOI"] = "followWayline"
+    heading_angle: float = Field(default=0, ge=-180, le=180, allow_inf_nan=False)
+    gimbal_pitch_angle: float = Field(default=0, ge=-90, le=45, allow_inf_nan=False)
+    poi: tuple[float, float, float] | None = None
+
+
 class KmzExportRequest(BaseModel):
     coordinates: list[tuple[float, float]] = Field(min_length=2, max_length=65535)
     altitude_m: float = Field(gt=0, le=1500, allow_inf_nan=False)
     speed_kmh: float = Field(gt=0, le=200, allow_inf_nan=False)
     drone_model: Literal["fly", "m30", "m3e"] = "fly"
+    waypoint_settings: list[KmzWaypointSetting] | None = Field(default=None, max_length=65535)
 
 
 @lru_cache(maxsize=1)
@@ -269,7 +278,8 @@ def plan_road_route(route: RouteRequest):
 @app.post("/api/routes/export-kmz")
 def export_dji_kmz(request: KmzExportRequest):
     try:
-        payload = build_dji_kmz(request.coordinates, request.altitude_m, request.speed_kmh, request.drone_model)
+        settings = [item.model_dump() for item in request.waypoint_settings] if request.waypoint_settings is not None else None
+        payload = build_dji_kmz(request.coordinates, request.altitude_m, request.speed_kmh, request.drone_model, settings)
     except KmzExportError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     return Response(

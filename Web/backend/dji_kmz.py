@@ -97,26 +97,38 @@ def _rdp_indices(coordinates: list[tuple[float, float]], tolerance_m: float) -> 
     return sorted(kept)
 
 
-def _simplify_coordinates(coordinates: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    """Reduce dense road geometry while preserving route order and endpoints."""
+def _simplify_coordinate_indices(coordinates: list[tuple[float, float]], protected_indices: set[int] | None = None) -> list[int]:
+    """Return retained original indices after reducing dense road geometry."""
     if len(coordinates) <= 2:
-        return coordinates
+        return list(range(len(coordinates)))
 
+    protected_indices = protected_indices or set()
     filtered = [coordinates[0]]
-    for point in coordinates[1:-1]:
-        if _distance_m(filtered[-1], point) >= MIN_WAYPOINT_DISTANCE_M:
+    filtered_indices = [0]
+    for index, point in enumerate(coordinates[1:-1], start=1):
+        if _distance_m(filtered[-1], point) >= MIN_WAYPOINT_DISTANCE_M or index in protected_indices:
             filtered.append(point)
+            filtered_indices.append(index)
     if _distance_m(filtered[-1], coordinates[-1]) < MIN_WAYPOINT_DISTANCE_M:
         filtered[-1] = coordinates[-1]
+        filtered_indices[-1] = len(coordinates) - 1
     else:
         filtered.append(coordinates[-1])
+        filtered_indices.append(len(coordinates) - 1)
 
     tolerance = SIMPLIFY_TOLERANCE_M
     indices = _rdp_indices(filtered, tolerance)
+    protected_filtered = {filtered_indices.index(index) for index in protected_indices if index in filtered_indices}
+    indices = sorted(set(indices) | protected_filtered)
     while len(indices) > MAX_EXPORT_WAYPOINTS:
         tolerance *= 1.5
-        indices = _rdp_indices(filtered, tolerance)
-    return [filtered[index] for index in indices]
+        indices = sorted(set(_rdp_indices(filtered, tolerance)) | protected_filtered)
+    return [filtered_indices[index] for index in indices]
+
+
+def _simplify_coordinates(coordinates: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Reduce dense road geometry while preserving route order and endpoints."""
+    return [coordinates[index] for index in _simplify_coordinate_indices(coordinates)]
 
 
 def _mission_config(speed_m_s: float, rth_height_m: float, drone: dict[str, object]) -> str:
@@ -142,20 +154,41 @@ def _mission_config(speed_m_s: float, rth_height_m: float, drone: dict[str, obje
 {payload}</wpml:missionConfig>"""
 
 
-def _heading_param() -> str:
+HEADING_MODES = {"followWayline", "manually", "fixed", "smoothTransition", "towardPOI"}
+
+
+def _heading_param(setting: dict[str, object] | None = None) -> str:
+    setting = setting or {}
+    mode = str(setting.get("heading_mode", "followWayline"))
+    angle = float(setting.get("heading_angle", 0))
+    poi = setting.get("poi")
+    if mode not in HEADING_MODES:
+        mode = "followWayline"
+    if not isfinite(angle) or not -180 <= angle <= 180:
+        angle = 0
+    if isinstance(poi, (list, tuple)) and len(poi) >= 2:
+        poi_text = f"{_number(float(poi[0]), 7)},{_number(float(poi[1]), 7)},{_number(float(poi[2]) if len(poi) > 2 else 0)}"
+    else:
+        poi_text = "0.000000,0.000000,0.000000"
+    if mode != "towardPOI":
+        poi_text = "0.000000,0.000000,0.000000"
     return """  <wpml:waypointHeadingParam>
-    <wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode>
-    <wpml:waypointHeadingAngle>0</wpml:waypointHeadingAngle>
-    <wpml:waypointPoiPoint>0.000000,0.000000,0.000000</wpml:waypointPoiPoint>
+    <wpml:waypointHeadingMode>{mode}</wpml:waypointHeadingMode>
+    <wpml:waypointHeadingAngle>{angle}</wpml:waypointHeadingAngle>
+    <wpml:waypointPoiPoint>{poi_text}</wpml:waypointPoiPoint>
     <wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>
-  </wpml:waypointHeadingParam>"""
+  </wpml:waypointHeadingParam>""".format(mode=mode, angle=_number(angle), poi_text=poi_text)
 
 
-def _template_waypoint(index: int, longitude: float, latitude: float, altitude_m: float, speed_m_s: float, fly_profile: bool) -> str:
+def _template_waypoint(index: int, longitude: float, latitude: float, altitude_m: float, speed_m_s: float, fly_profile: bool, setting: dict[str, object] | None = None) -> str:
+    setting = setting or {}
+    raw_altitude = setting.get("altitude_m")
+    point_altitude = altitude_m if raw_altitude is None else float(raw_altitude)
+    gimbal_pitch = float(setting.get("gimbal_pitch_angle", 0))
     if fly_profile:
         settings = f"""  <wpml:useGlobalHeight>0</wpml:useGlobalHeight>
   <wpml:useGlobalSpeed>0</wpml:useGlobalSpeed>
-{_heading_param()}
+{_heading_param(setting)}
   <wpml:useGlobalHeadingParam>0</wpml:useGlobalHeadingParam>
   <wpml:useGlobalTurnParam>0</wpml:useGlobalTurnParam>
   <wpml:waypointSpeed>{_number(speed_m_s)}</wpml:waypointSpeed>
@@ -163,40 +196,53 @@ def _template_waypoint(index: int, longitude: float, latitude: float, altitude_m
     <wpml:waypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:waypointTurnMode>
     <wpml:waypointTurnDampingDist>0</wpml:waypointTurnDampingDist>
   </wpml:waypointTurnParam>
-  <wpml:gimbalPitchAngle>0</wpml:gimbalPitchAngle>"""
+  <wpml:gimbalPitchAngle>{_number(gimbal_pitch)}</wpml:gimbalPitchAngle>"""
     else:
-        settings = """  <wpml:useGlobalHeight>1</wpml:useGlobalHeight>
-  <wpml:useGlobalSpeed>1</wpml:useGlobalSpeed>
-  <wpml:useGlobalHeadingParam>1</wpml:useGlobalHeadingParam>
-  <wpml:useGlobalTurnParam>1</wpml:useGlobalTurnParam>"""
-    return f"""<Placemark>
-  <Point><coordinates>{_number(longitude, 7)},{_number(latitude, 7)}</coordinates></Point>
-  <wpml:index>{index}</wpml:index>
-  <wpml:ellipsoidHeight>{_number(altitude_m)}</wpml:ellipsoidHeight>
-  <wpml:height>{_number(altitude_m)}</wpml:height>
-{settings}
-</Placemark>"""
-
-
-def _wayline_waypoint(index: int, longitude: float, latitude: float, altitude_m: float, speed_m_s: float) -> str:
-    return f"""<Placemark>
-  <Point><coordinates>{_number(longitude, 7)},{_number(latitude, 7)}</coordinates></Point>
-  <wpml:index>{index}</wpml:index>
-  <wpml:executeHeight>{_number(altitude_m)}</wpml:executeHeight>
+        settings = f"""  <wpml:useGlobalHeight>0</wpml:useGlobalHeight>
+  <wpml:useGlobalSpeed>0</wpml:useGlobalSpeed>
+{_heading_param(setting)}
+  <wpml:useGlobalHeadingParam>0</wpml:useGlobalHeadingParam>
+  <wpml:useGlobalTurnParam>0</wpml:useGlobalTurnParam>
   <wpml:waypointSpeed>{_number(speed_m_s)}</wpml:waypointSpeed>
-{_heading_param()}
   <wpml:waypointTurnParam>
     <wpml:waypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:waypointTurnMode>
     <wpml:waypointTurnDampingDist>0</wpml:waypointTurnDampingDist>
   </wpml:waypointTurnParam>
+  <wpml:gimbalPitchAngle>{_number(gimbal_pitch)}</wpml:gimbalPitchAngle>"""
+    return f"""<Placemark>
+  <Point><coordinates>{_number(longitude, 7)},{_number(latitude, 7)}</coordinates></Point>
+  <wpml:index>{index}</wpml:index>
+  <wpml:ellipsoidHeight>{_number(point_altitude)}</wpml:ellipsoidHeight>
+  <wpml:height>{_number(point_altitude)}</wpml:height>
+{settings}
+</Placemark>"""
+
+
+def _wayline_waypoint(index: int, longitude: float, latitude: float, altitude_m: float, speed_m_s: float, setting: dict[str, object] | None = None) -> str:
+    setting = setting or {}
+    raw_altitude = setting.get("altitude_m")
+    point_altitude = altitude_m if raw_altitude is None else float(raw_altitude)
+    gimbal_pitch = float(setting.get("gimbal_pitch_angle", 0))
+    return f"""<Placemark>
+  <Point><coordinates>{_number(longitude, 7)},{_number(latitude, 7)}</coordinates></Point>
+  <wpml:index>{index}</wpml:index>
+  <wpml:executeHeight>{_number(point_altitude)}</wpml:executeHeight>
+  <wpml:waypointSpeed>{_number(speed_m_s)}</wpml:waypointSpeed>
+{_heading_param(setting)}
+  <wpml:waypointTurnParam>
+    <wpml:waypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:waypointTurnMode>
+    <wpml:waypointTurnDampingDist>0</wpml:waypointTurnDampingDist>
+  </wpml:waypointTurnParam>
+  <wpml:gimbalPitchAngle>{_number(gimbal_pitch)}</wpml:gimbalPitchAngle>
   <wpml:useStraightLine>1</wpml:useStraightLine>
 </Placemark>"""
 
 
-def _template_kml(coordinates: list[tuple[float, float]], altitude_m: float, speed_m_s: float, rth_height_m: float, timestamp_ms: int, drone: dict[str, object]) -> str:
-    placemarks = "\n".join(_template_waypoint(i, lon, lat, altitude_m, speed_m_s, bool(drone["fly"])) for i, (lon, lat) in enumerate(coordinates))
+def _template_kml(coordinates: list[tuple[float, float]], altitude_m: float, speed_m_s: float, rth_height_m: float, timestamp_ms: int, drone: dict[str, object], waypoint_settings: list[dict[str, object]] | None = None) -> str:
+    waypoint_settings = waypoint_settings or [{} for _ in coordinates]
+    placemarks = "\n".join(_template_waypoint(i, lon, lat, altitude_m, speed_m_s, bool(drone["fly"]), waypoint_settings[i]) for i, (lon, lat) in enumerate(coordinates))
     global_heading = _heading_param().replace("waypointHeadingParam", "globalWaypointHeadingParam", 2) if drone["fly"] else "      <wpml:globalWaypointHeadingParam><wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode></wpml:globalWaypointHeadingParam>"
-    gimbal_mode = "usePointSetting" if drone["fly"] else "manual"
+    gimbal_mode = "usePointSetting"
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="{drone['namespace']}">
   <Document>
@@ -225,8 +271,9 @@ def _template_kml(coordinates: list[tuple[float, float]], altitude_m: float, spe
 """
 
 
-def _waylines_wpml(coordinates: list[tuple[float, float]], altitude_m: float, speed_m_s: float, rth_height_m: float, drone: dict[str, object]) -> str:
-    placemarks = "\n".join(_wayline_waypoint(i, lon, lat, altitude_m, speed_m_s) for i, (lon, lat) in enumerate(coordinates))
+def _waylines_wpml(coordinates: list[tuple[float, float]], altitude_m: float, speed_m_s: float, rth_height_m: float, drone: dict[str, object], waypoint_settings: list[dict[str, object]] | None = None) -> str:
+    waypoint_settings = waypoint_settings or [{} for _ in coordinates]
+    placemarks = "\n".join(_wayline_waypoint(i, lon, lat, altitude_m, speed_m_s, waypoint_settings[i]) for i, (lon, lat) in enumerate(coordinates))
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="{drone['namespace']}">
   <Document>
@@ -243,7 +290,41 @@ def _waylines_wpml(coordinates: list[tuple[float, float]], altitude_m: float, sp
 """
 
 
-def build_dji_kmz(coordinates, altitude_m: float, speed_kmh: float, drone_model: Literal["fly", "m30", "m3e"] = "fly") -> bytes:
+def _normalise_waypoint_settings(settings, count: int) -> list[dict[str, object]]:
+    if settings is None:
+        return [{} for _ in range(count)]
+    if not isinstance(settings, list) or len(settings) != count:
+        raise KmzExportError("逐点航点设置必须与原始路线点数量一致。")
+    normalised: list[dict[str, object]] = []
+    for item in settings:
+        if item is None:
+            normalised.append({})
+            continue
+        if not isinstance(item, dict):
+            raise KmzExportError("逐点航点设置格式无效。")
+        heading_mode = item.get("heading_mode", "followWayline")
+        if heading_mode not in HEADING_MODES:
+            raise KmzExportError("航点机头方向模式无效。")
+        altitude = item.get("altitude_m")
+        if altitude is not None and (not isfinite(float(altitude)) or not 0 < float(altitude) <= 1500):
+            raise KmzExportError("航点高度必须在 0–1500 米。")
+        pitch = item.get("gimbal_pitch_angle", 0)
+        if not isfinite(float(pitch)) or not -90 <= float(pitch) <= 45:
+            raise KmzExportError("摄像头俯仰角必须在 -90–45 度。")
+        angle = item.get("heading_angle", 0)
+        if not isfinite(float(angle)) or not -180 <= float(angle) <= 180:
+            raise KmzExportError("航点机头角度必须在 -180–180 度。")
+        normalised.append({
+            "altitude_m": float(altitude) if altitude is not None else None,
+            "heading_mode": heading_mode,
+            "heading_angle": float(angle),
+            "gimbal_pitch_angle": float(pitch),
+            "poi": item.get("poi"),
+        })
+    return normalised
+
+
+def build_dji_kmz(coordinates, altitude_m: float, speed_kmh: float, drone_model: Literal["fly", "m30", "m3e"] = "fly", waypoint_settings=None) -> bytes:
     if not isinstance(coordinates, list) or len(coordinates) < 2 or len(coordinates) > 65535:
         raise KmzExportError("DJI 航点草稿至少需要 2 个、最多 65535 个路线点。")
     if not isfinite(altitude_m) or not 0 < altitude_m <= 1500:
@@ -263,7 +344,17 @@ def build_dji_kmz(coordinates, altitude_m: float, speed_kmh: float, drone_model:
             cleaned.append((longitude, latitude))
     if len(cleaned) < 2:
         raise KmzExportError("路线去重后不足 2 个航点。")
-    cleaned = _simplify_coordinates(cleaned)
+    settings = _normalise_waypoint_settings(waypoint_settings, len(cleaned))
+    protected_indices = {
+        index for index, setting in enumerate(settings)
+        if setting.get("altitude_m") is not None and float(setting["altitude_m"]) != altitude_m
+        or setting.get("heading_mode") not in (None, "followWayline")
+        or float(setting.get("heading_angle", 0)) != 0
+        or float(setting.get("gimbal_pitch_angle", 0)) != 0
+    }
+    retained_indices = _simplify_coordinate_indices(cleaned, protected_indices)
+    cleaned = [cleaned[index] for index in retained_indices]
+    settings = [settings[index] for index in retained_indices]
     if len(cleaned) < 2:
         raise KmzExportError("路线抽稀后不足 2 个航点。")
     speed_m_s = speed_kmh / 3.6
@@ -272,6 +363,6 @@ def build_dji_kmz(coordinates, altitude_m: float, speed_kmh: float, drone_model:
     timestamp_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     output = BytesIO()
     with ZipFile(output, "w", ZIP_DEFLATED) as archive:
-        archive.writestr("wpmz/template.kml", _template_kml(cleaned, altitude_m, speed_m_s, rth_height_m, timestamp_ms, drone))
-        archive.writestr("wpmz/waylines.wpml", _waylines_wpml(cleaned, altitude_m, speed_m_s, rth_height_m, drone))
+        archive.writestr("wpmz/template.kml", _template_kml(cleaned, altitude_m, speed_m_s, rth_height_m, timestamp_ms, drone, settings))
+        archive.writestr("wpmz/waylines.wpml", _waylines_wpml(cleaned, altitude_m, speed_m_s, rth_height_m, drone, settings))
     return output.getvalue()

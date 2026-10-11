@@ -47,6 +47,38 @@ class DjiKmzTests(unittest.TestCase):
         self.assertIn("<wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>", waylines)
         self.assertNotIn("payloadInfo", template)
 
+    def test_writes_per_waypoint_height_heading_and_gimbal_pitch(self):
+        payload = build_dji_kmz(
+            [[119.95, 31.67], [119.951, 31.672], [119.952, 31.672]],
+            80,
+            36,
+            "fly",
+            [
+                {"altitude_m": 60, "heading_mode": "fixed", "heading_angle": 90, "gimbal_pitch_angle": -30},
+                {"altitude_m": 80, "heading_mode": "smoothTransition", "heading_angle": 180, "gimbal_pitch_angle": -45},
+                {"altitude_m": 100, "heading_mode": "followWayline", "heading_angle": 0, "gimbal_pitch_angle": 0},
+            ],
+        )
+        with ZipFile(BytesIO(payload)) as archive:
+            waylines = archive.read("wpmz/waylines.wpml").decode("utf-8")
+        self.assertIn("<wpml:executeHeight>60</wpml:executeHeight>", waylines)
+        self.assertIn("<wpml:waypointHeadingMode>fixed</wpml:waypointHeadingMode>", waylines)
+        self.assertIn("<wpml:waypointHeadingAngle>90</wpml:waypointHeadingAngle>", waylines)
+        self.assertIn("<wpml:gimbalPitchAngle>-30</wpml:gimbalPitchAngle>", waylines)
+
+    def test_custom_waypoint_is_kept_when_geometry_is_straight(self):
+        payload = build_dji_kmz(
+            [[119.95, 31.67], [119.951, 31.67], [119.952, 31.67]],
+            80,
+            36,
+            "fly",
+            [{}, {"altitude_m": 120, "heading_mode": "fixed", "heading_angle": 45}, {}],
+        )
+        with ZipFile(BytesIO(payload)) as archive:
+            waylines = archive.read("wpmz/waylines.wpml").decode("utf-8")
+        self.assertEqual(waylines.count("<wpml:index>"), 3)
+        self.assertIn("<wpml:executeHeight>120</wpml:executeHeight>", waylines)
+
     def test_rejects_speed_above_dji_waypoint_limit(self):
         with self.assertRaises(KmzExportError):
             build_dji_kmz([[0, 0], [1, 1]], 80, 54.1)
