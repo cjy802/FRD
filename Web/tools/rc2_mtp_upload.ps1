@@ -8,6 +8,7 @@ param(
     [string]$WaypointPath = 'Android/data/dji.go.v5/files/waypoint',
     [string]$BackupRoot = (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'DjiRc2MtpBackups'),
     [string]$WpdHelperPath,
+    [string]$SilentHelperPath,
     [int]$TimeoutSeconds = 60,
     [switch]$ReplaceExisting,
     [switch]$ListOnly,
@@ -24,6 +25,11 @@ $WpdHelperPath = if ([string]::IsNullOrWhiteSpace($WpdHelperPath)) {
     Join-Path $PSScriptRoot 'bin\wpd_mtp_write.exe'
 } else {
     (Resolve-Path -LiteralPath $WpdHelperPath).Path
+}
+$SilentHelperPath = if ([string]::IsNullOrWhiteSpace($SilentHelperPath)) {
+    Join-Path $PSScriptRoot 'bin\silent_mtp_replace.exe'
+} else {
+    (Resolve-Path -LiteralPath $SilentHelperPath).Path
 }
 
 function Get-ChildItemByName {
@@ -126,11 +132,13 @@ if ($null -eq $storageItem) {
 }
 if ($null -eq $storageItem) { throw '未找到 RC 2 的内部存储空间' }
 $targetFolder = $storageItem.GetFolder
+$targetFolderParsingPath = $storageItem.Path
 foreach ($segment in ($WaypointPath -split '[\\/]')) {
     if ([string]::IsNullOrWhiteSpace($segment)) { continue }
     $next = Get-ChildItemByName $targetFolder $segment
     if ($null -eq $next) { throw "MTP 目录不存在: $WaypointPath（缺少 $segment）" }
     $targetFolder = $next.GetFolder
+    $targetFolderParsingPath = $next.Path
     if ($null -eq $targetFolder) { throw "MTP 项不是目录: $segment" }
 }
 
@@ -175,14 +183,19 @@ try {
         Write-Host "已备份旧文件: $backupPath ($backupHash)"
     }
 
-    if (-not (Test-Path -LiteralPath $WpdHelperPath -PathType Leaf)) {
-        throw "找不到 WPD 写入助手：$WpdHelperPath。请先运行 tools/build_wpd_mtp_helper.ps1。"
+    if (-not (Test-Path -LiteralPath $SilentHelperPath -PathType Leaf)) {
+        throw "找不到无提示 MTP 助手：$SilentHelperPath。请先运行 tools/build_silent_mtp_helper.ps1。"
+    }
+    $targetFileParsingPath = if ($existing) {
+        $existing.Path
+    } else {
+        "$targetFolderParsingPath\$RemoteFileName"
     }
 
-    # 用原生 WPD 数据流覆盖现有对象，绕开 Explorer/MTP 删除动作和确认弹窗。
-    & $WpdHelperPath $DeviceName $WaypointPath $RemoteFileName $SourceKmz
+    # 使用 IFileOperation 的静默标志直接删除并复制 Shell MTP 对象，避免 Explorer 删除弹窗。
+    & $SilentHelperPath $SourceKmz $targetFolderParsingPath $RemoteFileName $targetFileParsingPath
     if ($LASTEXITCODE -ne 0) {
-        throw "WPD 写入助手失败，退出码 $LASTEXITCODE。RC 2 文件未被确认替换。"
+        throw "无提示 MTP 助手失败，退出码 $LASTEXITCODE。RC 2 文件未被确认替换。"
     }
 
     $remoteFinal = Wait-RemoteItem $targetFolder $RemoteFileName $TimeoutSeconds
@@ -196,6 +209,8 @@ try {
 } finally {
     Remove-Item -LiteralPath $localWork -Recurse -Force -Confirm:$false -ErrorAction SilentlyContinue
 }
+
+
 
 
 
