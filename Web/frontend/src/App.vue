@@ -668,7 +668,7 @@ function drawCesiumRoute(flyToRoute = true) {
         viewer.entities.add({
           name: `航点 ${index + 1} 拖动镜头`,
           properties: { cameraIndex: index },
-          position: frustum.center,
+          position: frustum.origin,
           point: { pixelSize: 13, color: Cesium.Color.fromCssColorString('#ffb547'), outlineColor: Cesium.Color.WHITE, outlineWidth: 2, disableDepthTestDistance: Number.POSITIVE_INFINITY },
           label: { text: '镜头', font: '600 11px sans-serif', fillColor: Cesium.Color.WHITE, outlineColor: Cesium.Color.fromCssColorString('#12343b'), outlineWidth: 3, style: Cesium.LabelStyle.FILL_AND_OUTLINE, pixelOffset: new Cesium.Cartesian2(0, -18) },
         })
