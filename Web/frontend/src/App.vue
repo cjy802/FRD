@@ -729,11 +729,20 @@ function initMap() {
       const picked = viewer.scene.pick(position)
       return picked?.id ?? null
     }
+    const propertyValue = (property: any) => property?.getValue ? property.getValue(Cesium.JulianDate.now()) : property
+    const pickWaypointEntity = (position: any) => {
+      const picks = viewer.scene.drillPick ? viewer.scene.drillPick(position, 12) : []
+      for (const pick of picks) {
+        const entity = pick?.id
+        if (entity?.properties?.waypointIndex || entity?.properties?.cameraIndex) return entity
+      }
+      return pickEntity(position)
+    }
     clickHandler.setInputAction((event: any) => {
-      const entity = pickEntity(event.position)
+      const entity = pickWaypointEntity(event.position)
       const cameraProperty = entity?.properties?.cameraIndex
       if (cameraProperty) {
-        draggingCameraIndex.value = Number(cameraProperty.getValue?.(Cesium.JulianDate.now()) ?? cameraProperty)
+        draggingCameraIndex.value = Number(propertyValue(cameraProperty))
         viewer.scene.screenSpaceCameraController.enableRotate = false
         viewer.scene.screenSpaceCameraController.enableTranslate = false
         viewer.scene.screenSpaceCameraController.enableZoom = false
@@ -768,10 +777,13 @@ function initMap() {
         suppressNextMapClick.value = false
         return
       }
-      const entity = pickEntity(event.position)
+      const entity = pickWaypointEntity(event.position)
       const waypointProperty = entity?.properties?.waypointIndex
+      if (waypointProperty) {
+        selectWaypoint(Number(propertyValue(waypointProperty)))
+        return
+      }
       if (mapEditMode.value === 'node') {
-        if (waypointProperty) selectWaypoint(Number(waypointProperty.getValue?.(Cesium.JulianDate.now()) ?? waypointProperty))
         return
       }
       const cartesian = viewer.camera.pickEllipsoid(event.position, viewer.scene.globe.ellipsoid)
