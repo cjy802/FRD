@@ -167,6 +167,34 @@ static void WriteExistingObject(
     Check(destination->Commit(STGC_DEFAULT), "IStream::Commit");
 }
 
+static ComPtr<IPortableDeviceValues> CreateClientInfo() {
+    ComPtr<IPortableDeviceValues> clientInfo;
+    Check(CoCreateInstance(
+        CLSID_PortableDeviceValues,
+        nullptr,
+        CLSCTX_INPROC_SERVER,
+        IID_PPV_ARGS(&clientInfo)),
+        "CoCreateInstance(CLSID_PortableDeviceValues)");
+    Check(clientInfo->SetStringValue(WPD_CLIENT_NAME, L"DJI RC2 KMZ Agent"),
+        "Set WPD_CLIENT_NAME");
+    Check(clientInfo->SetUnsignedIntegerValue(WPD_CLIENT_MAJOR_VERSION, 1),
+        "Set WPD_CLIENT_MAJOR_VERSION");
+    Check(clientInfo->SetUnsignedIntegerValue(WPD_CLIENT_MINOR_VERSION, 0),
+        "Set WPD_CLIENT_MINOR_VERSION");
+    Check(clientInfo->SetUnsignedIntegerValue(WPD_CLIENT_REVISION, 1),
+        "Set WPD_CLIENT_REVISION");
+    Check(clientInfo->SetUnsignedIntegerValue(
+        WPD_CLIENT_SECURITY_QUALITY_OF_SERVICE, SECURITY_IMPERSONATION),
+        "Set WPD_CLIENT_SECURITY_QUALITY_OF_SERVICE");
+    Check(clientInfo->SetUnsignedIntegerValue(
+        WPD_CLIENT_DESIRED_ACCESS, GENERIC_READ | GENERIC_WRITE),
+        "Set WPD_CLIENT_DESIRED_ACCESS");
+    Check(clientInfo->SetUnsignedIntegerValue(
+        WPD_CLIENT_SHARE_MODE, FILE_SHARE_READ | FILE_SHARE_WRITE),
+        "Set WPD_CLIENT_SHARE_MODE");
+    return clientInfo;
+}
+
 static int Run(int argc, wchar_t** argv) {
     if (argc != 5) {
         std::wcerr << L"Usage: wpd_mtp_write.exe <device> <relative-path> <file-name> <source-kmz>\n";
@@ -197,7 +225,8 @@ static int Run(int argc, wchar_t** argv) {
         CLSCTX_INPROC_SERVER,
         IID_PPV_ARGS(&device)),
         "CoCreateInstance(CLSID_PortableDevice)");
-    Check(device->Open(deviceId.c_str(), nullptr), "IPortableDevice::Open");
+    auto clientInfo = CreateClientInfo();
+    Check(device->Open(deviceId.c_str(), clientInfo.Get()), "IPortableDevice::Open");
 
     ComPtr<IPortableDeviceContent> content;
     Check(device->Content(&content), "IPortableDevice::Content");
