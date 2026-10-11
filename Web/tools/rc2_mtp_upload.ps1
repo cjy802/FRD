@@ -9,6 +9,7 @@ param(
     [string]$BackupRoot = (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'DjiRc2MtpBackups'),
     [int]$TimeoutSeconds = 60,
     [switch]$ReplaceExisting,
+    [switch]$ListOnly,
     [switch]$DryRun
 )
 
@@ -127,6 +128,19 @@ foreach ($segment in ($WaypointPath -split '[\\/]')) {
     if ($null -eq $targetFolder) { throw "MTP 项不是目录: $segment" }
 }
 
+$remoteItems = @($targetFolder.Items())
+if ($ListOnly) {
+    [PSCustomObject[]]$remoteItems | ForEach-Object {
+        [PSCustomObject]@{
+            Name = $_.Name
+            Type = $_.Type
+            IsFolder = $_.IsFolder
+            Path = $_.Path
+        }
+    } | Format-Table -AutoSize
+    return
+}
+
 $existing = Get-ChildItemByName $targetFolder $RemoteFileName
 $operationId = [Guid]::NewGuid().ToString('N')
 $localWork = Join-Path ([IO.Path]::GetTempPath()) "dji-rc2-mtp-$operationId"
@@ -184,5 +198,6 @@ try {
 } finally {
     Remove-Item -LiteralPath $localWork -Recurse -Force -ErrorAction SilentlyContinue
 }
+
 
 
