@@ -51,14 +51,16 @@ static std::wstring GetStringValue(
     return result;
 }
 
-static std::wstring FindChild(
+static bool TryFindChild(
     IPortableDeviceContent* content,
     IPortableDeviceProperties* properties,
     const std::wstring& parentId,
-    const std::wstring& childName) {
+    const std::wstring& childName,
+    std::wstring* result) {
     ComPtr<IEnumPortableDeviceObjectIDs> enumerator;
-    Check(content->EnumObjects(0, parentId.c_str(), nullptr, &enumerator),
-        "IPortableDeviceContent::EnumObjects");
+    if (FAILED(content->EnumObjects(0, parentId.c_str(), nullptr, &enumerator))) {
+        return false;
+    }
 
     while (true) {
         LPWSTR ids[16] = {};
@@ -80,12 +82,89 @@ static std::wstring FindChild(
             }
             CoTaskMemFree(ids[i]);
             if (name == childName) {
-                return objectId;
+                *result = objectId;
+                return true;
             }
         }
     }
+    return false;
+}
 
-    throw std::runtime_error("MTP object not found");
+static std::wstring FindChild(
+    IPortableDeviceContent* content,
+    IPortableDeviceProperties* properties,
+    const std::wstring& parentId,
+    const std::wstring& childName) {
+    std::wstring result;
+    if (!TryFindChild(content, properties, parentId, childName, &result)) {
+        std::string name(childName.begin(), childName.end());
+        throw std::runtime_error("MTP object not found: " + name);
+    }
+    return result;
+}
+
+static std::wstring ResolvePath(
+    IPortableDeviceContent* content,
+    IPortableDeviceProperties* properties,
+    const std::wstring& relativePath) {
+    std::vector<std::wstring> segments;
+    size_t start = 0;
+    while (start < relativePath.size()) {
+        size_t end = relativePath.find_first_of(L"/\\", start);
+        if (end == std::wstring::npos) {
+            end = relativePath.size();
+        }
+        if (end > start) {
+            segments.emplace_back(relativePath.substr(start, end - start));
+        }
+        start = end + 1;
+    }
+    if (segments.empty()) {
+        return WPD_DEVICE_OBJECT_ID;
+    }
+
+    std::wstring objectId = WPD_DEVICE_OBJECT_ID;
+    std::wstring next;
+    size_t segmentIndex = 0;
+    if (TryFindChild(content, properties, objectId, segments[0], &next)) {
+        objectId = next;
+        segmentIndex = 1;
+    } else {
+        // WPD normally exposes the internal/shared storage container below the
+        // device root, while Explorer hides that level from the displayed path.
+        ComPtr<IEnumPortableDeviceObjectIDs> rootObjects;
+        Check(content->EnumObjects(0, objectId.c_str(), nullptr, &rootObjects),
+            "IPortableDeviceContent::EnumObjects(root)");
+        while (true) {
+            LPWSTR ids[16] = {};
+            ULONG fetched = 0;
+            HRESULT hr = rootObjects->Next(16, ids, &fetched);
+            if (hr == S_FALSE || fetched == 0) {
+                break;
+            }
+            Check(hr, "IEnumPortableDeviceObjectIDs::Next(root)");
+            for (ULONG i = 0; i < fetched; ++i) {
+                std::wstring storageId(ids[i] ? ids[i] : L"");
+                std::wstring candidate;
+                if (TryFindChild(content, properties, storageId, segments[0], &candidate)) {
+                    objectId = candidate;
+                    segmentIndex = 1;
+                    for (ULONG j = i; j < fetched; ++j) {
+                        CoTaskMemFree(ids[j]);
+                    }
+                    goto storage_found;
+                }
+                CoTaskMemFree(ids[i]);
+            }
+        }
+        throw std::runtime_error("MTP path root does not contain Android");
+    }
+
+storage_found:
+    for (; segmentIndex < segments.size(); ++segmentIndex) {
+        objectId = FindChild(content, properties, objectId, segments[segmentIndex]);
+    }
+    return objectId;
 }
 
 static std::wstring FindDevice(IPortableDeviceManager* manager, const std::wstring& wantedName) {
@@ -233,19 +312,7 @@ static int Run(int argc, wchar_t** argv) {
     ComPtr<IPortableDeviceProperties> properties;
     Check(content->Properties(&properties), "IPortableDeviceContent::Properties");
 
-    std::wstring objectId = WPD_DEVICE_OBJECT_ID;
-    size_t start = 0;
-    while (start < relativePath.size()) {
-        size_t end = relativePath.find_first_of(L"/\\", start);
-        if (end == std::wstring::npos) {
-            end = relativePath.size();
-        }
-        if (end > start) {
-            objectId = FindChild(content.Get(), properties.Get(), objectId,
-                relativePath.substr(start, end - start));
-        }
-        start = end + 1;
-    }
+    const std::wstring objectId = ResolvePath(content.Get(), properties.Get(), relativePath);
 
     const std::wstring fileId = FindChild(content.Get(), properties.Get(), objectId, fileName);
     ComPtr<IPortableDeviceResources> resources;
