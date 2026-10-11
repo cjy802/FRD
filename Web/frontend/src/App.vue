@@ -638,19 +638,21 @@ function drawCesiumRoute(flyToRoute = true) {
       },
     })
     if (mapEditMode.value === 'node') {
-      const frustum = cameraFrustum(index, routeAltitude)
-      const viewColor = selectedWaypointIndex.value === index ? Cesium.Color.fromCssColorString('#ffb547').withAlpha(0.82) : Cesium.Color.fromCssColorString('#8cefe0').withAlpha(0.62)
+      const selected = selectedWaypointIndex.value === index
+      const heading = waypointHeading(index)
       viewer.entities.add({
         name: `航点 ${index + 1} 方向箭头`,
         properties: { waypointIndex: index },
-        position: frustum.origin,
-        billboard: { image: '/svg/jiantou.svg', width: selectedWaypointIndex.value === index ? 30 : 22, height: selectedWaypointIndex.value === index ? 30 : 22, rotation: Cesium.Math.toRadians(frustum.heading - 90), verticalOrigin: Cesium.VerticalOrigin.CENTER, horizontalOrigin: Cesium.HorizontalOrigin.CENTER, disableDepthTestDistance: Number.POSITIVE_INFINITY, color: selectedWaypointIndex.value === index ? Cesium.Color.fromCssColorString('#ffb547') : Cesium.Color.WHITE },
+        position: elevated,
+        billboard: { image: '/svg/jiantou.svg', width: selected ? 30 : 22, height: selected ? 30 : 22, rotation: Cesium.Math.toRadians(heading - 90), verticalOrigin: Cesium.VerticalOrigin.CENTER, horizontalOrigin: Cesium.HorizontalOrigin.CENTER, disableDepthTestDistance: Number.POSITIVE_INFINITY, color: selected ? Cesium.Color.fromCssColorString('#ffb547') : Cesium.Color.WHITE },
       })
-      viewer.entities.add({
-        name: `航点 ${index + 1} 视角方向`,
-        polyline: { positions: [frustum.origin, frustum.center], width: selectedWaypointIndex.value === index ? 4 : 2, material: selectedWaypointIndex.value === index && Cesium.PolylineDashMaterialProperty ? new Cesium.PolylineDashMaterialProperty({ color: viewColor, dashLength: 12 }) : viewColor, clampToGround: false },
-      })
-      if (selectedWaypointIndex.value === index) {
+      if (selected) {
+        const frustum = cameraFrustum(index, routeAltitude)
+        const viewColor = Cesium.Color.fromCssColorString('#ffb547').withAlpha(0.82)
+        viewer.entities.add({
+          name: `航点 ${index + 1} 视角方向`,
+          polyline: { positions: [frustum.origin, frustum.center], width: 4, material: Cesium.PolylineDashMaterialProperty ? new Cesium.PolylineDashMaterialProperty({ color: viewColor, dashLength: 12 }) : viewColor, clampToGround: false },
+        })
       const faces = [[frustum.near[0], frustum.near[1], frustum.far[1], frustum.far[0]], [frustum.near[1], frustum.near[2], frustum.far[2], frustum.far[1]], [frustum.near[2], frustum.near[3], frustum.far[3], frustum.far[2]], [frustum.near[3], frustum.near[0], frustum.far[0], frustum.far[3]]]
       faces.forEach((face, faceIndex) => viewer.entities.add({
         name: `航点 ${index + 1} 视锥体侧面 ${faceIndex + 1}`,
