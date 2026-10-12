@@ -59,6 +59,7 @@ type WaypointSetting = {
   heading_mode: WaypointHeadingMode
   heading_angle: number
   gimbal_pitch_angle: number
+  export_anchor?: boolean
 }
 const waypointSettings = ref<WaypointSetting[]>([])
 const checkingPoint = ref(false)
@@ -275,7 +276,7 @@ function cameraFrustum(index: number, routeAltitude: number) {
 function adjustSelectedWaypoint(change: Partial<WaypointSetting>, immediate = false) {
   const index = selectedWaypointIndex.value
   if (index === null || !waypointSettings.value[index]) return
-  Object.assign(waypointSettings.value[index], change)
+  Object.assign(waypointSettings.value[index], change, { export_anchor: true })
   if (immediate) {
     if (change.altitude_m !== undefined) drawCesiumRoute(false)
     else updateSelectedWaypointView()
@@ -287,7 +288,7 @@ function adjustSelectedWaypoint(change: Partial<WaypointSetting>, immediate = fa
 
 function setSelectedWaypointOrientation(heading: number, pitch?: number, immediate = false) {
   const change: Partial<WaypointSetting> = {
-    heading_mode: 'fixed',
+    heading_mode: 'smoothTransition',
     heading_angle: ((heading % 360) + 360) % 360,
   }
   if (pitch !== undefined) change.gimbal_pitch_angle = Math.max(-90, Math.min(45, pitch))
@@ -332,14 +333,25 @@ function moveSelectedWaypoint(eastMeters: number, northMeters: number) {
   const setting = waypointSettings.value[index]
   if (setting?.heading_mode === 'followWayline') {
     const heading = waypointHeading(index)
-    setting.heading_mode = 'fixed'
+    setting.heading_mode = 'smoothTransition'
     setting.heading_angle = heading
   }
   const distance = Math.hypot(eastMeters, northMeters)
   if (!distance) return
   const bearing = Math.atan2(eastMeters, northMeters) * 180 / Math.PI
   coordinates[index] = offsetCoordinate(longitude, latitude, bearing, distance)
+  if (setting) setting.export_anchor = true
   scheduleWaypointRender()
+}
+
+function markWaypointEdited(event: Event) {
+  const row = (event.target as Element).closest('.waypoint-row')
+  if (!row) return
+  const index = Array.from(row.parentElement?.querySelectorAll('.waypoint-row') ?? []).indexOf(row)
+  if (index >= 0 && waypointSettings.value[index]) {
+    waypointSettings.value[index].export_anchor = true
+    scheduleWaypointRender()
+  }
 }
 
 function selectWaypoint(index: number) {
@@ -1152,7 +1164,7 @@ onBeforeUnmount(() => {
       <div class="column-resizer column-resizer-left" role="separator" aria-orientation="vertical" aria-label="调整航线设置栏宽度" aria-controls="mission-sidebar route-map" :aria-valuenow="Math.round(sidebarWidth)" aria-valuemin="260" :aria-valuemax="Math.round(widthLimit('left'))" tabindex="0" title="拖动调整航线设置栏宽度，双击恢复默认" :style="{ left: `${sidebarWidth}px` }" @pointerdown="startColumnResize('left', $event)" @dblclick="resetColumnWidths" @keydown="resizeColumnByKeyboard('left', $event)"></div>
       <div class="column-resizer column-resizer-right" role="separator" aria-orientation="vertical" aria-label="调整任务概览栏宽度" aria-controls="route-map mission-insights" :aria-valuenow="Math.round(insightsWidth)" :aria-valuemin="minimumWidth('right')" :aria-valuemax="Math.round(widthLimit('right'))" tabindex="0" title="拖动调整任务概览栏宽度，双击恢复默认" :style="{ right: `${insightsWidth}px` }" @pointerdown="startColumnResize('right', $event)" @dblclick="resetColumnWidths" @keydown="resizeColumnByKeyboard('right', $event)"></div>
 
-      <aside id="mission-insights" class="insights" :class="{ 'panel-active': workspacePanel === 'overview' }" aria-label="任务概览" tabindex="0">
+      <aside id="mission-insights" class="insights" :class="{ 'panel-active': workspacePanel === 'overview' }" aria-label="任务概览" tabindex="0" @change="markWaypointEdited">
         <div class="insights-header"><span class="eyebrow"><span class="svg-icon icon-square-check" aria-hidden="true"></span>任务状态</span><h2>先看天气结论</h2><p>先看结论，需要细节时再展开。</p></div>
         <section class="overview-hero" aria-label="天气结论概览">
         <div class="mission-facts"><div><span class="fact-label"><span class="svg-icon icon-route" aria-hidden="true"></span>路线长度</span><strong>{{ distance }}</strong></div><div><span class="fact-label"><span class="svg-icon icon-refresh" aria-hidden="true"></span>预计用时</span><strong>{{ elapsed }}</strong></div><div><span class="fact-label"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>计划出发</span><strong>{{ departureBeijing.replace('T', ' ') }}</strong><small>北京时间</small></div></div>

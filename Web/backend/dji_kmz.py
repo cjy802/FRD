@@ -109,7 +109,7 @@ def _simplify_coordinate_indices(coordinates: list[tuple[float, float]], protect
         if _distance_m(filtered[-1], point) >= MIN_WAYPOINT_DISTANCE_M or index in protected_indices:
             filtered.append(point)
             filtered_indices.append(index)
-    if _distance_m(filtered[-1], coordinates[-1]) < MIN_WAYPOINT_DISTANCE_M:
+    if _distance_m(filtered[-1], coordinates[-1]) < MIN_WAYPOINT_DISTANCE_M and filtered_indices[-1] not in protected_indices:
         filtered[-1] = coordinates[-1]
         filtered_indices[-1] = len(coordinates) - 1
     else:
@@ -119,6 +119,8 @@ def _simplify_coordinate_indices(coordinates: list[tuple[float, float]], protect
     tolerance = SIMPLIFY_TOLERANCE_M
     indices = _rdp_indices(filtered, tolerance)
     protected_filtered = {filtered_indices.index(index) for index in protected_indices if index in filtered_indices}
+    if len(protected_filtered | {0, len(filtered) - 1}) > MAX_EXPORT_WAYPOINTS:
+        raise KmzExportError(f"已编辑航点超过 {MAX_EXPORT_WAYPOINTS} 个，无法在保留全部设置的同时导出。")
     indices = sorted(set(indices) | protected_filtered)
     while len(indices) > MAX_EXPORT_WAYPOINTS:
         tolerance *= 1.5
@@ -164,8 +166,12 @@ def _heading_param(setting: dict[str, object] | None = None) -> str:
     poi = setting.get("poi")
     if mode not in HEADING_MODES:
         mode = "followWayline"
-    if not isfinite(angle) or not -180 <= angle <= 180:
+    # WPML fixed holds the existing yaw; smoothTransition actually targets the supplied angle.
+    if mode == "fixed":
+        mode = "smoothTransition"
+    if not isfinite(angle):
         angle = 0
+    angle = ((angle + 180) % 360) - 180
     if isinstance(poi, (list, tuple)) and len(poi) >= 2:
         poi_text = f"{_number(float(poi[0]), 7)},{_number(float(poi[1]), 7)},{_number(float(poi[2]) if len(poi) > 2 else 0)}"
     else:
@@ -184,7 +190,7 @@ def _template_waypoint(index: int, longitude: float, latitude: float, altitude_m
     setting = setting or {}
     raw_altitude = setting.get("altitude_m")
     point_altitude = altitude_m if raw_altitude is None else float(raw_altitude)
-    gimbal_pitch = float(setting.get("gimbal_pitch_angle", 0))
+    gimbal_pitch = float(setting.get("gimbal_pitch_angle", -30))
     if fly_profile:
         settings = f"""  <wpml:useGlobalHeight>0</wpml:useGlobalHeight>
   <wpml:useGlobalSpeed>0</wpml:useGlobalSpeed>
@@ -222,7 +228,7 @@ def _wayline_waypoint(index: int, longitude: float, latitude: float, altitude_m:
     setting = setting or {}
     raw_altitude = setting.get("altitude_m")
     point_altitude = altitude_m if raw_altitude is None else float(raw_altitude)
-    gimbal_pitch = float(setting.get("gimbal_pitch_angle", 0))
+    gimbal_pitch = float(setting.get("gimbal_pitch_angle", -30))
     return f"""<Placemark>
   <Point><coordinates>{_number(longitude, 7)},{_number(latitude, 7)}</coordinates></Point>
   <wpml:index>{index}</wpml:index>
@@ -305,23 +311,37 @@ def _normalise_waypoint_settings(settings, count: int) -> list[dict[str, object]
         heading_mode = item.get("heading_mode", "followWayline")
         if heading_mode not in HEADING_MODES:
             raise KmzExportError("航点机头方向模式无效。")
+        if heading_mode == "manually":
+            raise KmzExportError("手动控制无法写成自动朝向；请改为沿航线或指定角度后导出。")
+        if heading_mode == "towardPOI" and not item.get("poi"):
+            raise KmzExportError("朝向兴趣点需要提供有效的兴趣点坐标。")
         altitude = item.get("altitude_m")
         if altitude is not None and (not isfinite(float(altitude)) or not 0 < float(altitude) <= 1500):
             raise KmzExportError("航点高度必须在 0–1500 米。")
-        pitch = item.get("gimbal_pitch_angle", 0)
+        pitch = item.get("gimbal_pitch_angle", -30)
         if not isfinite(float(pitch)) or not -90 <= float(pitch) <= 45:
             raise KmzExportError("摄像头俯仰角必须在 -90–45 度。")
         angle = item.get("heading_angle", 0)
-        if not isfinite(float(angle)) or not -180 <= float(angle) <= 180:
-            raise KmzExportError("航点机头角度必须在 -180–180 度。")
+        if not isfinite(float(angle)):
+            raise KmzExportError("航点机头角度必须是有限数值。")
         normalised.append({
             "altitude_m": float(altitude) if altitude is not None else None,
             "heading_mode": heading_mode,
             "heading_angle": float(angle),
             "gimbal_pitch_angle": float(pitch),
+            "export_anchor": item.get("export_anchor", False),
             "poi": item.get("poi"),
         })
     return normalised
+
+
+def _has_custom_setting(setting: dict[str, object], altitude_m: float) -> bool:
+    return bool(setting.get("export_anchor")) or (
+        setting.get("altitude_m") is not None and float(setting["altitude_m"]) != altitude_m
+        or setting.get("heading_mode") not in (None, "followWayline")
+        or float(setting.get("heading_angle", 0)) != 0
+        or float(setting.get("gimbal_pitch_angle", -30)) != -30
+    )
 
 
 def build_dji_kmz(coordinates, altitude_m: float, speed_kmh: float, drone_model: Literal["fly", "m30", "m3e"] = "fly", waypoint_settings=None) -> bytes:
@@ -333,28 +353,26 @@ def build_dji_kmz(coordinates, altitude_m: float, speed_kmh: float, drone_model:
         raise KmzExportError("DJI WPML 草稿速度须在 3.6–54 km/h（1–15 m/s）。")
     if drone_model not in DRONE_PROFILES:
         raise KmzExportError("暂不支持该 DJI 机型模板。")
+    settings = _normalise_waypoint_settings(waypoint_settings, len(coordinates))
     cleaned: list[tuple[float, float]] = []
-    for point in coordinates:
+    cleaned_settings: list[dict[str, object]] = []
+    for point, setting in zip(coordinates, settings):
         if not isinstance(point, (list, tuple)) or len(point) < 2:
             raise KmzExportError("路线点坐标格式无效。")
         longitude, latitude = float(point[0]), float(point[1])
         if not (-180 <= longitude <= 180 and -90 <= latitude <= 90 and isfinite(longitude) and isfinite(latitude)):
             raise KmzExportError("路线包含超出经纬度范围的坐标。")
+        if cleaned and (longitude, latitude) == cleaned[-1] and _has_custom_setting(setting, altitude_m):
+            raise KmzExportError("已编辑航点与前一个航点位置重合；请移动或删除重复点后导出。")
         if not cleaned or (longitude, latitude) != cleaned[-1]:
             cleaned.append((longitude, latitude))
+            cleaned_settings.append(setting)
     if len(cleaned) < 2:
         raise KmzExportError("路线去重后不足 2 个航点。")
-    settings = _normalise_waypoint_settings(waypoint_settings, len(cleaned))
-    protected_indices = {
-        index for index, setting in enumerate(settings)
-        if setting.get("altitude_m") is not None and float(setting["altitude_m"]) != altitude_m
-        or setting.get("heading_mode") not in (None, "followWayline")
-        or float(setting.get("heading_angle", 0)) != 0
-        or float(setting.get("gimbal_pitch_angle", 0)) != 0
-    }
+    protected_indices = {index for index, setting in enumerate(cleaned_settings) if _has_custom_setting(setting, altitude_m)}
     retained_indices = _simplify_coordinate_indices(cleaned, protected_indices)
     cleaned = [cleaned[index] for index in retained_indices]
-    settings = [settings[index] for index in retained_indices]
+    settings = [cleaned_settings[index] for index in retained_indices]
     if len(cleaned) < 2:
         raise KmzExportError("路线抽稀后不足 2 个航点。")
     speed_m_s = speed_kmh / 3.6
