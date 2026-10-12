@@ -246,7 +246,14 @@ function cameraFrustum(index: number, routeAltitude: number) {
     return Cesium.Cartesian3.fromDegrees(point[0], point[1], Math.max(0, altitude + up))
   }
   const atDistance = (vector: LocalVector, distance: number) => toCartesian(vector.east * distance, vector.north * distance, vector.up * distance)
-  const ground = corners.map((vector) => atDistance(vector, vector.up < -0.08 ? Math.min(420, Math.max(40, altitude / -vector.up)) : 260))
+  const groundEntries = corners.map((vector) => {
+    const distance = vector.up < -0.08 ? Math.min(420, Math.max(40, altitude / -vector.up)) : 260
+    return { east: vector.east * distance, north: vector.north * distance, position: atDistance(vector, distance) }
+  })
+  const groundCenterEast = groundEntries.reduce((sum, entry) => sum + entry.east, 0) / groundEntries.length
+  const groundCenterNorth = groundEntries.reduce((sum, entry) => sum + entry.north, 0) / groundEntries.length
+  groundEntries.sort((first, second) => Math.atan2(first.east - groundCenterEast, first.north - groundCenterNorth) - Math.atan2(second.east - groundCenterEast, second.north - groundCenterNorth))
+  const ground = groundEntries.map((entry) => entry.position)
   const groundCenter = atDistance(forward, forward.up < -0.08 ? Math.min(420, Math.max(40, altitude / -forward.up)) : 260)
   return { origin: Cesium.Cartesian3.fromDegrees(longitude, latitude, altitude), ground, groundCenter, heading: yaw * 180 / Math.PI, pitch: pitch * 180 / Math.PI }
 }
@@ -668,7 +675,7 @@ function drawCesiumRoute(flyToRoute = true) {
         const faces = [[frustum.origin, frustum.ground[0], frustum.ground[1]], [frustum.origin, frustum.ground[1], frustum.ground[2]], [frustum.origin, frustum.ground[2], frustum.ground[3]], [frustum.origin, frustum.ground[3], frustum.ground[0]]]
       faces.forEach((face, faceIndex) => viewer.entities.add({
           name: `航点 ${index + 1} 视锥体侧面 ${faceIndex + 1}`,
-          polygon: { hierarchy: face, material: Cesium.Color.fromCssColorString(faceIndex % 2 ? '#15d6b1' : '#5ee7d1').withAlpha(0.18), outline: true, outlineColor: viewColor.withAlpha(0.62), outlineWidth: 1 },
+          polygon: { hierarchy: face, material: Cesium.Color.fromCssColorString('#72e6c2').withAlpha(0.16), outline: true, outlineColor: viewColor.withAlpha(0.62), outlineWidth: 1 },
         }))
         const sightRays = frustum.ground.flatMap((corner) => [frustum.origin, corner])
         viewer.entities.add({ name: `航点 ${index + 1} 视场四角连线`, polyline: { positions: sightRays, width: 2, material: viewColor, clampToGround: false } })
