@@ -78,6 +78,7 @@ const cameraPreviewReady = ref(false)
 let cameraPreviewViewer: any = null
 let waypointRenderFrame: number | null = null
 let waypointRouteDirty = false
+let selectedViewFrustum: ReturnType<typeof cameraFrustum> | null = null
 const landingSearchRadiusM = ref(35)
 const showStartRange = ref(false)
 const showEndRange = ref(false)
@@ -306,14 +307,8 @@ function updateSelectedWaypointView() {
   if (!viewer || !Cesium || !preview.value || index === null || mapEditMode.value !== 'node') return
   const arrow = viewer.entities.getById(`waypoint-direction-${index}`)
   if (!arrow) return
-  const frustum = cameraFrustum(index, Math.max(10, Number(form.altitude_m) || 100))
-  arrow.billboard.rotation = Cesium.Math.toRadians(frustum.heading - 90)
-  viewer.entities.getById('selected-view-direction').polyline.positions = [frustum.origin, frustum.groundCenter]
-  frustum.faces.forEach((face, faceIndex) => {
-    viewer.entities.getById(`selected-view-face-${faceIndex}`).polygon.hierarchy = new Cesium.PolygonHierarchy(face)
-  })
-  viewer.entities.getById('selected-view-rays').polyline.positions = frustum.ground.flatMap((corner) => [frustum.origin, corner])
-  viewer.entities.getById('selected-view-border').polyline.positions = [...frustum.ground, frustum.ground[0]]
+  selectedViewFrustum = cameraFrustum(index, Math.max(10, Number(form.altitude_m) || 100))
+  arrow.billboard.rotation = Cesium.Math.toRadians(selectedViewFrustum.heading - 90)
   viewer.scene.requestRender()
 }
 
@@ -693,6 +688,7 @@ async function chooseMapPoint(point: Point) {
 
 function drawCesiumRoute(flyToRoute = true) {
   if (!viewer || !Cesium) return
+  selectedViewFrustum = null
   viewer.entities.removeAll()
   viewer.scene.requestRender()
   const start = form.start
@@ -845,20 +841,20 @@ function drawCesiumRoute(flyToRoute = true) {
       })
       if (selected) {
         const frustum = cameraFrustum(index, routeAltitude)
+        selectedViewFrustum = frustum
         const viewColor = Cesium.Color.fromCssColorString('#ffb547').withAlpha(0.82)
         viewer.entities.add({
           id: 'selected-view-direction',
           name: `航点 ${index + 1} 视角方向`,
-          polyline: { positions: [frustum.origin, frustum.groundCenter], width: 4, material: Cesium.PolylineDashMaterialProperty ? new Cesium.PolylineDashMaterialProperty({ color: viewColor, dashLength: 12 }) : viewColor, clampToGround: false },
+          polyline: { positions: new Cesium.CallbackProperty(() => selectedViewFrustum ? [selectedViewFrustum.origin, selectedViewFrustum.groundCenter] : [], false), width: 4, material: Cesium.PolylineDashMaterialProperty ? new Cesium.PolylineDashMaterialProperty({ color: viewColor, dashLength: 12 }) : viewColor, clampToGround: false },
         })
         frustum.faces.forEach((face, faceIndex) => viewer.entities.add({
           id: `selected-view-face-${faceIndex}`,
           name: `航点 ${index + 1} 视锥体侧面 ${faceIndex + 1}`,
-          polygon: { hierarchy: face, perPositionHeight: true, arcType: Cesium.ArcType.NONE, material: Cesium.Color.fromCssColorString('#72e6c2').withAlpha(0.22), outline: true, outlineColor: viewColor.withAlpha(0.62), outlineWidth: 1 },
+          polygon: { hierarchy: new Cesium.CallbackProperty(() => new Cesium.PolygonHierarchy(selectedViewFrustum?.faces[faceIndex] ?? []), false), perPositionHeight: true, arcType: Cesium.ArcType.NONE, material: Cesium.Color.fromCssColorString('#72e6c2').withAlpha(0.22), outline: true, outlineColor: viewColor.withAlpha(0.62), outlineWidth: 1 },
         }))
-        const sightRays = frustum.ground.flatMap((corner) => [frustum.origin, corner])
-        viewer.entities.add({ id: 'selected-view-rays', name: `航点 ${index + 1} 视场四角连线`, polyline: { positions: sightRays, width: 2, material: viewColor, clampToGround: false } })
-        viewer.entities.add({ id: 'selected-view-border', name: `航点 ${index + 1} 地面视场边框`, polyline: { positions: [...frustum.ground, frustum.ground[0]], width: 2, material: Cesium.Color.fromCssColorString('#36dfba').withAlpha(0.78), clampToGround: false } })
+        viewer.entities.add({ id: 'selected-view-rays', name: `航点 ${index + 1} 视场四角连线`, polyline: { positions: new Cesium.CallbackProperty(() => selectedViewFrustum?.ground.flatMap((corner) => [selectedViewFrustum!.origin, corner]) ?? [], false), width: 2, material: viewColor, clampToGround: false } })
+        viewer.entities.add({ id: 'selected-view-border', name: `航点 ${index + 1} 地面视场边框`, polyline: { positions: new Cesium.CallbackProperty(() => selectedViewFrustum ? [...selectedViewFrustum.ground, selectedViewFrustum.ground[0]] : [], false), width: 2, material: Cesium.Color.fromCssColorString('#36dfba').withAlpha(0.78), clampToGround: false } })
         viewer.entities.add({
           name: `航点 ${index + 1} 拖动镜头`,
           properties: { cameraIndex: index },

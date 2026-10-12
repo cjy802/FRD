@@ -8,6 +8,7 @@ import * as Vue from 'vue'
 const source = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8')
 const { descriptor } = parse(source)
 const entities = []
+let renderRequests = 0
 const color = value => ({ value, withAlpha: alpha => color(`${value}@${alpha}`) })
 const cesium = {
   Cartesian3: {
@@ -25,14 +26,17 @@ const cesium = {
   Math: { toRadians: degrees => degrees * Math.PI / 180 },
   PolylineGlowMaterialProperty: class { constructor(options) { Object.assign(this, options) } },
   PolylineDashMaterialProperty: class { constructor(options) { Object.assign(this, options) } },
+  CallbackProperty: class { constructor(callback) { this.getValue = callback } },
+  PolygonHierarchy: class { constructor(positions) { this.positions = positions } },
 }
 const viewer = {
   entities: {
     add(entity) { entities.push(entity); return entity },
     removeAll() { entities.length = 0 },
+    getById(id) { return entities.find(entity => entity.id === id) },
   },
   camera: { flyTo() {} },
-  scene: { requestRender() {} },
+  scene: { requestRender() { renderRequests++ } },
 }
 const vue = { ...Vue, onMounted() {}, onBeforeUnmount() {} }
 const context = vm.createContext({
@@ -47,8 +51,8 @@ const context = vm.createContext({
 })
 const compiled = ts.transpileModule(`${descriptor.scriptSetup.content}\nglobalThis.app = {
   preview, previewKey, routeKey, routeAssessment, waypointSettings,
-  selectedWaypointIndex, mapEditMode, drawCesiumRoute,
-  initialize() { Cesium = globalThis.Cesium; viewer = globalThis.mockViewer },
+  selectedWaypointIndex, mapEditMode, drawCesiumRoute, setSelectedWaypointOrientation,
+  initialize() { Cesium = globalThis.Cesium; viewer = globalThis.mockViewer; updateCameraPreview = () => {} },
 }`, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText
 context.mockViewer = viewer
 new vm.Script(compiled, { filename: 'App.vue' }).runInContext(context)
@@ -82,6 +86,19 @@ assert.equal(selected()[0].point.heightReference, 'clamp')
 assert.equal(entities.find(entity => entity.name === '地面航点 5').point.color.value, '#00e5a8@0.88')
 assert.equal(entities.filter(entity => entity.name?.startsWith('气象初筛地面点')).length, 0)
 
+const face = entities.find(entity => entity.id === 'selected-view-face-0').polygon.hierarchy
+const direction = entities.find(entity => entity.id === 'selected-view-direction').polyline.positions
+const border = entities.find(entity => entity.id === 'selected-view-border').polyline.positions
+const origin = { ...direction.getValue()[0] }
+const beforeFace = JSON.stringify(face.getValue().positions)
+const beforeBorder = JSON.stringify(border.getValue())
+const requestsBeforeDrag = renderRequests
+app.setSelectedWaypointOrientation(90, undefined, true)
+assert.notEqual(JSON.stringify(face.getValue().positions), beforeFace, 'The green face must expose new vertices during dragging')
+assert.notEqual(JSON.stringify(border.getValue()), beforeBorder, 'The green border must follow the face')
+assert.deepEqual({ ...direction.getValue()[0] }, origin, 'Rotation must keep the camera origin fixed')
+assert.equal(renderRequests, requestsBeforeDrag + 1, 'Each drag update must request a map render')
+
 app.selectedWaypointIndex.value = 4
 app.drawCesiumRoute(false)
 assert.equal(selected().length, 1)
@@ -93,4 +110,4 @@ app.drawCesiumRoute(false)
 assert.equal(selected().length, 0)
 assert.equal(entities.filter(entity => entity.name?.startsWith('气象初筛地面点')).length, 2)
 
-console.log('Passed: W03/W05 ground projection selection and weather overlay separation.')
+console.log('Passed: live green frustum during rotation, fixed camera origin, W03/W05 selection, and weather overlay separation.')
