@@ -274,6 +274,11 @@ function moveSelectedWaypoint(eastMeters: number, northMeters: number) {
   if (index === null || !preview.value?.geometry.coordinates[index]) return
   const coordinates = preview.value.geometry.coordinates
   const [longitude, latitude] = coordinates[index]
+  const setting = waypointSettings.value[index]
+  if (setting?.heading_mode === 'followWayline') {
+    setting.heading_mode = 'fixed'
+    setting.heading_angle = waypointHeading(index)
+  }
   const distance = Math.hypot(eastMeters, northMeters)
   if (!distance) return
   const bearing = Math.atan2(eastMeters, northMeters) * 180 / Math.PI
