@@ -72,6 +72,9 @@ const suppressNextMapClick = ref(false)
 const roadSource = ref<'local' | 'online'>('local')
 const mapReady = ref(false)
 const mapElement = ref<HTMLElement | null>(null)
+const cameraPreviewElement = ref<HTMLElement | null>(null)
+const cameraPreviewReady = ref(false)
+let cameraPreviewViewer: any = null
 const landingSearchRadiusM = ref(35)
 const showStartRange = ref(false)
 const showEndRange = ref(false)
@@ -263,6 +266,7 @@ function adjustSelectedWaypoint(change: Partial<WaypointSetting>) {
   if (index === null || !waypointSettings.value[index]) return
   Object.assign(waypointSettings.value[index], change)
   drawCesiumRoute(false)
+  updateCameraPreview()
 }
 
 function selectWaypoint(index: number) {
@@ -286,6 +290,24 @@ function focusSelectedWaypoint() {
     orientation: { heading: Cesium.Math.toRadians(heading), pitch: Cesium.Math.toRadians(-26), roll: 0 },
     duration: 0.65,
   })
+  updateCameraPreview()
+}
+
+function updateCameraPreview() {
+  if (!cameraPreviewViewer || !preview.value || selectedWaypointIndex.value === null || !Cesium) return
+  const index = selectedWaypointIndex.value
+  const [longitude, latitude] = preview.value.geometry.coordinates[index]
+  const setting = waypointSettings.value[index]
+  const altitude = setting?.altitude_m ?? form.altitude_m
+  const heading = waypointHeading(index)
+  const pitch = setting?.gimbal_pitch_angle ?? -30
+  cameraPreviewViewer.camera.setView({
+    destination: Cesium.Cartesian3.fromDegrees(longitude, latitude, altitude),
+    orientation: { heading: Cesium.Math.toRadians(heading), pitch: Cesium.Math.toRadians(pitch), roll: 0 },
+  })
+  cameraPreviewViewer.camera.frustum.near = 0.5
+  cameraPreviewViewer.camera.frustum.far = 5000
+  cameraPreviewViewer.scene.requestRender()
 }
 
 function handleWaypointKeydown(event: KeyboardEvent) {
@@ -822,11 +844,43 @@ function initMap() {
   }
 }
 
+function initCameraPreview() {
+  if (!Cesium || !cameraPreviewElement.value || cameraPreviewViewer) return
+  try {
+    cameraPreviewViewer = new Cesium.Viewer(cameraPreviewElement.value, {
+      baseLayer: false,
+      terrainProvider: new Cesium.EllipsoidTerrainProvider(),
+      animation: false,
+      timeline: false,
+      baseLayerPicker: false,
+      geocoder: false,
+      homeButton: false,
+      navigationHelpButton: false,
+      sceneModePicker: false,
+      fullscreenButton: false,
+      infoBox: false,
+      selectionIndicator: false,
+    })
+    cameraPreviewViewer.imageryLayers.addImageryProvider(new Cesium.OpenStreetMapImageryProvider({ url: 'https://tile.openstreetmap.org/' }))
+    cameraPreviewViewer.scene.globe.depthTestAgainstTerrain = false
+    cameraPreviewViewer.resolutionScale = 1
+    cameraPreviewReady.value = true
+    updateCameraPreview()
+  } catch {
+    cameraPreviewReady.value = false
+    cameraPreviewViewer?.destroy()
+    cameraPreviewViewer = null
+  }
+}
+
 onMounted(() => {
   window.addEventListener('keydown', handleWaypointKeydown)
   scheduleDepartureClock()
   void calculate()
-  if ((window as any).Cesium) initMap()
+  if ((window as any).Cesium) {
+    initMap()
+    initCameraPreview()
+  }
   else window.addEventListener('load', initMap, { once: true })
 })
 onBeforeUnmount(() => {
@@ -836,6 +890,7 @@ onBeforeUnmount(() => {
   cancelCalculation()
   window.removeEventListener('load', initMap)
   if (viewer && !viewer.isDestroyed()) viewer.destroy()
+  if (cameraPreviewViewer && !cameraPreviewViewer.isDestroyed()) cameraPreviewViewer.destroy()
 })
 </script>
 
@@ -894,6 +949,7 @@ onBeforeUnmount(() => {
          <div class="map-bottom"><div class="map-switch"><button :class="{ active: mapMode === 'start' }" :disabled="checkingPoint || mapEditMode !== 'route'" @click="mapMode = 'start'"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>设置起点 A</button><button :class="{ active: mapMode === 'end' }" :disabled="checkingPoint || mapEditMode !== 'route'" @click="mapMode = 'end'"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>设置终点 B</button></div><span class="map-radius"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>接路判定 {{ landingSearchRadiusM }} m</span><span class="map-scale"><span class="svg-icon icon-wind" aria-hidden="true"></span>任务高度 {{ form.altitude_m }} m</span></div>
         <div v-if="mapEditMode === 'node' && selectedWaypointIndex !== null && selectedWaypointSetting()" class="node-controller" aria-label="航点控制器"><div class="node-controller-head"><strong>节点 {{ selectedWaypointIndex + 1 }} · 视角控制</strong><span>{{ Math.round(selectedWaypointSetting()?.heading_angle ?? waypointHeading(selectedWaypointIndex)) }}° · {{ selectedWaypointSetting()?.altitude_m ?? form.altitude_m }}m</span></div><div class="node-controller-body"><div class="wasd-pad" aria-label="WASD 高度和方向控制"><button type="button" @click="adjustSelectedWaypoint({ altitude_m: Math.min(1500, (selectedWaypointSetting()?.altitude_m ?? form.altitude_m) + 1) })">W</button><button type="button" @click="adjustSelectedWaypoint({ heading_mode: 'fixed', heading_angle: Math.max(-180, (selectedWaypointSetting()?.heading_angle ?? waypointHeading(selectedWaypointIndex)) - 5) })">A</button><button type="button" @click="adjustSelectedWaypoint({ altitude_m: Math.max(1, (selectedWaypointSetting()?.altitude_m ?? form.altitude_m) - 1) })">S</button><button type="button" @click="adjustSelectedWaypoint({ heading_mode: 'fixed', heading_angle: Math.min(180, (selectedWaypointSetting()?.heading_angle ?? waypointHeading(selectedWaypointIndex)) + 5) })">D</button></div><div class="node-dial"><button type="button" aria-label="逆时针旋转" @click="adjustSelectedWaypoint({ heading_mode: 'fixed', heading_angle: Math.max(-180, (selectedWaypointSetting()?.heading_angle ?? waypointHeading(selectedWaypointIndex)) - 15) })">↺</button><strong>{{ Math.round(selectedWaypointSetting()?.heading_angle ?? waypointHeading(selectedWaypointIndex)) }}°</strong><button type="button" aria-label="顺时针旋转" @click="adjustSelectedWaypoint({ heading_mode: 'fixed', heading_angle: Math.min(180, (selectedWaypointSetting()?.heading_angle ?? waypointHeading(selectedWaypointIndex)) + 15) })">↻</button></div><div class="node-axis"><button type="button" @click="adjustSelectedWaypoint({ gimbal_pitch_angle: Math.min(45, (selectedWaypointSetting()?.gimbal_pitch_angle ?? 0) + 5) })">镜头上</button><button type="button" @click="adjustSelectedWaypoint({ gimbal_pitch_angle: Math.max(-90, (selectedWaypointSetting()?.gimbal_pitch_angle ?? 0) - 5) })">镜头下</button><button type="button" @click="adjustSelectedWaypoint({ altitude_m: Math.min(1500, (selectedWaypointSetting()?.altitude_m ?? form.altitude_m) + 5) })">高度 +</button><button type="button" @click="adjustSelectedWaypoint({ altitude_m: Math.max(1, (selectedWaypointSetting()?.altitude_m ?? form.altitude_m) - 5) })">高度 −</button></div></div><small>W/S 高度 ±1m，A/D 航向 ±5°，方向键控制航向和俯仰；拖动地图上的橙色“镜头”点可直接调整水平朝向。</small></div>
         <div v-if="routeAssessment" class="weather-map-legend">沿线初筛：蓝 · 未触发，橙 · 关注，红 · 较强，灰 · 缺测<br />基于 0.25° 场，不是街道级风险，也不代表飞行许可。</div>
+        <div class="camera-preview" :class="{ visible: mapEditMode === 'node' && selectedWaypointIndex !== null && cameraPreviewReady }" aria-label="当前节点相机视角预览"><div ref="cameraPreviewElement" class="camera-preview-map"></div><div class="camera-preview-head"><strong>当前视角</strong><span v-if="selectedWaypointIndex !== null">节点 {{ selectedWaypointIndex + 1 }} · {{ Math.round(selectedWaypointSetting()?.gimbal_pitch_angle ?? -30) }}°</span></div><small>地图模拟视角 · 不是实时相机视频</small></div>
         <div v-if="loading" class="map-loading-overlay">
           <div class="map-loading-card">
             <button type="button" class="map-loading-cancel" aria-label="取消路线计算" title="取消" @click="cancelCalculation">×</button>
