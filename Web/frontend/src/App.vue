@@ -675,7 +675,7 @@ function drawCesiumRoute(flyToRoute = true) {
         const faces = [[frustum.origin, frustum.ground[0], frustum.ground[1]], [frustum.origin, frustum.ground[1], frustum.ground[2]], [frustum.origin, frustum.ground[2], frustum.ground[3]], [frustum.origin, frustum.ground[3], frustum.ground[0]]]
       faces.forEach((face, faceIndex) => viewer.entities.add({
           name: `航点 ${index + 1} 视锥体侧面 ${faceIndex + 1}`,
-          polygon: { hierarchy: face, material: Cesium.Color.fromCssColorString('#72e6c2').withAlpha(0.16), outline: true, outlineColor: viewColor.withAlpha(0.62), outlineWidth: 1 },
+          polygon: { hierarchy: face, perPositionHeight: true, arcType: Cesium.ArcType.NONE, material: Cesium.Color.fromCssColorString('#72e6c2').withAlpha(0.22), outline: true, outlineColor: viewColor.withAlpha(0.62), outlineWidth: 1 },
         }))
         const sightRays = frustum.ground.flatMap((corner) => [frustum.origin, corner])
         viewer.entities.add({ name: `航点 ${index + 1} 视场四角连线`, polyline: { positions: sightRays, width: 2, material: viewColor, clampToGround: false } })
