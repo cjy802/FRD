@@ -593,7 +593,7 @@ function drawCesiumRoute(flyToRoute = true) {
     coordinates.flatMap(([longitude, latitude]) => [longitude, latitude]),
   )
   const elevatedPositions = Cesium.Cartesian3.fromDegreesArrayHeights(
-    coordinates.flatMap(([longitude, latitude]) => [longitude, latitude, routeAltitude]),
+    coordinates.flatMap(([longitude, latitude], index) => [longitude, latitude, waypointSettings.value[index]?.altitude_m ?? routeAltitude]),
   )
 
   // Keep a low-contrast ground trace so the route remains readable against the 2D imagery.
