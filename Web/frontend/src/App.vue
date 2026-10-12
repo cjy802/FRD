@@ -269,6 +269,19 @@ function adjustSelectedWaypoint(change: Partial<WaypointSetting>) {
   updateCameraPreview()
 }
 
+function moveSelectedWaypoint(eastMeters: number, northMeters: number) {
+  const index = selectedWaypointIndex.value
+  if (index === null || !preview.value?.geometry.coordinates[index]) return
+  const coordinates = preview.value.geometry.coordinates
+  const [longitude, latitude] = coordinates[index]
+  const distance = Math.hypot(eastMeters, northMeters)
+  if (!distance) return
+  const bearing = Math.atan2(eastMeters, northMeters) * 180 / Math.PI
+  coordinates[index] = offsetCoordinate(longitude, latitude, bearing, distance)
+  drawCesiumRoute(false)
+  updateCameraPreview()
+}
+
 function selectWaypoint(index: number) {
   if (!preview.value || index < 0 || index >= waypointSettings.value.length) return
   selectedWaypointIndex.value = index
@@ -317,17 +330,23 @@ function handleWaypointKeydown(event: KeyboardEvent) {
   const key = event.key.toLowerCase()
   if (key === 'w' || key === 's') {
     event.preventDefault()
-    const current = selectedWaypointSetting()?.altitude_m ?? form.altitude_m
-    adjustSelectedWaypoint({ altitude_m: Math.max(1, Math.min(1500, current + (key === 'w' ? 1 : -1))) })
-  } else if (key === 'a' || key === 'd' || event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+    moveSelectedWaypoint(0, key === 'w' ? 1 : -1)
+  } else if (key === 'a' || key === 'd') {
+    event.preventDefault()
+    moveSelectedWaypoint(key === 'a' ? -1 : 1, 0)
+  } else if (key === 'q' || key === 'e' || event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
     event.preventDefault()
     const current = selectedWaypointSetting()?.heading_angle ?? waypointHeading(selectedWaypointIndex.value)
-    const delta = key === 'a' || event.key === 'ArrowLeft' ? -5 : 5
+    const delta = key === 'q' || event.key === 'ArrowLeft' ? -5 : 5
     adjustSelectedWaypoint({ heading_mode: 'fixed', heading_angle: Math.max(-180, Math.min(180, current + delta)) })
   } else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
     event.preventDefault()
     const current = selectedWaypointSetting()?.gimbal_pitch_angle ?? 0
     adjustSelectedWaypoint({ gimbal_pitch_angle: Math.max(-90, Math.min(45, current + (event.key === 'ArrowUp' ? 5 : -5))) })
+  } else if (key === 'z' || key === 'c') {
+    event.preventDefault()
+    const current = selectedWaypointSetting()?.gimbal_pitch_angle ?? 0
+    adjustSelectedWaypoint({ gimbal_pitch_angle: Math.max(-90, Math.min(45, current + (key === 'z' ? 5 : -5))) })
   }
 }
 
@@ -947,7 +966,7 @@ onBeforeUnmount(() => {
         <div v-if="error" class="map-alert" role="alert">{{ error }}</div>
         <div v-else-if="pointHint" class="map-point-hint" role="status">{{ pointHint }}</div>
          <div class="map-bottom"><div class="map-switch"><button :class="{ active: mapMode === 'start' }" :disabled="checkingPoint || mapEditMode !== 'route'" @click="mapMode = 'start'"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>设置起点 A</button><button :class="{ active: mapMode === 'end' }" :disabled="checkingPoint || mapEditMode !== 'route'" @click="mapMode = 'end'"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>设置终点 B</button></div><span class="map-radius"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>接路判定 {{ landingSearchRadiusM }} m</span><span class="map-scale"><span class="svg-icon icon-wind" aria-hidden="true"></span>任务高度 {{ form.altitude_m }} m</span></div>
-        <div v-if="mapEditMode === 'node' && selectedWaypointIndex !== null && selectedWaypointSetting()" class="node-controller" aria-label="航点控制器"><div class="node-controller-head"><strong>节点 {{ selectedWaypointIndex + 1 }} · 视角控制</strong><span>{{ Math.round(selectedWaypointSetting()?.heading_angle ?? waypointHeading(selectedWaypointIndex)) }}° · {{ selectedWaypointSetting()?.altitude_m ?? form.altitude_m }}m</span></div><div class="node-controller-body"><div class="wasd-pad" aria-label="WASD 高度和方向控制"><button type="button" @click="adjustSelectedWaypoint({ altitude_m: Math.min(1500, (selectedWaypointSetting()?.altitude_m ?? form.altitude_m) + 1) })">W</button><button type="button" @click="adjustSelectedWaypoint({ heading_mode: 'fixed', heading_angle: Math.max(-180, (selectedWaypointSetting()?.heading_angle ?? waypointHeading(selectedWaypointIndex)) - 5) })">A</button><button type="button" @click="adjustSelectedWaypoint({ altitude_m: Math.max(1, (selectedWaypointSetting()?.altitude_m ?? form.altitude_m) - 1) })">S</button><button type="button" @click="adjustSelectedWaypoint({ heading_mode: 'fixed', heading_angle: Math.min(180, (selectedWaypointSetting()?.heading_angle ?? waypointHeading(selectedWaypointIndex)) + 5) })">D</button></div><div class="node-dial"><button type="button" aria-label="逆时针旋转" @click="adjustSelectedWaypoint({ heading_mode: 'fixed', heading_angle: Math.max(-180, (selectedWaypointSetting()?.heading_angle ?? waypointHeading(selectedWaypointIndex)) - 15) })">↺</button><strong>{{ Math.round(selectedWaypointSetting()?.heading_angle ?? waypointHeading(selectedWaypointIndex)) }}°</strong><button type="button" aria-label="顺时针旋转" @click="adjustSelectedWaypoint({ heading_mode: 'fixed', heading_angle: Math.min(180, (selectedWaypointSetting()?.heading_angle ?? waypointHeading(selectedWaypointIndex)) + 15) })">↻</button></div><div class="node-axis"><button type="button" @click="adjustSelectedWaypoint({ gimbal_pitch_angle: Math.min(45, (selectedWaypointSetting()?.gimbal_pitch_angle ?? 0) + 5) })">镜头上</button><button type="button" @click="adjustSelectedWaypoint({ gimbal_pitch_angle: Math.max(-90, (selectedWaypointSetting()?.gimbal_pitch_angle ?? 0) - 5) })">镜头下</button><button type="button" @click="adjustSelectedWaypoint({ altitude_m: Math.min(1500, (selectedWaypointSetting()?.altitude_m ?? form.altitude_m) + 5) })">高度 +</button><button type="button" @click="adjustSelectedWaypoint({ altitude_m: Math.max(1, (selectedWaypointSetting()?.altitude_m ?? form.altitude_m) - 5) })">高度 −</button></div></div><small>W/S 高度 ±1m，A/D 航向 ±5°，方向键控制航向和俯仰；拖动地图上的橙色“镜头”点可直接调整水平朝向。</small></div>
+        <div v-if="mapEditMode === 'node' && selectedWaypointIndex !== null && selectedWaypointSetting()" class="node-controller" aria-label="航点控制器"><div class="node-controller-head"><strong>节点 {{ selectedWaypointIndex + 1 }} · 视角控制</strong><span>{{ Math.round(selectedWaypointSetting()?.heading_angle ?? waypointHeading(selectedWaypointIndex)) }}° · {{ selectedWaypointSetting()?.altitude_m ?? form.altitude_m }}m</span></div><div class="node-controller-body"><div class="wasd-pad" aria-label="WASD 平面移动控制"><button type="button" @click="moveSelectedWaypoint(0, 1)">W</button><button type="button" @click="moveSelectedWaypoint(-1, 0)">A</button><button type="button" @click="moveSelectedWaypoint(0, -1)">S</button><button type="button" @click="moveSelectedWaypoint(1, 0)">D</button></div><div class="node-dial"><button type="button" aria-label="逆时针旋转" @click="adjustSelectedWaypoint({ heading_mode: 'fixed', heading_angle: Math.max(-180, (selectedWaypointSetting()?.heading_angle ?? waypointHeading(selectedWaypointIndex)) - 15) })">↺</button><strong>{{ Math.round(selectedWaypointSetting()?.heading_angle ?? waypointHeading(selectedWaypointIndex)) }}°</strong><button type="button" aria-label="顺时针旋转" @click="adjustSelectedWaypoint({ heading_mode: 'fixed', heading_angle: Math.min(180, (selectedWaypointSetting()?.heading_angle ?? waypointHeading(selectedWaypointIndex)) + 15) })">↻</button></div><div class="node-axis"><button type="button" @click="adjustSelectedWaypoint({ gimbal_pitch_angle: Math.min(45, (selectedWaypointSetting()?.gimbal_pitch_angle ?? 0) + 5) })">镜头上</button><button type="button" @click="adjustSelectedWaypoint({ gimbal_pitch_angle: Math.max(-90, (selectedWaypointSetting()?.gimbal_pitch_angle ?? 0) - 5) })">镜头下</button><button type="button" @click="adjustSelectedWaypoint({ altitude_m: Math.min(1500, (selectedWaypointSetting()?.altitude_m ?? form.altitude_m) + 5) })">高度 +</button><button type="button" @click="adjustSelectedWaypoint({ altitude_m: Math.max(1, (selectedWaypointSetting()?.altitude_m ?? form.altitude_m) - 5) })">高度 −</button></div></div><small>W/S 平面前后 ±1m，A/D 平面左右 ±1m，Q/E 航向 ±5°，Z/C 俯仰 ±5°可直接调整水平朝向。</small></div>
         <div v-if="routeAssessment" class="weather-map-legend">沿线初筛：蓝 · 未触发，橙 · 关注，红 · 较强，灰 · 缺测<br />基于 0.25° 场，不是街道级风险，也不代表飞行许可。</div>
         <div class="camera-preview" :class="{ visible: mapEditMode === 'node' && selectedWaypointIndex !== null && cameraPreviewReady }" aria-label="当前节点相机视角预览"><div ref="cameraPreviewElement" class="camera-preview-map"></div><div class="camera-preview-head"><strong>当前视角</strong><span v-if="selectedWaypointIndex !== null">节点 {{ selectedWaypointIndex + 1 }} · {{ Math.round(selectedWaypointSetting()?.gimbal_pitch_angle ?? -30) }}°</span></div><small>地图模拟视角 · 不是实时相机视频</small></div>
         <div v-if="loading" class="map-loading-overlay">
