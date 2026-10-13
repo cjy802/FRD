@@ -856,6 +856,7 @@ function drawCesiumRoute(flyToRoute = true) {
     ? coordinates.map((_, index) => index)
     : waypointIndexes
   displayedWaypointIndexes.forEach((index) => {
+    const selected = mapEditMode.value === 'node' && selectedWaypointIndex.value === index
     const [longitude, latitude] = coordinates[index]
     const ground = Cesium.Cartesian3.fromDegrees(longitude, latitude, 0)
     const waypointAltitude = waypointSettings.value[index]?.altitude_m ?? routeAltitude
@@ -879,7 +880,7 @@ function drawCesiumRoute(flyToRoute = true) {
       name: `航点 ${index + 1}`,
       properties: { waypointIndex: index },
       position: elevated,
-      point: { show: mapEditMode.value !== 'node', pixelSize: selectedWaypointIndex.value === index ? 16 : index === 0 || index === coordinates.length - 1 ? 13 : 10, color: selectedWaypointIndex.value === index ? Cesium.Color.fromCssColorString('#ffb547') : routeColor, outlineColor: Cesium.Color.WHITE, outlineWidth: 2 },
+      point: { show: mapEditMode.value !== 'node' || selected, disableDepthTestDistance: Number.POSITIVE_INFINITY, pixelSize: selected ? 28 : index === 0 || index === coordinates.length - 1 ? 13 : 10, color: selected ? Cesium.Color.fromCssColorString('#ffb547') : routeColor, outlineColor: selected ? Cesium.Color.fromCssColorString('#ffd54f') : Cesium.Color.WHITE, outlineWidth: selected ? 4 : 2 },
       label: {
         text: index === 0 ? 'A 3D 起点' : index === coordinates.length - 1 ? 'B 3D 终点' : `W${String(index + 1).padStart(2, '0')}`,
         font: '600 12px sans-serif',
@@ -894,7 +895,6 @@ function drawCesiumRoute(flyToRoute = true) {
       },
     })
     if (mapEditMode.value === 'node') {
-      const selected = selectedWaypointIndex.value === index
       const heading = waypointHeading(index)
       viewer.entities.add({
         id: `waypoint-direction-${index}`,
@@ -943,24 +943,6 @@ function drawCesiumRoute(flyToRoute = true) {
         addGroundPoint(segment.end, `气象初筛地面点 ${segment.index + 1} 止`, segmentColor.withAlpha(0.9), 8)
       }
     }
-  }
-  const selectedGroundIndex = selectedWaypointIndex.value
-  if (mapEditMode.value === 'node' && selectedGroundIndex !== null && coordinates[selectedGroundIndex]) {
-    const [longitude, latitude] = coordinates[selectedGroundIndex]
-    viewer.entities.add({
-      id: 'selected-waypoint-ground',
-      name: `航点 ${selectedGroundIndex + 1} 地面投影`,
-      properties: { waypointIndex: selectedGroundIndex },
-      position: Cesium.Cartesian3.fromDegrees(longitude, latitude, 0),
-      point: {
-        pixelSize: 11,
-        color: routeColor,
-        outlineColor: Cesium.Color.fromCssColorString('#ffd54f'),
-        outlineWidth: 5,
-        heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
-        disableDepthTestDistance: Number.POSITIVE_INFINITY,
-      },
-    })
   }
   const centerLongitude = (start.longitude + end.longitude) / 2
   const centerLatitude = (start.latitude + end.latitude) / 2

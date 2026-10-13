@@ -77,12 +77,13 @@ app.mapEditMode.value = 'node'
 app.selectedWaypointIndex.value = 2
 app.drawCesiumRoute(false)
 
-const selected = () => entities.filter(entity => entity.id === 'selected-waypoint-ground')
-assert.equal(selected().length, 1, 'Exactly one selected ground marker should be drawn')
+const selected = () => entities.filter(entity => entity.point?.outlineColor?.value === '#ffd54f')
+assert.equal(selected().length, 1, 'Exactly one elevated waypoint should have a yellow selection ring')
 assert.equal(selected()[0].properties.waypointIndex, 2)
-assert.deepEqual({ ...selected()[0].position }, { longitude: coordinates[2][0], latitude: coordinates[2][1], height: 0 })
-assert.equal(selected()[0].point.outlineColor.value, '#ffd54f')
-assert.equal(selected()[0].point.heightReference, 'clamp')
+assert.deepEqual({ ...selected()[0].position }, { longitude: coordinates[2][0], latitude: coordinates[2][1], height: 100 })
+assert.equal(selected()[0].point.show, true)
+assert.equal(selected()[0].point.outlineWidth, 4)
+assert.equal(entities.some(entity => entity.id === 'selected-waypoint-ground'), false)
 assert.equal(entities.find(entity => entity.name === '地面航点 5').point.color.value, '#00e5a8@0.88')
 assert.equal(entities.filter(entity => entity.name?.startsWith('气象初筛地面点')).length, 0)
 
@@ -103,11 +104,11 @@ app.selectedWaypointIndex.value = 4
 app.drawCesiumRoute(false)
 assert.equal(selected().length, 1)
 assert.equal(selected()[0].properties.waypointIndex, 4)
-assert.deepEqual({ ...selected()[0].position }, { longitude: coordinates[4][0], latitude: coordinates[4][1], height: 0 })
+assert.deepEqual({ ...selected()[0].position }, { longitude: coordinates[4][0], latitude: coordinates[4][1], height: 100 })
 
 app.mapEditMode.value = 'route'
 app.drawCesiumRoute(false)
 assert.equal(selected().length, 0)
 assert.equal(entities.filter(entity => entity.name?.startsWith('气象初筛地面点')).length, 2)
 
-console.log('Passed: live green frustum during rotation, fixed camera origin, W03/W05 selection, and weather overlay separation.')
+console.log('Passed: live frustum, fixed camera origin, one yellow ring on the selected elevated waypoint, and weather overlay separation.')
