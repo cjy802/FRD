@@ -8,6 +8,7 @@ type ScreenPoint = { x: number; y: number }
 
 const props = defineProps<{
   active: boolean
+  viewMode: '2d' | '3d'
   start: Point
   end: Point
   route: number[][] | null
@@ -32,7 +33,7 @@ const failed = ref(false)
 const overlay = reactive({
   width: 1,
   height: 1,
-  route: '',
+  route: [] as string[],
   footprint: '',
   rays: '',
   startRange: '',
@@ -111,6 +112,21 @@ function path(coordinates: number[][], close = false) {
   return points.map((point, index) => `${index ? 'L' : 'M'}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(' ') + (close ? ' Z' : '')
 }
 
+function paths(coordinates: number[][]) {
+  const result: string[] = []
+  let segment: number[][] = []
+  const flush = () => {
+    if (segment.length > 1) result.push(path(segment))
+    segment = []
+  }
+  coordinates.forEach((coordinate) => {
+    if (project(coordinate)) segment.push(coordinate)
+    else flush()
+  })
+  flush()
+  return result
+}
+
 function circle(point: Point) {
   const latitudeRadians = point.latitude * Math.PI / 180
   const latitudeStep = props.rangeMeters / 111320
@@ -126,7 +142,7 @@ function renderOverlay() {
   const bounds = earthElement.value.getBoundingClientRect()
   overlay.width = Math.max(1, bounds.width)
   overlay.height = Math.max(1, bounds.height)
-  overlay.route = props.route?.length && props.route.length > 1 ? path(props.route) : ''
+  overlay.route = props.route?.length && props.route.length > 1 ? paths(props.route) : []
   overlay.start = project([props.start.longitude, props.start.latitude])
   overlay.end = project([props.end.longitude, props.end.latitude])
   overlay.startRange = props.showStartRange ? circle(props.start) : ''
@@ -152,6 +168,21 @@ function scheduleOverlay() {
     renderOverlay()
     if (keepRendering && props.active) scheduleOverlay()
   })
+}
+
+function fitRoute() {
+  if (!map || !BMapGL) return
+  const coordinates = props.route?.length ? props.route : [[props.start.longitude, props.start.latitude], [props.end.longitude, props.end.latitude]]
+  const points = coordinates.map(toPoint)
+  if (points.length > 1) map.setViewport?.(points, { margins: [48, 48, 48, 48], zoomFactor: -1 })
+}
+
+function applyViewMode() {
+  if (!map || !BMapGL) return
+  const mapType = props.viewMode === '3d' ? (window as any).BMAP_EARTH_MAP : (window as any).BMAP_SATELLITE_MAP
+  if (mapType) map.setMapType(mapType)
+  fitRoute()
+  scheduleOverlay()
 }
 
 function onMapPointerDown(event: PointerEvent) {
@@ -244,9 +275,10 @@ async function initializeEarthMap() {
     map = new BMapGL.Map(earthElement.value, { enableIconClick: false })
     const center = toPoint([(props.start.longitude + props.end.longitude) / 2, (props.start.latitude + props.end.latitude) / 2])
     map.centerAndZoom(center, 17)
-    const earthType = (window as any).BMAP_EARTH_MAP
-    if (!earthType) throw new Error('当前百度地图脚本不支持地球模式。')
-    map.setMapType(earthType)
+    const mapType = props.viewMode === '3d' ? (window as any).BMAP_EARTH_MAP : (window as any).BMAP_SATELLITE_MAP
+    if (!mapType) throw new Error('当前百度地图脚本不支持所选地图模式。')
+    map.setMapType(mapType)
+    fitRoute()
     map.enableScrollWheelZoom()
     for (const eventName of ['moving', 'moveend', 'zooming', 'zoomend', 'heading_changed', 'tilt_changed', 'tilesloaded']) {
       map.addEventListener(eventName, scheduleOverlay)
@@ -282,6 +314,8 @@ watch(() => props.active, async (active) => {
   map?.resize?.()
   scheduleOverlay()
 })
+watch(() => props.viewMode, applyViewMode)
+watch(() => props.route, () => { fitRoute(); scheduleOverlay() }, { deep: true })
 watch(() => [props.start.longitude, props.start.latitude, props.end.longitude, props.end.latitude], () => {
   if (!map) return
   map.setCenter(toPoint([(props.start.longitude + props.end.longitude) / 2, (props.start.latitude + props.end.latitude) / 2]))
@@ -308,8 +342,8 @@ onBeforeUnmount(() => {
     <svg v-if="ready" class="earth-map-overlay" :viewBox="`0 0 ${overlay.width} ${overlay.height}`" preserveAspectRatio="none" aria-hidden="true">
       <path v-if="overlay.startRange" :d="overlay.startRange" class="earth-range earth-range-start" />
       <path v-if="overlay.endRange" :d="overlay.endRange" class="earth-range earth-range-end" />
-      <path v-if="overlay.route" :d="overlay.route" class="earth-route-shadow" />
-      <path v-if="overlay.route" :d="overlay.route" class="earth-route" />
+      <path v-for="(routePath, index) in overlay.route" :key="`route-${index}`" :d="routePath" class="earth-route-shadow" />
+      <path v-for="(routePath, index) in overlay.route" :key="`route-core-${index}`" :d="routePath" class="earth-route" />
       <path v-for="(segment, index) in overlay.weather" :key="index" :d="segment.path" :stroke="segment.color" class="earth-weather" />
       <path v-if="overlay.footprint" :d="overlay.footprint" class="earth-footprint" />
       <path v-if="overlay.rays" :d="overlay.rays" class="earth-rays" />

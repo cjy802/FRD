@@ -25,13 +25,14 @@ const mounted = []
 const unmounted = []
 const frames = new Map()
 const events = []
-const calls = { type: null, center: null, zoom: null, resize: 0, destroyed: false }
+const calls = { type: null, center: null, zoom: null, viewport: 0, resize: 0, destroyed: false }
 const windowListeners = new Map()
 const timers = new Map()
 const scripts = []
 let frameId = 0
 const props = {
   active: true,
+  viewMode: '3d',
   start: { longitude: 119.9515, latitude: 31.6792 },
   end: { longitude: 119.9495, latitude: 31.6804 },
   route: [[119.9515, 31.6792], [119.9505, 31.6798], [119.9495, 31.6804]],
@@ -51,6 +52,7 @@ const BMapGL = {
     constructor() { this.listeners = new Map(); calls.map = this }
     centerAndZoom(center, zoom) { calls.center = center; calls.zoom = zoom }
     setMapType(type) { calls.type = type }
+    setViewport() { calls.viewport++ }
     enableScrollWheelZoom() {}
     addEventListener(name, callback) { this.listeners.set(name, callback) }
     pointToPixel(point) { return { x: 400 + (point.lng - origin[0]) * 40000, y: 300 - (point.lat - origin[1]) * 40000 } }
@@ -75,6 +77,7 @@ const context = vm.createContext({
   defineEmits: () => (...args) => events.push(args),
   window: {
     BMAP_EARTH_MAP: 'earth',
+    BMAP_SATELLITE_MAP: 'satellite',
     addEventListener: (name, callback) => windowListeners.set(name, callback),
     removeEventListener: name => windowListeners.delete(name),
     setTimeout: (callback, delay) => { timers.set(delay, callback); return delay },
@@ -97,7 +100,7 @@ const context = vm.createContext({
 })
 const source = descriptor.scriptSetup.content.replace('import.meta.env.VITE_BAIDU_MAP_AK', "'test-key'")
 const compiled = ts.transpileModule(`${source}\nglobalThis.earth = {
-  ready, overlay, onMapPointerDown, onMapPointerMove, onMapPointerUp, onMapClick, onMapDomClick,
+  ready, overlay, onMapPointerDown, onMapPointerMove, onMapPointerUp, onMapClick, onMapDomClick, applyViewMode,
   onNodeDown, onNodeMove, onNodeUp, scheduleOverlay,
   setElement() { earthElement.value = globalThis.mockElement },
 }`, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText
@@ -117,9 +120,16 @@ const render = () => {
   callbacks.forEach(callback => callback())
 }
 render()
-assert.ok(earth.overlay.route.startsWith('M'))
+assert.ok(earth.overlay.route[0].startsWith('M'))
 assert.ok(earth.overlay.footprint.endsWith(' Z'))
 assert.equal(earth.overlay.nodes.length, props.route.length)
+props.viewMode = '2d'
+earth.applyViewMode()
+assert.equal(calls.type, 'satellite', 'The flat Earth view must use the Baidu satellite map')
+props.viewMode = '3d'
+earth.applyViewMode()
+assert.equal(calls.type, 'earth', 'The globe view must use the Baidu Earth map')
+assert.ok(calls.viewport >= 3, 'Map type changes must refit the existing route')
 
 earth.onMapPointerDown({ clientX: 400, clientY: 300 })
 earth.onMapPointerMove({ clientX: 420, clientY: 300 })

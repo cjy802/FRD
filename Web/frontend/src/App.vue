@@ -69,6 +69,7 @@ const pointHint = ref('')
 const mapMode = ref<'start' | 'end'>('start')
 const baseMap = ref<'current' | 'earth'>('current')
 const earthMapMounted = ref(false)
+const mapViewMode = ref<'2d' | '3d'>('3d')
 const mapEditMode = ref<'route' | 'node'>('route')
 const selectedWaypointIndex = ref<number | null>(null)
 const draggingCameraIndex = ref<number | null>(null)
@@ -166,7 +167,21 @@ async function chooseBaseMap(next: 'current' | 'earth') {
   await nextTick()
   if (next === 'current') {
     viewer?.resize()
+    if (viewer?.scene) {
+      if (mapViewMode.value === '2d') viewer.scene.morphTo2D(0.6)
+      else viewer.scene.morphTo3D(0.6)
+    }
     viewer?.scene.requestRender()
+  }
+}
+
+function chooseMapViewMode(next: '2d' | '3d') {
+  if (mapViewMode.value === next) return
+  mapViewMode.value = next
+  if (baseMap.value === 'current' && viewer?.scene) {
+    if (next === '2d') viewer.scene.morphTo2D(0.6)
+    else viewer.scene.morphTo3D(0.6)
+    viewer.scene.requestRender()
   }
 }
 
@@ -1177,12 +1192,13 @@ onBeforeUnmount(() => {
 
       <section id="route-map" class="map-panel" :class="{ 'panel-active': workspacePanel === 'map' }" aria-label="航线地图">
         <div ref="mapElement" class="cesium-map" :class="{ visible: mapReady && baseMap === 'current' }"></div>
-        <EarthMap v-if="earthMapMounted" :active="baseMap === 'earth'" :start="form.start" :end="form.end" :route="preview?.geometry.coordinates ?? null" :selected-index="selectedWaypointIndex" :edit-mode="mapEditMode" :footprint="earthFootprint" :weather-segments="routeAssessment?.weather_risk.segments ?? []" :show-start-range="showStartRange" :show-end-range="showEndRange" :range-meters="landingSearchRadiusM" @select-waypoint="selectWaypoint" @choose-point="chooseMapPoint" @rotate-waypoint="setSelectedWaypointOrientation($event, undefined, true)" />
+        <EarthMap v-if="earthMapMounted" :active="baseMap === 'earth'" :view-mode="mapViewMode" :start="form.start" :end="form.end" :route="preview?.geometry.coordinates ?? null" :selected-index="selectedWaypointIndex" :edit-mode="mapEditMode" :footprint="earthFootprint" :weather-segments="routeAssessment?.weather_risk.segments ?? []" :show-start-range="showStartRange" :show-end-range="showEndRange" :range-meters="landingSearchRadiusM" @select-waypoint="selectWaypoint" @choose-point="chooseMapPoint" @rotate-waypoint="setSelectedWaypointOrientation($event, undefined, true)" />
         <div v-if="!mapReady && baseMap === 'current'" class="map-fallback">
           <div class="grid-lines"></div>
           <p>地图底图加载中</p><small>道路路线按所选数据源计算</small>
         </div>
          <div class="map-top"><div class="map-title-group"><span class="map-badge"><span class="svg-icon icon-layers" aria-hidden="true"></span>{{ baseMap === 'earth' ? '地球模式 · 航线预览' : '2D 底图 · 3D 航线预览' }}</span><span class="map-mode-chip">{{ form.altitude_m }} m AGL</span><div class="map-source-switch base-map-switch" aria-label="底图"><button type="button" :class="{ active: baseMap === 'current' }" :aria-pressed="baseMap === 'current'" @click="chooseBaseMap('current')">当前底图</button><button type="button" :class="{ active: baseMap === 'earth' }" :aria-pressed="baseMap === 'earth'" @click="chooseBaseMap('earth')">地球模式</button></div><div class="map-source-switch" aria-label="路线数据源"><button type="button" :class="{ active: roadSource === 'local' }" :aria-pressed="roadSource === 'local'" :disabled="loading || checkingPoint" @click="chooseRoadSource('local')">本地</button><button type="button" :class="{ active: roadSource === 'online' }" :aria-pressed="roadSource === 'online'" :disabled="loading || checkingPoint" @click="chooseRoadSource('online')">在线</button></div><div class="map-edit-switch" aria-label="编辑对象"><button type="button" :class="{ active: mapEditMode === 'route' }" :aria-pressed="mapEditMode === 'route'" @click="mapEditMode = 'route'">路径 / A-B</button><button type="button" :class="{ active: mapEditMode === 'node' }" :aria-pressed="mapEditMode === 'node'" @click="mapEditMode = 'node'">节点 / 视角</button></div></div><span class="map-caption">{{ checkingPoint ? '正在检查点位…' : mapEditMode === 'node' ? '点击节点选中，拖动橙色镜头调整朝向' : `地图点击可设置 ${mapMode === 'start' ? '起点 A' : '终点 B'}` }}</span></div>
+        <div class="map-view-switch map-source-switch view-mode-switch" aria-label="地图视图"><button type="button" :class="{ active: mapViewMode === '2d' }" :aria-pressed="mapViewMode === '2d'" @click="chooseMapViewMode('2d')">2D 平面</button><button type="button" :class="{ active: mapViewMode === '3d' }" :aria-pressed="mapViewMode === '3d'" @click="chooseMapViewMode('3d')">3D 视角</button></div>
         <div v-if="error" class="map-alert" role="alert">{{ error }}</div>
         <div v-else-if="pointHint" class="map-point-hint" role="status">{{ pointHint }}</div>
          <div class="map-bottom"><div class="map-switch"><button :class="{ active: mapMode === 'start' }" :disabled="checkingPoint || mapEditMode !== 'route'" @click="mapMode = 'start'"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>设置起点 A</button><button :class="{ active: mapMode === 'end' }" :disabled="checkingPoint || mapEditMode !== 'route'" @click="mapMode = 'end'"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>设置终点 B</button></div><span class="map-radius"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>接路判定 {{ landingSearchRadiusM }} m</span><span class="map-scale"><span class="svg-icon icon-wind" aria-hidden="true"></span>任务高度 {{ form.altitude_m }} m</span></div>
@@ -1230,6 +1246,11 @@ onBeforeUnmount(() => {
 .map-bottom { z-index: 3; }
 .map-title-group { min-width: 0; }
 .base-map-switch button { white-space: nowrap; }
+.view-mode-switch button { white-space: nowrap; }
+.map-view-switch { position: absolute; top: 72px; left: 20px; z-index: 4; pointer-events: auto; }
+@media (max-width: 720px) {
+  .map-view-switch { top: 112px; left: 14px; }
+}
 @media (max-width: 720px) {
   .map-alert, .map-point-hint { top: 150px; }
 }
