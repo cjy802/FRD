@@ -108,7 +108,7 @@ const earthFootprint = computed(() => {
   if (!Cesium || !preview.value || index === null || mapEditMode.value !== 'node') return []
   return cameraFrustum(index, Math.max(10, Number(form.altitude_m) || 100)).ground.map((position: any) => {
     const point = Cesium.Cartographic.fromCartesian(position)
-    return [Cesium.Math.toDegrees(point.longitude), Cesium.Math.toDegrees(point.latitude)]
+    return [Cesium.Math.toDegrees(point.longitude), Cesium.Math.toDegrees(point.latitude), point.height]
   })
 })
 const decisionTone = computed(() => {
@@ -300,9 +300,8 @@ function cameraFrustum(index: number, routeAltitude: number) {
     const distance = vector.up < -0.08 ? Math.min(420, Math.max(40, altitude / -vector.up)) : 260
     return { east: vector.east * distance, north: vector.north * distance, position: atDistance(vector, distance) }
   })
-  const groundCenterEast = groundEntries.reduce((sum, entry) => sum + entry.east, 0) / groundEntries.length
-  const groundCenterNorth = groundEntries.reduce((sum, entry) => sum + entry.north, 0) / groundEntries.length
-  groundEntries.sort((first, second) => Math.atan2(first.east - groundCenterEast, first.north - groundCenterNorth) - Math.atan2(second.east - groundCenterEast, second.north - groundCenterNorth))
+  // Keep the camera's perimeter order. Sorting by the ground projection swaps
+  // upper/lower corners when the camera is horizontal and folds the 3D faces.
   const ground = groundEntries.map((entry) => entry.position)
   const groundCenter = atDistance(forward, forward.up < -0.08 ? Math.min(420, Math.max(40, altitude / -forward.up)) : 260)
   const origin = Cesium.Cartesian3.fromDegrees(longitude, latitude, altitude)

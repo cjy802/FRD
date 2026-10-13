@@ -1,3 +1,5 @@
+import { BufferGeometry, DoubleSide, Float32BufferAttribute, Mesh, MeshBasicMaterial, Vector3 } from 'three'
+
 export type Coordinate = number[]
 export type CameraPose = { longitude: number; latitude: number; altitude: number; heading: number; pitch: number }
 export type SceneView = '2d' | '3d'
@@ -34,6 +36,7 @@ export async function createBaiduScene(element: HTMLElement, center: Coordinate,
 export class BaiduScene {
   private routeLayers: any[] = []
   private viewLayers: any[] = []
+  private viewMeshes: Mesh<BufferGeometry, MeshBasicMaterial>[] = []
   private frameListeners = new Set<() => void>()
   private disposed = false
   private beforeRender = () => { for (const callback of this.frameListeners) callback() }
@@ -64,10 +67,43 @@ export class BaiduScene {
 
   private polygon(layers: any[], coordinates: Coordinate[], color: string, opacity: number) {
     if (coordinates.length < 3) return
-    const layer = new this.sdk.Polygon({ color, opacity, side: 2, depthWrite: false })
+    const layer = new this.sdk.Polygon({ color, opacity, transparent: true, side: DoubleSide, depthWrite: false, perPositionHeight: true })
     this.engine.add(layer)
     layers.push(layer)
     layer.dataSource = this.geometry('Polygon', [[...coordinates, coordinates[0]]])
+  }
+
+  private clearViewMeshes() {
+    // Plain Three meshes have no SDK disposal hook.
+    for (const mesh of this.viewMeshes.splice(0)) {
+      this.engine.remove(mesh)
+      mesh.geometry.dispose()
+      mesh.material.dispose()
+    }
+  }
+
+  private viewFace(coordinates: Coordinate[], opacity: number) {
+    const projected = coordinates.map(coordinate => {
+      const position: number[] = []
+      this.engine.map.projectArrayCoordinate(coordinate, position)
+      return new Vector3().fromArray(position)
+    })
+    // Store small local coordinates to retain precision on the ECEF globe.
+    const center = projected[0].clone()
+    const geometry = new BufferGeometry()
+    geometry.setAttribute('position', new Float32BufferAttribute(projected.flatMap(position => position.sub(center).toArray()), 3))
+    geometry.setIndex(coordinates.length === 3 ? [0, 1, 2] : [0, 1, 2, 0, 2, 3])
+    geometry.computeBoundingSphere()
+    const material = new MeshBasicMaterial({ color: '#36dfba', opacity, transparent: true,
+      side: DoubleSide, depthWrite: false, depthTest: true, toneMapped: false, forceSinglePass: true })
+    const mesh = new Mesh(geometry, material)
+    mesh.name = 'camera-view-face'
+    mesh.position.copy(center)
+    mesh.renderOrder = -1
+    // Filled faces must not intercept map picking or camera dragging.
+    mesh.raycast = () => {}
+    this.engine.add(mesh)
+    this.viewMeshes.push(mesh)
   }
 
   setRoute(route: Coordinate[], view: SceneView, weather: { start: number[]; end: number[]; level: string }[], ranges: Coordinate[][]) {
@@ -97,14 +133,16 @@ export class BaiduScene {
 
   setFootprint(origin: Coordinate | null, footprint: Coordinate[], view: SceneView) {
     this.clear(this.viewLayers)
+    this.clearViewMeshes()
     if (!origin || footprint.length < 3) { this.engine.requestRender(); return }
-    const corners = footprint.map(([lng, lat]) => [lng, lat, 2])
-    this.polygon(this.viewLayers, corners, '#72e6c2', .28)
+    const corners = footprint.map(([lng, lat, height = 2]) => [lng, lat, view === '2d' ? 2 : Math.max(2, height)])
+    if (view === '2d') this.polygon(this.viewLayers, corners, '#36dfba', .3)
+    else this.viewFace(corners, .3)
     this.line(this.viewLayers, [...corners, corners[0]], '#26e7b6', 2)
     const eye = view === '2d' ? [origin[0], origin[1], 2] : origin
     corners.forEach((corner, index) => {
       this.line(this.viewLayers, [eye, corner], '#ffb547', 1.5, .8)
-      if (view === '3d') this.polygon(this.viewLayers, [eye, corner, corners[(index + 1) % corners.length]], '#72e6c2', .13)
+      if (view === '3d') this.viewFace([eye, corner, corners[(index + 1) % corners.length]], .22)
     })
     this.engine.requestRender()
   }
@@ -192,6 +230,7 @@ export class BaiduScene {
     this.frameListeners.clear()
     this.clear(this.routeLayers)
     this.clear(this.viewLayers)
+    this.clearViewMeshes()
     this.engine.dispose()
   }
 }

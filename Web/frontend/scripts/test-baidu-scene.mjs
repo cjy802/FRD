@@ -2,10 +2,11 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import vm from 'node:vm'
 import ts from 'typescript'
-import { PerspectiveCamera, Vector3 } from 'three'
+import * as Three from 'three'
+const { PerspectiveCamera, Vector3, DoubleSide } = Three
 
 const source = (await readFile(new URL('../src/baiduScene.ts', import.meta.url), 'utf8')).replaceAll('import.meta.env', 'globalThis.environment')
-const context = vm.createContext({ exports: {}, require() {}, environment: {}, window: {} })
+const context = vm.createContext({ exports: {}, require: name => name === 'three' ? Three : {}, environment: {}, window: {} })
 new vm.Script(ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText).runInContext(context)
 const camera = new PerspectiveCamera(58, 4 / 3, .1, 20000000)
 camera.position.set(0, 0, 6378137 * 3)
@@ -32,7 +33,7 @@ const scene = new context.exports.BaiduScene(engine, sdk, { getBoundingClientRec
 const route = [[119.95, 31.68, 100], [119.951, 31.681, 180]]
 const weather = [{ start: route[0], end: route[1], level: 'no_trigger' }]
 const original = JSON.stringify(route)
-const coordinates = layer => layer.dataSource.features[0].geometry.coordinates
+const coordinates = layer => layer.dataSource?.features[0].geometry.coordinates
 scene.setRoute(route, '3d', weather, [])
 const core = [...layers].find(layer => layer.options.lineWidth === 4)
 assert.equal(coordinates(core)[1][2], 180, 'The actual render data retains unequal waypoint heights')
@@ -52,8 +53,48 @@ assert.ok(oldLayers.every(layer => !layers.has(layer)), 'Switching replaces obso
 scene.setView('3d', route); scene.setRoute(route, '3d', weather, [])
 assert.equal(projections.at(-1), 'ecef'); assert.equal(poses.at(-1).pitch, 52)
 assert.equal(JSON.stringify(route), original)
-scene.setFootprint(route[1], [[119.95, 31.68], [119.951, 31.68], [119.951, 31.681]], '3d')
+const frustumCorners = [[119.95, 31.683, 280], [119.952, 31.683, 280], [119.952, 31.683, 2], [119.95, 31.683, 2]]
+const footprintBefore = JSON.stringify(frustumCorners)
+scene.setFootprint(route[1], frustumCorners, '3d')
 assert.ok([...layers].some(layer => coordinates(layer)?.[0]?.[2] === 180), 'Frustum rays originate at the selected elevated camera')
+const faces = [...layers].filter(layer => layer.isMesh)
+assert.equal(faces.length, 5, 'A vertical far plane and all four sides must have filled mesh geometry')
+for (const face of faces) {
+  const positions = face.geometry.attributes.position, indices = face.geometry.index
+  for (let i = 0; i < indices.count; i += 3) {
+    const a = new Vector3().fromBufferAttribute(positions, indices.getX(i))
+    const b = new Vector3().fromBufferAttribute(positions, indices.getX(i + 1))
+    const c = new Vector3().fromBufferAttribute(positions, indices.getX(i + 2))
+    assert.ok(b.sub(a).cross(c.sub(a)).length() > 1e-9, 'Vertical view faces must not collapse during triangulation')
+  }
+  assert.equal(face.material.transparent, true)
+  assert.equal(face.material.side, DoubleSide)
+  assert.equal(face.material.depthWrite, false)
+  assert.equal(face.material.depthTest, true)
+  assert.equal(face.material.color.getHexString(), '36dfba')
+  assert.equal(face.renderOrder, -1, 'Filled faces must render below the view lines')
+}
+const cap = faces[0]
+frustumCorners.forEach((corner, index) => {
+  const rendered = new Vector3().fromBufferAttribute(cap.geometry.attributes.position, index).add(cap.position)
+  const expected = new Vector3().fromArray(corner)
+  assert.ok(rendered.distanceTo(expected) < 1e-4, 'The green plane must preserve all four geographic heights')
+})
+const disposed = new Set()
+faces.forEach(face => {
+  face.geometry.addEventListener('dispose', () => disposed.add(face.geometry))
+  face.material.addEventListener('dispose', () => disposed.add(face.material))
+})
+scene.setFootprint(route[1], frustumCorners, '2d')
+assert.equal(disposed.size, 10, 'Switching modes must release every old mesh and material')
+assert.ok(faces.every(face => !layers.has(face)))
+const flatFill = [...layers].find(layer => layer.dataSource?.features[0].geometry.type === 'Polygon')
+assert.ok(coordinates(flatFill)[0].every(corner => corner[2] === 2), '2D footprint stays on the ground')
+assert.equal(flatFill.options.transparent, true)
+assert.equal(JSON.stringify(frustumCorners), footprintBefore, 'Flattening the display must preserve the mission geometry')
+scene.setFootprint(route[0], frustumCorners, '3d')
+scene.setFootprint(null, [], '3d')
+assert.equal([...layers].filter(layer => layer.isMesh).length, 0, 'Deselection removes the old green view volume')
 const pose = { longitude: 119.95, latitude: 31.68, altitude: 100, heading: 45, pitch: -30 }
 scene.setPose(pose); const first = poses.at(-1)
 scene.setPose({ ...pose, heading: 90, pitch: 15 }); const second = poses.at(-1)

@@ -23,7 +23,9 @@ const cesium = {
   HorizontalOrigin: { CENTER: 'center' },
   LabelStyle: { FILL_AND_OUTLINE: 'fill-and-outline' },
   ArcType: { NONE: 'none' },
-  Math: { toRadians: degrees => degrees * Math.PI / 180 },
+  Math: { toRadians: degrees => degrees * Math.PI / 180, toDegrees: radians => radians * 180 / Math.PI },
+  Cartographic: { fromCartesian: position => ({ longitude: position.longitude * Math.PI / 180,
+    latitude: position.latitude * Math.PI / 180, height: position.height }) },
   PolylineGlowMaterialProperty: class { constructor(options) { Object.assign(this, options) } },
   PolylineDashMaterialProperty: class { constructor(options) { Object.assign(this, options) } },
   CallbackProperty: class { constructor(callback) { this.getValue = callback } },
@@ -51,7 +53,7 @@ const context = vm.createContext({
 })
 const compiled = ts.transpileModule(`${descriptor.scriptSetup.content}\nglobalThis.app = {
   preview, previewKey, routeKey, routeAssessment, waypointSettings,
-  selectedWaypointIndex, mapEditMode, drawCesiumRoute, setSelectedWaypointOrientation,
+  selectedWaypointIndex, mapEditMode, earthFootprint, drawCesiumRoute, setSelectedWaypointOrientation,
   initialize() { Cesium = globalThis.Cesium; viewer = globalThis.mockViewer; updateCameraPreview = () => {} },
 }`, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText
 context.mockViewer = viewer
@@ -99,6 +101,13 @@ assert.notEqual(JSON.stringify(face.getValue().positions), beforeFace, 'The gree
 assert.notEqual(JSON.stringify(border.getValue()), beforeBorder, 'The green border must follow the face')
 assert.deepEqual({ ...direction.getValue()[0] }, origin, 'Rotation must keep the camera origin fixed')
 assert.equal(renderRequests, requestsBeforeDrag + 1, 'Each drag update must request a map render')
+app.setSelectedWaypointOrientation(90, 0, true)
+const horizontalCorners = app.earthFootprint.value
+assert.equal(horizontalCorners.length, 4)
+assert.ok(horizontalCorners.slice(0, 2).every(corner => corner[2] > 100), 'Horizontal upper corners must retain their altitude for Earth rendering')
+assert.ok(horizontalCorners.slice(2).every(corner => corner[2] < 2), 'Camera perimeter order must keep the lower corners adjacent')
+app.setSelectedWaypointOrientation(90, -90, true)
+assert.ok(app.earthFootprint.value.every(corner => Math.abs(corner[2]) < 1e-6), 'A nadir view intersects the ground at all four corners')
 
 app.selectedWaypointIndex.value = 4
 app.drawCesiumRoute(false)
