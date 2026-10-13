@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from io import BytesIO
-from math import cos, isfinite, radians, sqrt
+from math import atan2, cos, degrees, isfinite, radians, sin, sqrt
 from zipfile import ZIP_DEFLATED, ZipFile
 from typing import Literal
 
@@ -344,6 +344,18 @@ def _has_custom_setting(setting: dict[str, object], altitude_m: float) -> bool:
     )
 
 
+def _course_heading(coordinates: list[tuple[float, float]], index: int) -> float:
+    """Keep unused heading metadata aligned with the course for external viewers."""
+    first, second = (coordinates[index], coordinates[index + 1]) if index < len(coordinates) - 1 else (coordinates[index - 1], coordinates[index])
+    latitude1, latitude2 = radians(first[1]), radians(second[1])
+    delta_longitude = radians(second[0] - first[0])
+    bearing = degrees(atan2(
+        sin(delta_longitude) * cos(latitude2),
+        cos(latitude1) * sin(latitude2) - sin(latitude1) * cos(latitude2) * cos(delta_longitude),
+    ))
+    return ((bearing + 180) % 360) - 180
+
+
 def build_dji_kmz(coordinates, altitude_m: float, speed_kmh: float, drone_model: Literal["fly", "m30", "m3e"] = "fly", waypoint_settings=None) -> bytes:
     if not isinstance(coordinates, list) or len(coordinates) < 2 or len(coordinates) > 65535:
         raise KmzExportError("DJI 航点草稿至少需要 2 个、最多 65535 个路线点。")
@@ -375,6 +387,11 @@ def build_dji_kmz(coordinates, altitude_m: float, speed_kmh: float, drone_model:
     settings = [cleaned_settings[index] for index in retained_indices]
     if len(cleaned) < 2:
         raise KmzExportError("路线抽稀后不足 2 个航点。")
+    for index, setting in enumerate(settings):
+        if setting.get("heading_mode", "followWayline") == "followWayline":
+            # DJI follows the course in this mode. Avoid a misleading 0-degree
+            # target in viewers that also interpolate waypointHeadingAngle.
+            settings[index] = {**setting, "heading_angle": _course_heading(cleaned, index)}
     speed_m_s = speed_kmh / 3.6
     rth_height_m = max(20.0, altitude_m)
     drone = DRONE_PROFILES[drone_model]

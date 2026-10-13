@@ -420,7 +420,7 @@ function updateCameraPreview() {
   cameraPreviewViewer.scene.requestRender()
 }
 
-let cameraPreviewDrag: { pointerId: number; waypointIndex: number; x: number; y: number; heading: number; pitch: number; width: number; height: number } | null = null
+let cameraPreviewDrag: { pointerId: number; waypointIndex: number; x: number; y: number; heading: number; headingMode: WaypointHeadingMode; headingAngle: number; pitch: number; width: number; height: number; axis: 'pitch' | 'both' | null } | null = null
 
 function handleCameraPreviewPointerDown(event: PointerEvent) {
   const index = selectedWaypointIndex.value
@@ -435,9 +435,12 @@ function handleCameraPreviewPointerDown(event: PointerEvent) {
     x: event.clientX,
     y: event.clientY,
     heading: waypointHeading(index),
+    headingMode: setting.heading_mode,
+    headingAngle: setting.heading_angle,
     pitch: setting.gimbal_pitch_angle,
     width: Math.max(1, bounds.width),
     height: Math.max(1, bounds.height),
+    axis: null,
   }
   element.setPointerCapture(event.pointerId)
 }
@@ -449,9 +452,21 @@ function handleCameraPreviewPointerMove(event: PointerEvent) {
     cancelCameraPreviewDrag()
     return
   }
-  const heading = drag.heading + (event.clientX - drag.x) / drag.width * 180
-  const pitch = drag.pitch - (event.clientY - drag.y) / drag.height * 90
-  setSelectedWaypointOrientation(heading, pitch, true)
+  const deltaX = event.clientX - drag.x
+  const deltaY = event.clientY - drag.y
+  if (!drag.axis && Math.hypot(deltaX, deltaY) >= 8) drag.axis = Math.abs(deltaX) > Math.abs(deltaY) ? 'both' : 'pitch'
+  if (!drag.axis) return
+  const heading = drag.heading + deltaX / drag.width * 180
+  const pitch = drag.pitch - deltaY / drag.height * 90
+  if (drag.axis === 'pitch') {
+    adjustSelectedWaypoint({
+      heading_mode: drag.headingMode,
+      heading_angle: drag.headingAngle,
+      gimbal_pitch_angle: Math.max(-90, Math.min(45, pitch)),
+    }, true)
+  } else {
+    setSelectedWaypointOrientation(heading, pitch, true)
+  }
 }
 
 function handleCameraPreviewPointerEnd(event: PointerEvent) {
