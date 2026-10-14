@@ -97,8 +97,14 @@ const landingSearchRadiusM = ref(35)
 const showStartRange = ref(false)
 const showEndRange = ref(false)
 type ResizeSide = 'left' | 'right'
-const sidebarWidth = ref(328)
-const insightsWidth = ref(320)
+function defaultColumnWidths() {
+  const viewportWidth = typeof window === 'undefined' ? 1440 : window.innerWidth
+  return { left: Math.max(260, viewportWidth * 0.2), right: Math.max(280, viewportWidth * 0.3) }
+}
+const initialColumnWidths = defaultColumnWidths()
+const sidebarWidth = ref(initialColumnWidths.left)
+const insightsWidth = ref(initialColumnWidths.right)
+let columnWidthsCustomized = false
 const resizingSide = ref<ResizeSide | null>(null)
 let resizeStartX = 0
 let resizeStartWidth = 0
@@ -728,12 +734,13 @@ function minimumWidth(side: ResizeSide) {
 function widthLimit(side: ResizeSide) {
   const mapMinimum = 420
   const other = side === 'left' ? insightsWidth.value : sidebarWidth.value
-  return Math.min(480, Math.max(minimumWidth(side), window.innerWidth - other - mapMinimum))
+  return Math.max(minimumWidth(side), window.innerWidth - other - mapMinimum)
 }
 function resizeViewer() {
   requestAnimationFrame(() => { if (viewer && !viewer.isDestroyed()) viewer.resize() })
 }
 function setColumnWidth(side: ResizeSide, value: number) {
+  columnWidthsCustomized = true
   if (side === 'left') sidebarWidth.value = clamp(value, minimumWidth('left'), widthLimit('left'))
   else insightsWidth.value = clamp(value, minimumWidth('right'), widthLimit('right'))
   resizeViewer()
@@ -777,8 +784,19 @@ function resizeColumnByKeyboard(side: ResizeSide, event: KeyboardEvent) {
   }
 }
 function resetColumnWidths() {
-  sidebarWidth.value = 328
-  insightsWidth.value = 320
+  const widths = defaultColumnWidths()
+  sidebarWidth.value = widths.left
+  insightsWidth.value = widths.right
+  columnWidthsCustomized = false
+  resizeViewer()
+}
+function handleColumnViewportResize() {
+  if (!columnWidthsCustomized) {
+    resetColumnWidths()
+    return
+  }
+  sidebarWidth.value = clamp(sidebarWidth.value, minimumWidth('left'), widthLimit('left'))
+  insightsWidth.value = clamp(insightsWidth.value, minimumWidth('right'), widthLimit('right'))
   resizeViewer()
 }
 function toggleRange(point: 'start' | 'end') {
@@ -1200,6 +1218,8 @@ function initCameraPreview() {
 }
 
 onMounted(() => {
+  window.addEventListener('resize', handleColumnViewportResize)
+  handleColumnViewportResize()
   window.addEventListener('keydown', handleWaypointKeydown)
   window.addEventListener('blur', cancelCameraPreviewDrag)
   window.addEventListener('blur', finishMapCameraDrag)
@@ -1212,6 +1232,7 @@ onMounted(() => {
   else window.addEventListener('load', initMap, { once: true })
 })
 onBeforeUnmount(() => {
+  window.removeEventListener('resize', handleColumnViewportResize)
   locationRequestVersion++
   window.removeEventListener('keydown', handleWaypointKeydown)
   window.removeEventListener('blur', cancelCameraPreviewDrag)
