@@ -57,8 +57,19 @@ npm run dev
 - `POST /api/routes/plan`：请求体的 `road_source` 为 `local`（默认）或 `online`。本地模式从索引按 A/B 范围加缓冲提取路网；在线模式向 OSRM 请求完整道路几何。两种模式均输出 GeoJSON 路线、道路名称、道路/直线距离、端点接入距离和未评估标记。端点离所选道路网络超过 35 米时返回 422；在线服务不可用时返回 503。
 - `POST /api/routes/plan-mission`：请求体包含有序 `anchors`（每项为唯一 `id`、纬度、经度）及道路来源、速度、高度、建筑缓冲。逐段复用两点规划器，返回完整路线、`anchor_indices` 和每段距离/接路信息；某段失败会指出段号和主点，不用直线补齐。主点规划上限为 1000，完整路线最多 10000 个折线点；DJI 导出另受机型和导出器限制。
 - `POST /api/routes/export-kmz`：将当前道路参考几何中的自动折线点抽稀、保留手动主点后，导出 DJI WPML 航点 KMZ 草稿。默认 `fly` 模板面向 DJI RC 2 上的 DJI Fly（Air 3/Air 3S/Mini 4 Pro 通用消费级格式）；`m30`/`m3e` 模板面向 DJI Pilot 2 企业机型。请求可通过 `waypoint_settings` 为每个原始点指定相对高度、机头方向模式/角度和摄像头俯仰角；DJI Fly 航线需要先在遥控器中创建占位航线，再保持 UUID 文件名替换 `Android/data/dji.go.v5/files/waypoint/` 下的 KMZ。文件使用相对起飞点高度，仍需核对机型、动作、高度、返航、空域和现场条件；道路参考线不等于已批准的飞行航线。
+
+- `GET /api/dji/rc2/status`、`GET /api/dji/rc2/targets`：仅本机 Windows 会话可用，分别检查导入组件和读取 RC 2 上现有的 `.kmz` 占位航线。
+- `POST /api/dji/rc2/import`、`GET /api/dji/rc2/jobs/{job_id}`：生成 DJI Fly KMZ 并异步写入所选占位航线，轮询返回生成文件、备份路径、传输和回读校验状态；单次只允许一个写入任务。
 - `POST /api/landing/check`：用本地索引对候选点做快速初筛，返回 `mapped_building`、`road_nearby` 或 `no_road`，以及 35 米接路半径和最近道路点。`landing_verified` 始终为 `false`。
 - `POST /api/routes/preview`：保留原有的两点直线基线接口
+
+### Windows 本机导入 DJI RC 2
+
+页面的 DJI Fly 模板可连接本机 RC 2：先在 DJI Fly 中保存一条占位航线，通过 USB 将已解锁的遥控器连接到同一台 Windows 电脑；在导出区域点击“检测 / 刷新设备”，选择遥控器上已有的 `.kmz` 占位文件，再点击“生成 KMZ 并替换所选占位航线”。页面显示生成、备份、传输、回读校验的任务状态。原“导出 DJI KMZ 草稿”按钮仍可下载文件。M30/M3E 的 Pilot 2 模板继续使用下载文件。
+
+后端必须以当前登录用户的交互式 Windows 会话运行，不能在远程服务器或 Windows 服务会话中操作本机 MTP 设备；导入时应使用不带 `--reload` 的后端进程，避免任务中途因代码变更重启。生成文件保存在 `%LOCALAPPDATA%\LowAltitudeWorkbench\DJI\imports\<任务 ID>\<占位文件名>.kmz`；页面导入的原文件备份保存在 `%LOCALAPPDATA%\LowAltitudeWorkbench\DJI\backups\<任务 ID>\`。单独运行 `tools/rc2_mtp_upload.ps1` 时使用它自己的默认备份目录。新环境需用 `tools/build_silent_mtp_helper.ps1` 构建本机助手（需要 `clang-cl` 和 Windows SDK）；`tools/bin/silent_mtp_replace.exe` 是生成产物，不提交到 Git。导入只接受列表中的现有占位文件；回读 SHA-256 一致才显示写入成功，随后仍需在 DJI Fly 中核对航线是否被识别。当前没有 RC 2 真机测试结果；DJI Fly 的这种文件替换方式不是官方公开的第三方导入接口。
+
+未连接遥控器时可运行 `powershell -NoProfile -ExecutionPolicy Bypass -File tools/tests/test_rc2_mtp_upload.ps1`，用临时目录模拟列表、替换和失败恢复；该测试不会访问 MTP 设备。
 
 上线模型默认读取 `Web/mode/output_production/corrector_ridge.npz`，它由两份表去重后的全部可用样本拟合（目前 3893 条，包含 2024、2025、2026 年），使用已验证方案的公共 8 特征。在训练点及训练覆盖的原生提前量上，温度、U 风、6 小时降水采用订正结果，V 风和海平面气压严格保留 FuXi 原值；其他坐标/高度/时次遵循下述适用范围限制。派生风速、风向以及单点提示均使用最终值。全量拟合不再留测试集，也不产生新的独立测试指标；此前 `output_year_transfer_2026` 验证结果保留不变。
 

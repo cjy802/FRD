@@ -1,7 +1,5 @@
 ﻿[CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
-    [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
     [string]$SourceKmz,
     [string]$DeviceName = 'DJI RC 2',
     [string]$RemoteFileName,
@@ -11,19 +9,50 @@ param(
     [int]$TimeoutSeconds = 60,
     [switch]$ReplaceExisting,
     [switch]$ListOnly,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [switch]$Json
 )
 
-# MTP devices do not have a drive letter. This script uses Windows Shell/WPD
-# enumeration for discovery and a native silent IFileOperation helper for replacement.
-# It backs up the existing file and reads the replacement back to check SHA-256.
+# MTP devices do not have drive letters. Windows Shell/WPD lists their files;
+# the native IFileOperation helper replaces one existing DJI Fly waypoint file.
 $ErrorActionPreference = 'Stop'
-$CopyFlags = 1044 # FOF_SILENT | FOF_NOCONFIRMATION | FOF_NOERRORUI
+if ($Json) { [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false) }
+$script:CopyFlags = 1044 # FOF_SILENT | FOF_NOCONFIRMATION | FOF_NOERRORUI
+$script:Shell = $null
+$localWork = $null
+$backupPath = $null
+$backupHash = $null
+$replaceStarted = $false
+$result = [ordered]@{
+    status = 'error'
+    stage = 'initializing'
+    failure_stage = $null
+    recovery_stage = $null
+    message = $null
+    device_name = $DeviceName
+    waypoint_path = $WaypointPath
+    remote_file_name = $null
+    source_sha256 = $null
+    readback_sha256 = $null
+    backup_path = $null
+    backup_sha256 = $null
+    restore_attempted = $false
+    restore_verified = $false
+    remote_state = 'unchanged'
+    targets = @()
+}
 
-$SilentHelperPath = if ([string]::IsNullOrWhiteSpace($SilentHelperPath)) {
-    Join-Path $PSScriptRoot 'bin\silent_mtp_replace.exe'
-} else {
-    (Resolve-Path -LiteralPath $SilentHelperPath).Path
+function Write-ProgressMessage {
+    param([string]$Message)
+    if (-not $Json) { Write-Host $Message }
+}
+
+function Test-RemoteFileName {
+    param([string]$Name)
+    return -not [string]::IsNullOrWhiteSpace($Name) -and
+        $Name -match '^[^\\/:*?"<>|\x00-\x1f]+\.kmz$' -and
+        $Name -notmatch '\.\.' -and
+        $Name -eq [IO.Path]::GetFileName($Name)
 }
 
 function Get-ChildItemByName {
@@ -31,27 +60,70 @@ function Get-ChildItemByName {
     @($Folder.Items()) | Where-Object { $_.Name -ieq $Name } | Select-Object -First 1
 }
 
-function Wait-LocalFile {
-    param([string]$Path, [int]$Timeout)
-    $until = (Get-Date).AddSeconds($Timeout)
-    while ((Get-Date) -lt $until) {
-        if (Test-Path -LiteralPath $Path -PathType Leaf) { return $true }
-        Start-Sleep -Milliseconds 250
-    }
-    return $false
-}
-
 function Wait-RemoteItem {
-    param([object]$Folder, [string]$Name, [int]$Timeout, [switch]$Absent)
+    param([object]$Folder, [string]$Name, [int]$Timeout)
     $until = (Get-Date).AddSeconds($Timeout)
     do {
         $item = Get-ChildItemByName $Folder $Name
-        if ($Absent -and $null -eq $item) { return $true }
-        if (-not $Absent -and $null -ne $item) { return $item }
+        if ($null -ne $item) { return $item }
         Start-Sleep -Milliseconds 250
     } while ((Get-Date) -lt $until)
-    if ($Absent) { return $false }
     return $null
+}
+
+function Test-KmzFile {
+    param([string]$Path, [switch]$RequireMissionFiles)
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = $null
+    try {
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($Path)
+        if ($archive.Entries.Count -eq 0) { throw 'ZIP 内容为空' }
+        $names = @()
+        foreach ($entry in $archive.Entries) {
+            $name = $entry.FullName.Replace('\', '/').ToLowerInvariant()
+            if ($name.StartsWith('/') -or $name.Contains('../') -or $name.EndsWith('/..') -or $name.Contains(':')) {
+                throw "KMZ 包含不安全的路径：$name"
+            }
+            $names += $name
+            if (-not $name.EndsWith('/')) {
+                # Shell.CopyHere is asynchronous. Reading every entry catches an
+                # incomplete local copy before we trust it as a backup/readback.
+                $entryStream = $entry.Open()
+                try { $entryStream.CopyTo([IO.Stream]::Null) }
+                finally { $entryStream.Dispose() }
+            }
+        }
+        if ($RequireMissionFiles) {
+            if ($names -notcontains 'wpmz/template.kml') { throw 'KMZ 缺少 wpmz/template.kml' }
+            if ($names -notcontains 'wpmz/waylines.wpml') { throw 'KMZ 缺少 wpmz/waylines.wpml' }
+        }
+    } catch {
+        throw "KMZ 校验失败: $($_.Exception.Message)"
+    } finally {
+        if ($null -ne $archive) { $archive.Dispose() }
+    }
+}
+
+function Wait-CompleteLocalKmz {
+    param([string]$Path, [int]$Timeout)
+    $until = (Get-Date).AddSeconds($Timeout)
+    $lastSize = -1
+    do {
+        if (Test-Path -LiteralPath $Path -PathType Leaf) {
+            try {
+                $size = (Get-Item -LiteralPath $Path).Length
+                if ($size -gt 0) {
+                    Test-KmzFile $Path
+                    if ($size -eq $lastSize) { return $true }
+                    $lastSize = $size
+                }
+            } catch {
+                # A file may exist while MTP is still copying it.
+            }
+        }
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $until)
+    return $false
 }
 
 function Copy-RemoteItemToLocal {
@@ -61,164 +133,209 @@ function Copy-RemoteItemToLocal {
     $expectedPath = Join-Path $LocalDirectory $ExpectedName
     Remove-Item -LiteralPath $expectedPath -Force -ErrorAction SilentlyContinue
     $localFolder.CopyHere($RemoteItem, $script:CopyFlags)
-    if (-not (Wait-LocalFile $expectedPath $Timeout)) {
-        if ($RemoteItem.Path) { $localFolder.CopyHere($RemoteItem.Path, $script:CopyFlags) }
-    }
-    if (-not (Wait-LocalFile $expectedPath $Timeout)) {
-        throw "从 MTP 读取文件超时: $ExpectedName"
+    if (-not (Wait-CompleteLocalKmz $expectedPath $Timeout)) {
+        if (Test-Path -LiteralPath $expectedPath -PathType Leaf) {
+            throw "从 MTP 复制的 KMZ 未完整写入: $ExpectedName"
+        }
+        if ($RemoteItem.Path) {
+            $localFolder.CopyHere($RemoteItem.Path, $script:CopyFlags)
+        }
+        if (-not (Wait-CompleteLocalKmz $expectedPath $Timeout)) {
+            throw "从 MTP 读取文件超时: $ExpectedName"
+        }
     }
     return $expectedPath
 }
 
-function Remove-RemoteItem {
-    param([object]$RemoteItem, [object]$Folder, [int]$Timeout)
-    $verb = @($RemoteItem.Verbs()) | Where-Object {
-        $_.Name.Trim() -match '(?i)delete|删除'
-    } | Select-Object -First 1
-    if ($null -eq $verb) { throw "找不到 MTP 删除操作: $($RemoteItem.Name)" }
-    $verb.DoIt()
-    if (-not (Wait-RemoteItem $Folder $RemoteItem.Name $Timeout -Absent)) {
-        throw "删除 MTP 文件超时: $($RemoteItem.Name)"
-    }
+function Get-RemoteFileHash {
+    param([object]$Folder, [string]$Name, [string]$LocalDirectory, [int]$Timeout)
+    $remoteItem = Wait-RemoteItem $Folder $Name $Timeout
+    if ($null -eq $remoteItem -or $remoteItem.IsFolder) { throw "MTP 文件不存在: $Name" }
+    New-Item -ItemType Directory -Path $LocalDirectory -Force | Out-Null
+    $localPath = Copy-RemoteItemToLocal $remoteItem $LocalDirectory $Name $Timeout
+    return (Get-FileHash -LiteralPath $localPath -Algorithm SHA256).Hash
 }
-
-function Test-KmzFile {
-    param([string]$Path)
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $archive = $null
-    try {
-        $archive = [System.IO.Compression.ZipFile]::OpenRead($Path)
-        $names = @($archive.Entries | ForEach-Object { $_.FullName.Replace('\', '/').ToLowerInvariant() })
-        foreach ($name in $names) {
-            if ($name.StartsWith('/') -or $name.Contains('../') -or $name.Contains('/..')) {
-                throw "KMZ 包含不安全的路径：$name"
-            }
-        }
-        if ($names -notcontains 'wpmz/template.kml') { throw 'KMZ 缺少 wpmz/template.kml' }
-        if ($names -notcontains 'wpmz/waylines.wpml') { throw 'KMZ 缺少 wpmz/waylines.wpml' }
-    } catch {
-        throw "KMZ 校验失败: $($_.Exception.Message)"
-    } finally {
-        if ($null -ne $archive) { $archive.Dispose() }
-    }
-}
-
-$SourceKmz = (Resolve-Path -LiteralPath $SourceKmz).Path
-$RemoteFileName = if ($RemoteFileName) { $RemoteFileName } else { [IO.Path]::GetFileName($SourceKmz) }
-if ([IO.Path]::GetExtension($RemoteFileName).ToLowerInvariant() -ne '.kmz') { throw 'RemoteFileName 必须使用 .kmz 扩展名' }
-Test-KmzFile $SourceKmz
-$sourceHash = (Get-FileHash -LiteralPath $SourceKmz -Algorithm SHA256).Hash
-
-$script:Shell = New-Object -ComObject Shell.Application
-$pc = $script:Shell.Namespace(17)
-if ($null -eq $pc) { throw '无法打开 Windows 此电脑命名空间' }
-$device = @($pc.Items()) | Where-Object { $_.Name -ieq $DeviceName } | Select-Object -First 1
-if ($null -eq $device) { throw "未找到设备 '$DeviceName'。请先解锁 RC 2 并确认资源管理器可见。" }
-$deviceFolder = $device.GetFolder
-if ($null -eq $deviceFolder) { throw '设备没有可浏览的 WPD 文件夹' }
-
-$storageItem = @($deviceFolder.Items()) | Where-Object {
-    $_.Name -match '内部共享存储|Internal Shared Storage|Internal Storage|内部存储'
-} | Select-Object -First 1
-if ($null -eq $storageItem) {
-    $candidates = @($deviceFolder.Items()) | Where-Object { $_.IsFolder }
-    if ($candidates.Count -eq 1) { $storageItem = $candidates[0] }
-}
-if ($null -eq $storageItem) { throw '未找到 RC 2 的内部存储空间' }
-$targetFolder = $storageItem.GetFolder
-$targetFolderParsingPath = $storageItem.Path
-foreach ($segment in ($WaypointPath -split '[\\/]')) {
-    if ([string]::IsNullOrWhiteSpace($segment)) { continue }
-    $next = Get-ChildItemByName $targetFolder $segment
-    if ($null -eq $next) { throw "MTP 目录不存在: $WaypointPath（缺少 $segment）" }
-    $targetFolder = $next.GetFolder
-    $targetFolderParsingPath = $next.Path
-    if ($null -eq $targetFolder) { throw "MTP 项不是目录: $segment" }
-}
-
-$remoteItems = @($targetFolder.Items())
-if ($ListOnly) {
-    [PSCustomObject[]]$remoteItems | ForEach-Object {
-        [PSCustomObject]@{
-            Name = $_.Name
-            Type = $_.Type
-            IsFolder = $_.IsFolder
-            Path = $_.Path
-            Verbs = (@($_.Verbs() | ForEach-Object { $_.Name.Trim() }) -join ' | ')
-        }
-    } | Format-Table -AutoSize
-    return
-}
-
-$existing = Get-ChildItemByName $targetFolder $RemoteFileName
-$operationId = [Guid]::NewGuid().ToString('N')
-$localWork = Join-Path ([IO.Path]::GetTempPath()) "dji-rc2-mtp-$operationId"
-New-Item -ItemType Directory -Path $localWork -Force | Out-Null
-$backupDir = Join-Path $BackupRoot (Get-Date -Format 'yyyyMMdd-HHmmss')
-
-Write-Host "设备: $($device.Name)"
-Write-Host "目标目录: $WaypointPath"
-Write-Host "源文件 SHA-256: $sourceHash"
-Write-Host "目标文件: $RemoteFileName"
-if ($existing) { Write-Host "目标已存在: $($existing.Name)" }
-
-if ($DryRun) {
-    Write-Host 'DryRun：未写入、删除或备份任何文件。'
-    Remove-Item -LiteralPath $localWork -Recurse -Force -Confirm:$false -ErrorAction SilentlyContinue
-    return
-}
-if ($existing -and -not $ReplaceExisting) { throw '目标文件已存在。请显式指定 -ReplaceExisting；当前未修改设备。' }
 
 try {
-    if ($existing) {
-        New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
-        $backupPath = Copy-RemoteItemToLocal $existing $backupDir $RemoteFileName $TimeoutSeconds
-        $backupHash = (Get-FileHash -LiteralPath $backupPath -Algorithm SHA256).Hash
-        Write-Host "已备份旧文件: $backupPath ($backupHash)"
+    if ($TimeoutSeconds -lt 1 -or $TimeoutSeconds -gt 600) {
+        throw 'TimeoutSeconds 必须在 1 到 600 秒之间'
+    }
+    foreach ($segment in ($WaypointPath -split '[\\/]')) {
+        if ($segment -eq '.' -or $segment -eq '..') { throw 'WaypointPath 不能包含 . 或 .. 路径段' }
     }
 
-    if (-not (Test-Path -LiteralPath $SilentHelperPath -PathType Leaf)) {
-        throw "找不到无提示 MTP 助手：$SilentHelperPath。请先运行 tools/build_silent_mtp_helper.ps1。"
+    if (-not $ListOnly) {
+        $result.stage = 'validating_source'
+        if ([string]::IsNullOrWhiteSpace($SourceKmz) -or -not (Test-Path -LiteralPath $SourceKmz -PathType Leaf)) {
+            throw 'SourceKmz 必须是已存在的本地 KMZ 文件'
+        }
+        $SourceKmz = (Resolve-Path -LiteralPath $SourceKmz).Path
+        $RemoteFileName = if ($RemoteFileName) { $RemoteFileName } else { [IO.Path]::GetFileName($SourceKmz) }
+        if (-not (Test-RemoteFileName $RemoteFileName)) {
+            throw 'RemoteFileName 必须是不含路径的 .kmz 文件名'
+        }
+        $result.remote_file_name = $RemoteFileName
+        Test-KmzFile $SourceKmz -RequireMissionFiles
+        $result.source_sha256 = (Get-FileHash -LiteralPath $SourceKmz -Algorithm SHA256).Hash
     }
-    $targetFileParsingPath = if ($existing) {
-        $existing.Path
+
+    $result.stage = 'discovering_device'
+    $script:Shell = New-Object -ComObject Shell.Application
+    $pc = $script:Shell.Namespace(17)
+    if ($null -eq $pc) { throw '无法打开 Windows 此电脑命名空间' }
+    $device = @($pc.Items()) | Where-Object { $_.Name -ieq $DeviceName } | Select-Object -First 1
+    if ($null -eq $device) { throw "未找到设备 '$DeviceName'。请先解锁 RC 2 并确认资源管理器可见。" }
+    $deviceFolder = $device.GetFolder
+    if ($null -eq $deviceFolder) { throw '设备没有可浏览的 WPD 文件夹' }
+    $result.device_name = $device.Name
+
+    $storageItem = @($deviceFolder.Items()) | Where-Object {
+        $_.Name -match '内部共享存储|Internal Shared Storage|Internal Storage|内部存储'
+    } | Select-Object -First 1
+    if ($null -eq $storageItem) {
+        $candidates = @($deviceFolder.Items()) | Where-Object { $_.IsFolder }
+        if ($candidates.Count -eq 1) { $storageItem = $candidates[0] }
+    }
+    if ($null -eq $storageItem) { throw '未找到 RC 2 的内部存储空间' }
+    $targetFolder = $storageItem.GetFolder
+    $targetFolderParsingPath = $storageItem.Path
+    foreach ($segment in ($WaypointPath -split '[\\/]')) {
+        if ([string]::IsNullOrWhiteSpace($segment)) { continue }
+        $next = Get-ChildItemByName $targetFolder $segment
+        if ($null -eq $next) { throw "MTP 目录不存在: $WaypointPath（缺少 $segment）" }
+        $targetFolder = $next.GetFolder
+        $targetFolderParsingPath = $next.Path
+        if ($null -eq $targetFolder) { throw "MTP 项不是目录: $segment" }
+    }
+
+    if ($ListOnly) {
+        $result.stage = 'list'
+        $result.targets = @(
+            @($targetFolder.Items()) | Where-Object {
+                -not $_.IsFolder -and (Test-RemoteFileName $_.Name)
+            } | ForEach-Object {
+                [PSCustomObject]@{ name = $_.Name; type = $_.Type }
+            }
+        )
+        $result.status = 'success'
+        if (-not $Json) {
+            Write-Host "设备: $($result.device_name)"
+            Write-Host "目标目录: $WaypointPath"
+            $result.targets | Format-Table -AutoSize
+        }
     } else {
-        "$targetFolderParsingPath\$RemoteFileName"
-    }
+        $result.stage = 'checking_target'
+        $existing = Get-ChildItemByName $targetFolder $RemoteFileName
+        if ($null -eq $existing -or $existing.IsFolder) {
+            throw "目标航线文件不存在: $RemoteFileName。请先在 DJI Fly 中建立占位航线。"
+        }
+        if (-not $ReplaceExisting -and -not $DryRun) {
+            throw '需要显式指定 -ReplaceExisting；当前未修改设备。'
+        }
+        Write-ProgressMessage "设备: $($result.device_name)"
+        Write-ProgressMessage "目标目录: $WaypointPath"
+        Write-ProgressMessage "源文件 SHA-256: $($result.source_sha256)"
+        Write-ProgressMessage "现有目标文件: $RemoteFileName"
 
-    # 使用 IFileOperation 的静默标志直接删除并复制 Shell MTP 对象，避免 Explorer 删除弹窗。
-    & $SilentHelperPath $SourceKmz $targetFolderParsingPath $RemoteFileName $targetFileParsingPath
-    if ($LASTEXITCODE -ne 0) {
-        throw "无提示 MTP 助手失败，退出码 $LASTEXITCODE。RC 2 文件未被确认替换。"
-    }
+        if ($DryRun) {
+            $result.stage = 'dry_run'
+            $result.status = 'success'
+            Write-ProgressMessage 'DryRun：目标存在；未写入、删除或备份文件。'
+        } else {
+            $operationId = [Guid]::NewGuid().ToString('N')
+            $localWork = Join-Path ([IO.Path]::GetTempPath()) "dji-rc2-mtp-$operationId"
+            New-Item -ItemType Directory -Path $localWork -Force | Out-Null
+            $backupDir = Join-Path $BackupRoot "$(Get-Date -Format 'yyyyMMdd-HHmmss')-$operationId"
 
-    $remoteFinal = Wait-RemoteItem $targetFolder $RemoteFileName $TimeoutSeconds
-    if ($null -eq $remoteFinal) { throw "上传最终文件超时: $RemoteFileName" }
-    $readbackFinalDir = Join-Path $localWork 'readback-final'
-    New-Item -ItemType Directory -Path $readbackFinalDir -Force | Out-Null
-    $readbackFinal = Copy-RemoteItemToLocal $remoteFinal $readbackFinalDir $RemoteFileName $TimeoutSeconds
-    $finalHash = (Get-FileHash -LiteralPath $readbackFinal -Algorithm SHA256).Hash
-    if ($finalHash -ne $sourceHash) { throw "最终文件回读校验失败: $finalHash != $sourceHash" }
-    Write-Host "上传完成，SHA-256 已验证: $finalHash"
+            $result.stage = 'backing_up'
+            New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
+            $backupPath = Copy-RemoteItemToLocal $existing $backupDir $RemoteFileName $TimeoutSeconds
+            $backupHash = (Get-FileHash -LiteralPath $backupPath -Algorithm SHA256).Hash
+            $result.stage = 'verifying_backup'
+            $backupCheckDir = Join-Path $localWork 'backup-check'
+            $backupCheckHash = Get-RemoteFileHash $targetFolder $RemoteFileName $backupCheckDir $TimeoutSeconds
+            if ($backupCheckHash -ne $backupHash) {
+                throw "两次读取旧文件的哈希不一致: $backupHash != $backupCheckHash"
+            }
+            $result.backup_path = $backupPath
+            $result.backup_sha256 = $backupHash
+            Write-ProgressMessage "旧文件备份并校验完成: $backupPath ($backupHash)"
+
+            $SilentHelperPath = if ([string]::IsNullOrWhiteSpace($SilentHelperPath)) {
+                Join-Path $PSScriptRoot 'bin\silent_mtp_replace.exe'
+            } else {
+                $SilentHelperPath
+            }
+            if (-not (Test-Path -LiteralPath $SilentHelperPath -PathType Leaf)) {
+                throw "找不到无提示 MTP 助手：$SilentHelperPath。请先运行 tools/build_silent_mtp_helper.ps1。"
+            }
+            $SilentHelperPath = (Resolve-Path -LiteralPath $SilentHelperPath).Path
+
+            $result.stage = 'replacing'
+            $result.remote_state = 'unknown'
+            $replaceStarted = $true
+            & $SilentHelperPath $SourceKmz $targetFolderParsingPath $RemoteFileName $existing.Path | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                throw "无提示 MTP 助手失败，退出码 $LASTEXITCODE。"
+            }
+
+            $result.stage = 'verifying'
+            $readbackDir = Join-Path $localWork 'readback-final'
+            $finalHash = Get-RemoteFileHash $targetFolder $RemoteFileName $readbackDir $TimeoutSeconds
+            $result.readback_sha256 = $finalHash
+            if ($finalHash -ne $result.source_sha256) {
+                throw "最终文件回读校验失败: $finalHash != $($result.source_sha256)"
+            }
+            $result.status = 'success'
+            $result.stage = 'verified'
+            $result.remote_state = 'verified'
+            Write-ProgressMessage "上传完成，SHA-256 已验证: $finalHash"
+        }
+    }
+} catch {
+    $originalMessage = $_.Exception.Message
+    $result.failure_stage = $result.stage
+    if ($replaceStarted -and $backupPath -and $backupHash) {
+        try {
+            $probeDir = Join-Path $localWork 'readback-before-restore'
+            $observedHash = $null
+            try { $observedHash = Get-RemoteFileHash $targetFolder $RemoteFileName $probeDir $TimeoutSeconds }
+            catch { }
+            if ($observedHash -eq $backupHash) {
+                $result.remote_state = 'original'
+                $result.restore_verified = $true
+                $result.recovery_stage = 'original_verified'
+            } else {
+                $result.recovery_stage = 'restoring'
+                $result.restore_attempted = $true
+                & $SilentHelperPath $backupPath $targetFolderParsingPath $RemoteFileName $existing.Path | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw "恢复旧文件失败，助手退出码 $LASTEXITCODE" }
+                $restoreDir = Join-Path $localWork 'readback-restored'
+                $restoredHash = Get-RemoteFileHash $targetFolder $RemoteFileName $restoreDir $TimeoutSeconds
+                if ($restoredHash -ne $backupHash) { throw "恢复后哈希不匹配: $restoredHash != $backupHash" }
+                $result.remote_state = 'restored'
+                $result.restore_verified = $true
+                $result.recovery_stage = 'restored_verified'
+            }
+        } catch {
+            $result.remote_state = 'unknown'
+            $result.restore_verified = $false
+            $result.recovery_stage = 'failed'
+            $originalMessage = "$originalMessage；恢复或验证旧文件失败: $($_.Exception.Message)"
+        }
+    }
+    $result.status = 'error'
+    $result.message = $originalMessage
 } finally {
-    Remove-Item -LiteralPath $localWork -Recurse -Force -Confirm:$false -ErrorAction SilentlyContinue
+    if ($localWork -and (Test-Path -LiteralPath $localWork -PathType Container)) {
+        Remove-Item -LiteralPath $localWork -Recurse -Force -Confirm:$false -ErrorAction SilentlyContinue
+    }
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+if ($Json) {
+    $result | ConvertTo-Json -Depth 6 -Compress | Write-Output
+} elseif ($result.status -eq 'error') {
+    [Console]::Error.WriteLine("$($result.stage): $($result.message)")
+}
+if ($result.status -eq 'error') { exit 1 }
+exit 0

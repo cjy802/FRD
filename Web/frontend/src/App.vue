@@ -98,6 +98,48 @@ const loading = ref(false)
 const kmzLoading = ref(false)
 const kmzError = ref('')
 const djiModel = ref<'fly' | 'm30' | 'm3e'>('fly')
+type Rc2Status = {
+  available: boolean
+  platform: string
+  message: string
+  generation_directory: string
+  helper_available: boolean
+  script_available: boolean
+  busy: boolean
+}
+type Rc2Target = { name: string; size?: number; type?: string }
+type Rc2Job = {
+  job_id: string
+  status: 'queued' | 'running' | 'succeeded' | 'failed'
+  stage: 'queued' | 'generating' | 'uploading' | 'verified' | 'failed'
+  message: string
+  target_file_name: string
+  source_path: string | null
+  backup_directory: string
+  backup_path: string | null
+  source_sha256: string | null
+  readback_sha256: string | null
+  remote_state: string | null
+}
+const rc2Status = ref<Rc2Status | null>(null)
+const rc2Targets = ref<Rc2Target[]>([])
+const rc2DeviceName = ref('')
+const rc2WaypointPath = ref('')
+const rc2TargetName = ref('')
+const rc2Loading = ref(false)
+const rc2Submitting = ref(false)
+const rc2Error = ref('')
+const rc2Job = ref<Rc2Job | null>(null)
+const rc2JobRequestFingerprint = ref('')
+const rc2JobRunning = computed(() => rc2Submitting.value || rc2Job.value?.status === 'queued' || rc2Job.value?.status === 'running')
+const rc2JobMatchesCurrent = computed(() => !!rc2Job.value && !!preview.value && djiModel.value === 'fly'
+  && rc2JobRequestFingerprint.value === JSON.stringify(djiKmzRequestBody()))
+const rc2CanImport = computed(() => !!preview.value && djiModel.value === 'fly' && !!rc2Status.value?.available
+  && !rc2Status.value?.busy && rc2Targets.value.some((target) => target.name === rc2TargetName.value)
+  && !rc2JobRunning.value && !rc2Loading.value && !kmzLoading.value && !loading.value)
+let rc2JobPollTimer: ReturnType<typeof setTimeout> | null = null
+let rc2ConnectionVersion = 0
+let rc2Disposed = false
 type WaypointHeadingMode = 'followWayline' | 'manually' | 'fixed' | 'smoothTransition' | 'towardPOI'
 type WaypointSetting = {
   altitude_m: number
@@ -984,7 +1026,7 @@ async function exportDjiKmz() {
   try {
     const response = await fetch('/api/routes/export-kmz', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ coordinates: preview.value.geometry.coordinates, altitude_m: form.altitude_m, speed_kmh: form.speed_kmh, drone_model: djiModel.value, waypoint_settings: waypointSettings.value }),
+      body: JSON.stringify(djiKmzRequestBody()),
     })
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}))
@@ -1005,6 +1047,118 @@ async function exportDjiKmz() {
     kmzLoading.value = false
   }
 }
+
+function djiKmzRequestBody() {
+  const route = preview.value
+  if (!route) throw new Error('请先计算航线。')
+  return {
+    coordinates: route.geometry.coordinates,
+    altitude_m: form.altitude_m,
+    speed_kmh: form.speed_kmh,
+    drone_model: djiModel.value,
+    waypoint_settings: waypointSettings.value,
+  }
+}
+
+async function rc2ResponseError(response: Response, fallback: string) {
+  const payload = await response.json().catch(() => ({}))
+  return new Error(typeof payload.detail === 'string' ? payload.detail : fallback)
+}
+
+async function refreshRc2Connection() {
+  if (rc2Loading.value || rc2JobRunning.value) return
+  const version = ++rc2ConnectionVersion
+  rc2Loading.value = true
+  rc2Error.value = ''
+  try {
+    const statusResponse = await fetch('/api/dji/rc2/status')
+    if (!statusResponse.ok) throw await rc2ResponseError(statusResponse, '无法检查 RC 2 连接状态。')
+    const status = await statusResponse.json() as Rc2Status
+    if (version !== rc2ConnectionVersion) return
+    rc2Status.value = status
+    if (!status.available) {
+      rc2Targets.value = []
+      rc2DeviceName.value = ''
+      rc2WaypointPath.value = ''
+      rc2TargetName.value = ''
+      return
+    }
+    const targetsResponse = await fetch('/api/dji/rc2/targets')
+    if (!targetsResponse.ok) throw await rc2ResponseError(targetsResponse, '无法读取 RC 2 上的占位航线。')
+    const result = await targetsResponse.json() as { device_name: string; waypoint_path: string; targets: Rc2Target[] }
+    if (version !== rc2ConnectionVersion) return
+    rc2DeviceName.value = result.device_name
+    rc2WaypointPath.value = result.waypoint_path
+    rc2Targets.value = result.targets
+    if (!result.targets.some((target) => target.name === rc2TargetName.value)) rc2TargetName.value = ''
+  } catch (cause) {
+    if (version === rc2ConnectionVersion) {
+      if (rc2Status.value) rc2Status.value = { ...rc2Status.value, available: false, message: '无法读取已连接遥控器的占位航线。' }
+      rc2Targets.value = []
+      rc2TargetName.value = ''
+      rc2Error.value = cause instanceof Error ? cause.message : '读取 RC 2 状态失败。'
+    }
+  } finally {
+    if (version === rc2ConnectionVersion) rc2Loading.value = false
+  }
+}
+
+async function refreshRc2Job() {
+  if (rc2Disposed) return
+  const jobId = rc2Job.value?.job_id
+  if (!jobId) return
+  if (rc2JobPollTimer) clearTimeout(rc2JobPollTimer)
+  rc2JobPollTimer = null
+  try {
+    const response = await fetch(`/api/dji/rc2/jobs/${encodeURIComponent(jobId)}`)
+    if (!response.ok) throw await rc2ResponseError(response, '无法读取导入任务状态。')
+    const job = await response.json() as Rc2Job
+    if (rc2Disposed) return
+    if (rc2Job.value?.job_id !== jobId) return
+    rc2Job.value = job
+    rc2Error.value = ''
+    if (job.status === 'succeeded' || job.status === 'failed') {
+      void refreshRc2Connection()
+    } else {
+      rc2JobPollTimer = setTimeout(() => void refreshRc2Job(), 1500)
+    }
+  } catch (cause) {
+    if (!rc2Disposed) rc2Error.value = `${cause instanceof Error ? cause.message : '读取导入任务状态失败。'} 可点击“刷新任务状态”重试。`
+  }
+}
+
+async function importToRc2() {
+  if (!rc2CanImport.value) return
+  const targetFileName = rc2TargetName.value
+  const kmzRequest = djiKmzRequestBody()
+  rc2Submitting.value = true
+  rc2Error.value = ''
+  rc2Job.value = null
+  try {
+    const response = await fetch('/api/dji/rc2/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...kmzRequest, target_file_name: targetFileName }),
+    })
+    if (!response.ok) throw await rc2ResponseError(response, '无法开始 RC 2 导入任务。')
+    const result = await response.json() as { job_id: string; status: 'queued'; message: string; target_file_name: string }
+    rc2JobRequestFingerprint.value = JSON.stringify(kmzRequest)
+    rc2Job.value = {
+      job_id: result.job_id, status: result.status, stage: 'queued', message: result.message,
+      target_file_name: result.target_file_name, source_path: null, backup_directory: '', backup_path: null,
+      source_sha256: null, readback_sha256: null, remote_state: null,
+    }
+  } catch (cause) {
+    rc2Error.value = cause instanceof Error ? cause.message : '无法开始 RC 2 导入任务。'
+  } finally {
+    rc2Submitting.value = false
+  }
+  if (rc2Job.value?.status === 'queued') void refreshRc2Job()
+}
+
+watch([preview, djiModel], () => {
+  if (preview.value && djiModel.value === 'fly' && !rc2Status.value) void refreshRc2Connection()
+})
 
 async function calculate(flyToRoute: boolean | SubmitEvent = true) {
   if (loading.value || locatingPoint.value) return
@@ -1644,6 +1798,9 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   window.removeEventListener('resize', handleColumnViewportResize)
+  rc2Disposed = true
+  rc2ConnectionVersion++
+  if (rc2JobPollTimer) clearTimeout(rc2JobPollTimer)
   locationRequestVersion++
   window.removeEventListener('keydown', handleWaypointKeydown)
   window.removeEventListener('blur', cancelCameraPreviewDrag)
@@ -1766,6 +1923,45 @@ onBeforeUnmount(() => {
          <details class="overview-group"><summary><span><span class="svg-icon icon-route" aria-hidden="true"></span>调整出发时间或路线</span><small>可选参考，不会自动替换当前设置</small></summary><div class="overview-group-body overview-planning"><WeatherWindowsPanel :job-id="weatherJobId" :coordinates="weatherCoordinates" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" :limits="activeLimits" @choose="chooseDeparture" @state="windowPhase = $event" /><RoadWeatherComparison v-if="anchors.length === 2" :job-id="weatherJobId" :can-compare="!!weatherCoordinates" :current-coordinates="weatherCoordinates" :start="form.start" :end="form.end" :road-source="roadSource" :clearance-m="form.clearance_m" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" :limits="activeLimits" @choose="chooseRoad" @state="comparisonPhase = $event" /><p v-else class="multi-route-comparison-note">多段路线候选比较暂不支持；沿线天气检查仍按完整路线进行。</p></div></details>
          <details class="overview-group"><summary><span><span class="svg-icon icon-layers" aria-hidden="true"></span>天气规则和技术状态</span><small>仅在需要核对时查看</small></summary><div class="overview-group-body"><details class="limits-settings"><summary>天气初筛阈值</summary><label class="limits-toggle"><input v-model="customLimitsEnabled" type="checkbox" /> 填写自定义气象阈值</label><p>关闭时使用演示阈值。阈值用于天气提示与比较，参考分不是事故概率。</p><template v-if="customLimitsEnabled"><label>阈值名称<input v-model="customLimits.name" maxlength="80" /></label><div class="coordinate-row"><label>最大高度风 · m/s<input v-model.number="customLimits.max_wind_m_s" type="number" min="0.1" max="200" step="0.1" required /></label><label>最大侧风 · m/s<input v-model.number="customLimits.max_crosswind_m_s" type="number" min="0.1" max="200" step="0.1" required /></label></div><div class="coordinate-row"><label>最大逆风 · m/s<input v-model.number="customLimits.max_headwind_m_s" type="number" min="0.1" max="200" step="0.1" required /></label><label>最大地面阵风 · m/s<input v-model.number="customLimits.max_gust_m_s" type="number" min="0.1" max="200" step="0.1" required /></label></div><div class="coordinate-row"><label>最大雨量 · mm/6h<input v-model.number="customLimits.max_rain_6h_mm" type="number" min="0.1" max="500" step="0.1" required /></label><label>最低地面能见度 · m<input v-model.number="customLimits.min_visibility_m" type="number" min="1" max="100000" step="1" required /></label></div></template></details><div class="pipeline"><h3>系统状态</h3><div><span>01</span><p>{{ alignmentProgress }}</p></div><div><span>02</span><p>{{ routeAssessment ? decisionTitle : '沿线初筛等待资料' }}</p></div><div><span>03</span><p>{{ planningProgress }}</p></div></div></div></details>
          <div v-if="preview" class="road-summary"><strong><span class="svg-icon icon-route" aria-hidden="true"></span>当前路线：{{ preview.road_names.join(' → ') || '未命名道路' }}</strong><span>{{ distance }} · 预计用时 {{ elapsed }}</span><details><summary><span class="svg-icon icon-eye" aria-hidden="true"></span>查看路线数据</summary><small>直线 {{ preview.straight_distance_km.toFixed(2) }} km · {{ preview.building_clearance_m === null ? '在线模式未检查建筑缓冲' : `建筑缓冲 ${preview.building_clearance_m} m` }}</small><small>首末主点到道路分别约 {{ preview.start_snap_m }} m / {{ preview.end_snap_m }} m</small><small>手动主点 {{ anchors.length }} 个 · 自动生成小点 {{ generatedPointCount }} 个 · {{ preview.segments?.length ?? 1 }} 段</small><small v-for="segment in preview.segments" :key="segment.id">{{ majorPointLabel(segment.index) }} → {{ majorPointLabel(segment.index + 1) }}：{{ segment.distance_km.toFixed(2) }} km</small><small>{{ preview.data_source }}</small><small>路线数据 © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap contributors</a></small></details><div class="route-export"><label>DJI 机型模板<select v-model="djiModel"><option value="fly">DJI Fly · Air 3 / Air 3S / Mini 4 Pro</option><option value="m30">DJI Pilot 2 · M30 / M30T</option><option value="m3e">DJI Pilot 2 · Mavic 3E / 3T / 3M</option></select></label><details class="waypoint-editor" @toggle="onWaypointEditorToggle"><summary>逐点设置高度和面向（{{ waypointSettings.length }} 个点）</summary><p class="waypoint-editor-note">高度为相对起飞点高度；机头/镜头水平朝向以真北为 0°，摄像头俯仰角 0° 为水平，负数向下。Air 3/Air 3S 的镜头水平偏航是否独立于机头由 DJI Fly 和机型能力决定。</p><p v-if="waypointSettings.length > 200" class="waypoint-editor-note">此处列出前 200 个点和当前选中点；完整路线与导出仍保留全部 {{ waypointSettings.length }} 个点。</p><div v-for="{ setting, index } in editorWaypoints" :key="index" class="waypoint-row" :data-waypoint-index="index"><strong>点 {{ index + 1 }}</strong><label>高度（m）<input v-model.number="setting.altitude_m" type="number" min="1" max="1500" step="1" /></label><label>机头方向<select v-model="setting.heading_mode"><option value="followWayline">沿航线</option><option value="fixed">固定角度</option><option value="smoothTransition">平滑转向</option><option value="manually">手动控制</option></select></label><label v-if="setting.heading_mode === 'fixed' || setting.heading_mode === 'smoothTransition'">角度（°）<input v-model.number="setting.heading_angle" type="number" step="1" /></label><label>摄像头俯仰（°）<input v-model.number="setting.gimbal_pitch_angle" type="number" min="-90" max="45" step="1" /></label></div></details><button type="button" class="weather-refresh" :disabled="kmzLoading || loading" @click="exportDjiKmz"><span class="svg-icon icon-download" aria-hidden="true"></span>{{ kmzLoading ? '正在生成 KMZ…' : '导出 DJI KMZ 草稿' }}</button><small>按相对起飞点高度生成。路线折点会先抽稀，减少 DJI 中高度标签和航点标记重叠。{{ roadSource === 'online' ? '当前是在线机动车道路参考，不应直接作为飞行线。' : '当前是道路走廊参考，不代表已核实飞行航线。' }}{{ djiModel === 'fly' ? 'DJI Fly 需先创建一条占位航线，再用相同 UUID 文件名替换 waypoint 目录中的 KMZ。' : '导入 DJI Pilot 2 后仍需核对机型、动作、返航、空域和现场条件。' }}文件不是放飞许可。</small><small v-if="djiModel === 'fly'">Air 3/Air 3S 使用 DJI Fly 消费级 WPML；当前通用机型枚举按 RC 2 航线格式生成，若设备拒绝文件需要用设备原生占位 KMZ 校验。</small><small v-if="kmzError" class="form-error" role="alert">{{ kmzError }}</small></div></div>
+        <section v-if="(preview && djiModel === 'fly') || rc2Job" class="rc2-import-panel" aria-label="导入 DJI RC 2">
+          <div class="rc2-import-heading">
+            <h3>导入已连接的 DJI RC 2</h3>
+            <button type="button" :disabled="rc2Loading || rc2JobRunning" @click="refreshRc2Connection">{{ rc2Loading ? '检测中…' : '检测 / 刷新设备' }}</button>
+          </div>
+          <p role="status">{{ rc2Loading ? '正在检查本机和遥控器…' : rc2Status?.message ?? '等待检查 RC 2 连接状态。' }}</p>
+          <small v-if="rc2Status?.generation_directory">本机 KMZ 生成目录：{{ rc2Status.generation_directory }}</small>
+          <template v-if="preview && djiModel === 'fly' && rc2Status?.available">
+            <small v-if="rc2DeviceName">遥控器：{{ rc2DeviceName }}</small>
+            <small v-if="rc2WaypointPath">占位航线目录：{{ rc2WaypointPath }}</small>
+            <label>选择已有占位航线
+              <select v-model="rc2TargetName" :disabled="rc2Loading || rc2JobRunning || !rc2Targets.length">
+                <option value="">请选择遥控器上的 .kmz 文件</option>
+                <option v-for="target in rc2Targets" :key="target.name" :value="target.name">{{ target.name }}</option>
+              </select>
+            </label>
+            <small v-if="!rc2Targets.length && !rc2Loading">未找到占位航线。请先在 DJI Fly 中创建并保存一条航线，然后刷新设备。</small>
+            <button type="button" class="rc2-import-action" :disabled="!rc2CanImport" @click="importToRc2">{{ rc2Submitting ? '正在创建导入任务…' : rc2JobRunning ? '正在导入…' : '生成 KMZ 并替换所选占位航线' }}</button>
+            <small v-if="rc2TargetName">将替换 {{ rc2TargetName }}；原文件会先备份，写入后回读校验。</small>
+          </template>
+          <small v-else-if="preview && djiModel === 'fly'">请用 USB 连接 RC 2，并先在 DJI Fly 中创建一条占位航线；连接后点击“检测 / 刷新设备”。</small>
+          <div v-if="rc2Job" class="rc2-job" :class="{ 'rc2-job-failed': rc2Job.status === 'failed', 'rc2-job-done': rc2Job.status === 'succeeded' }" role="status" aria-live="polite">
+            <strong>{{ !rc2JobMatchesCurrent ? '上次航线的' : '' }}{{ rc2Job.status === 'succeeded' ? '导入并回读校验完成' : rc2Job.status === 'failed' ? '导入失败' : '导入进行中' }}</strong>
+            <small v-if="!rc2JobMatchesCurrent">当前路线或航点设置与提交任务时不同；以下结果对应提交时的版本。</small>
+            <span>目标：{{ rc2Job.target_file_name }}</span>
+            <ol class="rc2-job-steps">
+              <li :class="{ active: rc2Job.stage === 'generating', done: !!rc2Job.source_path }">生成 KMZ</li>
+              <li :class="{ active: rc2Job.stage === 'uploading', done: rc2Job.stage === 'verified' }">备份并传输</li>
+              <li :class="{ active: rc2Job.stage === 'verified', done: rc2Job.status === 'succeeded' }">回读校验</li>
+            </ol>
+            <span>{{ rc2Job.message }}</span>
+            <small v-if="rc2Job.source_path">生成文件：{{ rc2Job.source_path }}</small>
+            <small v-if="rc2Job.backup_directory">备份目录：{{ rc2Job.backup_directory }}</small>
+            <small v-if="rc2Job.backup_path">原文件备份：{{ rc2Job.backup_path }}</small>
+            <button v-if="rc2JobRunning" type="button" class="rc2-job-refresh" @click="refreshRc2Job">刷新任务状态</button>
+          </div>
+          <p v-if="rc2Error" class="form-error" role="alert">{{ rc2Error }}</p>
+          <small>此操作只适用于 DJI Fly / RC 2。导入完成后仍需在遥控器上打开航线，核对航点与动作。</small>
+        </section>
       </aside>
     </main>
   </div>
@@ -1839,4 +2035,24 @@ onBeforeUnmount(() => {
 @media (max-width: 720px) {
   .map-alert { top: 150px; }
 }
+.rc2-import-panel { display: grid; gap: 8px; margin: 0 0 18px; padding: 14px; border: 1px solid #c9dced; border-radius: 10px; background: #f7fbff; }
+.rc2-import-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; }
+.rc2-import-heading h3 { margin: 0; color: #173b5c; font-size: 14px; }
+.rc2-import-heading button, .rc2-job-refresh { padding: 5px 8px; border: 1px solid #a9c8e4; border-radius: 6px; background: #fff; color: #1265a7; font-size: 11px; cursor: pointer; }
+.rc2-import-panel p, .rc2-import-panel small, .rc2-job span { display: block; margin: 0; color: #53677c; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.rc2-import-panel .form-error { color: #a4262c; }
+.rc2-import-panel label { display: block; color: #344455; font-size: 12px; font-weight: 600; }
+.rc2-import-panel select { display: block; width: 100%; min-height: 34px; margin-top: 5px; padding: 5px 7px; border: 1px solid #b8cddd; border-radius: 6px; background: #fff; color: #25394d; font: inherit; font-weight: 400; }
+.rc2-import-action { min-height: 38px; padding: 7px 10px; border: 0; border-radius: 7px; background: #0f6cbd; color: #fff; font-size: 12px; font-weight: 700; cursor: pointer; }
+.rc2-import-panel button:disabled { cursor: default; opacity: .55; }
+.rc2-job { display: grid; gap: 6px; padding: 10px; border: 1px solid #bdd7ed; border-radius: 7px; background: #fff; }
+.rc2-job > strong { color: #1265a7; font-size: 12px; }
+.rc2-job-done { border-color: #9bd2b2; background: #f3fcf6; }
+.rc2-job-done > strong { color: #167348; }
+.rc2-job-failed { border-color: #edbfc1; background: #fff8f8; }
+.rc2-job-failed > strong { color: #a4262c; }
+.rc2-job-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; margin: 2px 0; padding: 0; list-style: none; }
+.rc2-job-steps li { padding: 5px 3px; border-radius: 5px; background: #edf2f7; color: #607286; font-size: 10px; text-align: center; }
+.rc2-job-steps li.active { background: #dceeff; color: #0f6cbd; font-weight: 700; }
+.rc2-job-steps li.done { background: #ddf3e5; color: #167348; }
 </style>

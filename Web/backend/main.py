@@ -12,8 +12,9 @@ import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, model_validator
@@ -25,6 +26,7 @@ from live_weather import forecast_jobs
 from route_candidates import local_road_candidates
 from weather_routes import compare_road_weather
 from dji_kmz import KmzExportError, build_dji_kmz
+from dji_rc2 import Rc2Error, rc2_imports
 from place_search import PlaceSearchError, reverse_geocode, search_nearby_places, search_places
 from mission_routes import MAX_MISSION_ANCHORS, MissionRouteError, MissionRouteLimitError, combine_mission_segments
 
@@ -122,6 +124,11 @@ class KmzExportRequest(BaseModel):
     speed_kmh: float = Field(gt=0, le=200, allow_inf_nan=False)
     drone_model: Literal["fly", "m30", "m3e"] = "fly"
     waypoint_settings: list[KmzWaypointSetting] | None = Field(default=None, max_length=65535)
+
+
+class Rc2ImportRequest(KmzExportRequest):
+    drone_model: Literal["fly"] = "fly"
+    target_file_name: str = Field(min_length=5, max_length=128)
 
 
 @lru_cache(maxsize=1)
@@ -387,6 +394,78 @@ def export_dji_kmz(request: KmzExportRequest):
         media_type="application/vnd.google-earth.kmz",
         headers={"Content-Disposition": 'attachment; filename="dji_waypoint_draft.kmz"'},
     )
+
+
+_RC2_ALLOWED_ORIGINS = {
+    "http://localhost:5173", "http://127.0.0.1:5173",
+    "http://localhost:8011", "http://127.0.0.1:8011",
+}
+_RC2_LOOPBACK_NAMES = {"localhost", "127.0.0.1", "::1"}
+
+
+def require_local_rc2_request(request: Request, *, mutation: bool = False) -> None:
+    """Keep MTP actions on the local UI and outside cross-site requests."""
+    client_host = request.client.host if request.client else None
+    try:
+        host_name = urlsplit(f"http://{request.headers.get('host', '')}").hostname
+    except ValueError:
+        host_name = None
+    if client_host not in {"127.0.0.1", "::1"} or host_name not in _RC2_LOOPBACK_NAMES:
+        raise HTTPException(status_code=403, detail="RC 2 导入只允许从本机回环地址访问。")
+    origin = request.headers.get("origin")
+    if (origin and origin not in _RC2_ALLOWED_ORIGINS) or (mutation and not origin):
+        raise HTTPException(status_code=403, detail="RC 2 导入请求必须来自本机页面。")
+    if request.headers.get("sec-fetch-site") not in {None, "same-origin", "none"}:
+        raise HTTPException(status_code=403, detail="RC 2 导入不接受跨站页面请求。")
+    referer = request.headers.get("referer")
+    if referer:
+        parsed = urlsplit(referer)
+        if f"{parsed.scheme}://{parsed.netloc}" not in _RC2_ALLOWED_ORIGINS:
+            raise HTTPException(status_code=403, detail="RC 2 导入只接受本机页面引用。")
+
+
+def rc2_http_error(error: Rc2Error) -> HTTPException:
+    return HTTPException(status_code=error.http_status, detail=str(error))
+
+
+@app.get("/api/dji/rc2/status")
+def rc2_status(request: Request):
+    require_local_rc2_request(request)
+    return rc2_imports.status()
+
+
+@app.get("/api/dji/rc2/targets")
+def rc2_targets(request: Request):
+    require_local_rc2_request(request)
+    try:
+        return rc2_imports.targets()
+    except Rc2Error as error:
+        raise rc2_http_error(error) from error
+
+
+@app.post("/api/dji/rc2/import", status_code=status.HTTP_202_ACCEPTED)
+def rc2_import(request: Request, import_request: Rc2ImportRequest):
+    require_local_rc2_request(request, mutation=True)
+    try:
+        settings = [item.model_dump() for item in import_request.waypoint_settings] if import_request.waypoint_settings is not None else None
+        payload = build_dji_kmz(
+            import_request.coordinates, import_request.altitude_m, import_request.speed_kmh,
+            "fly", settings,
+        )
+        return rc2_imports.start(payload, import_request.target_file_name)
+    except KmzExportError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except Rc2Error as error:
+        raise rc2_http_error(error) from error
+
+
+@app.get("/api/dji/rc2/jobs/{job_id}")
+def rc2_job(request: Request, job_id: str):
+    require_local_rc2_request(request)
+    try:
+        return rc2_imports.job(job_id)
+    except Rc2Error as error:
+        raise rc2_http_error(error) from error
 
 
 def route_response(route, result):
