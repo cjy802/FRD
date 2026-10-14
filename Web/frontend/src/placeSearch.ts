@@ -9,6 +9,13 @@ export type PlaceResult = {
   distance_m?: number
   precision?: { precise: number | null; confidence: number | null; level: string | null }
 }
+
+export type LocationAddressResult = {
+  address: string
+  place_name: string
+  nearby_results: PlaceResult[]
+}
+
 function validPlace(item: unknown): item is PlaceResult {
   if (!item || typeof item !== 'object') return false
   const place = item as PlaceResult
@@ -52,7 +59,7 @@ export async function fetchNearbyPlaces(
 export async function fetchLocationAddress(
   center: { latitude: number; longitude: number },
   signal: AbortSignal,
-): Promise<string> {
+): Promise<LocationAddressResult> {
   const params = new URLSearchParams({
     latitude: String(center.latitude),
     longitude: String(center.longitude),
@@ -60,6 +67,13 @@ export async function fetchLocationAddress(
   const response = await fetch(`/api/places/reverse?${params}`, { signal })
   const payload = await response.json().catch(() => null)
   if (!response.ok) throw new Error(typeof payload?.detail === 'string' ? payload.detail : '获取当前位置地址失败，请稍后重试。')
-  if (typeof payload?.address !== 'string' || !payload.address.trim()) throw new Error('当前位置地址返回了无法识别的数据。')
-  return payload.address.trim()
+  if (typeof payload?.address !== 'string' || !payload.address.trim()
+    || typeof payload?.place_name !== 'string' || !Array.isArray(payload?.nearby_results)) {
+    throw new Error('当前位置地址返回了无法识别的数据。')
+  }
+  return {
+    address: payload.address.trim(),
+    place_name: payload.place_name.trim(),
+    nearby_results: payload.nearby_results.filter(validPlace),
+  }
 }

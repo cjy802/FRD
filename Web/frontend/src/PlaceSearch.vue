@@ -8,6 +8,8 @@ const query = ref('')
 const region = ref('常州市')
 const center = ref<SearchCenter | null>(null)
 const locationAddress = ref('')
+const suggestedPlaceName = ref('')
+const suggestedNearbyResults = ref<PlaceResult[]>([])
 const locating = ref(false)
 const resolvingAddress = ref(false)
 const results = ref<PlaceResult[]>([])
@@ -41,6 +43,8 @@ function clearLocation() {
   addressController = null
   center.value = null
   locationAddress.value = ''
+  suggestedPlaceName.value = ''
+  suggestedNearbyResults.value = []
   locating.value = false
   resolvingAddress.value = false
   resetSearch()
@@ -70,11 +74,22 @@ function locateForSearch() {
       resolvingAddress.value = true
       const requestController = new AbortController()
       addressController = requestController
-      void fetchLocationAddress(position, requestController.signal).then((address) => {
-        if (requestVersion === locationVersion) locationAddress.value = address
+      void fetchLocationAddress(position, requestController.signal).then(({ address, place_name, nearby_results }) => {
+        if (requestVersion !== locationVersion) return
+        const nearbyName = place_name || nearby_results[0]?.name || ''
+        locationAddress.value = address
+        suggestedPlaceName.value = nearbyName
+        suggestedNearbyResults.value = nearby_results
+        if (!query.value.trim() && nearbyName) {
+          query.value = nearbyName
+          message.value = '已填入附近地名，点击搜索查看周边地点。'
+        } else if (!query.value.trim()) {
+          message.value = '未找到可搜索的附近地名，请输入地点名称或类别。'
+        }
       }).catch(() => {
         if (requestVersion === locationVersion && !requestController.signal.aborted) {
           locationAddress.value = '地址暂时无法获取，仍可按当前位置搜索'
+          if (!query.value.trim()) message.value = '无法识别附近地名，请输入地点名称或类别。'
         }
       }).finally(() => {
         if (requestVersion === locationVersion) {
@@ -82,8 +97,9 @@ function locateForSearch() {
           addressController = null
         }
       })
-      if (query.value.trim()) void search()
-      else message.value = '已定位，请输入地点名称或类别后搜索附近地点。'
+      message.value = query.value.trim()
+        ? '已定位，点击搜索查看附近地点。'
+        : '已定位，正在识别附近地名…'
     }, (cause) => {
       if (requestVersion !== locationVersion) return
       locating.value = false
@@ -103,18 +119,31 @@ async function search() {
   const requestVersion = version
   const requestController = new AbortController()
   const searchCenter = center.value
+  const searchQuery = query.value.trim()
+  const includeNearby = !!searchCenter && searchQuery === suggestedPlaceName.value
   controller = requestController
   pending.value = true
   try {
     const places = searchCenter
-      ? await fetchNearbyPlaces(query.value, searchCenter, requestController.signal)
-      : await fetchPlaces(query.value, region.value, requestController.signal)
+      ? await fetchNearbyPlaces(searchQuery, searchCenter, requestController.signal)
+      : await fetchPlaces(searchQuery, region.value, requestController.signal)
     if (requestVersion !== version) return
-    results.value = places
-    if (!places.length) message.value = searchCenter ? '附近没有找到相关地点，请换个关键词。' : '没有找到地点，请补充城市、路名或门牌号。'
+    if (includeNearby) {
+      const seen = new Set<string>()
+      results.value = [...places, ...suggestedNearbyResults.value].filter((place) => {
+        const key = place.uid || `${place.name}:${place.location.lat},${place.location.lng}`
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      }).slice(0, 20)
+    } else results.value = places
+    if (!results.value.length) message.value = searchCenter ? '附近没有找到相关地点，请换个关键词。' : '没有找到地点，请补充城市、路名或门牌号。'
   } catch (cause) {
     if (requestVersion !== version || requestController.signal.aborted) return
-    error.value = cause instanceof Error ? cause.message : '地点搜索暂时不可用，请稍后重试。'
+    if (includeNearby && suggestedNearbyResults.value.length) {
+      results.value = suggestedNearbyResults.value
+      message.value = '附近检索暂不可用，已显示定位服务返回的周边地点。'
+    } else error.value = cause instanceof Error ? cause.message : '地点搜索暂时不可用，请稍后重试。'
   } finally {
     if (requestVersion === version) { pending.value = false; controller = null }
   }
@@ -136,13 +165,13 @@ function coordinates(place: PlaceResult) {
       <div class="place-search-controls">
         <div class="place-query-field">
           <input id="route-place-query" v-model="query" type="search" :placeholder="center ? '输入附近地点名称或类别' : '输入地点名称或详细地址'" autocomplete="off" maxlength="128" :disabled="disabled" />
-          <button type="button" class="place-location-button" :class="{ active: center }" :disabled="disabled || locating" :aria-pressed="!!center" :aria-label="locating ? '正在获取当前位置' : center ? '重新定位附近搜索' : '使用当前位置搜索附近地点'" :title="center ? '重新定位附近搜索' : '使用当前位置搜索附近地点'" @click="locateForSearch"><span class="svg-icon icon-location-on" aria-hidden="true"></span></button>
+          <button type="button" class="place-location-button" :class="{ active: center }" :disabled="disabled || locating" :aria-pressed="!!center" :aria-label="locating ? '正在获取当前位置' : center ? '重新定位搜索中心' : '使用当前位置作为搜索中心'" :title="center ? '重新定位搜索中心' : '使用当前位置作为搜索中心'" @click="locateForSearch"><span class="svg-icon icon-location-on" aria-hidden="true"></span></button>
         </div>
         <button type="submit" :disabled="disabled || pending || locating || !query.trim()">{{ pending ? '搜索中…' : '搜索' }}</button>
       </div>
     </form>
     <small v-if="locating" class="place-location-status" role="status">正在获取当前位置…</small>
-    <small v-else-if="center" class="place-location-status" role="status"><span>当前位置：{{ locationAddress || (resolvingAddress ? '正在解析地址…' : '已获取坐标') }} · 附近 1 公里</span><button type="button" :disabled="disabled" @click="clearLocation">取消附近搜索</button></small>
+    <small v-else-if="center" class="place-location-status" role="status"><span>当前位置：{{ locationAddress || (resolvingAddress ? '正在解析地址…' : '已获取坐标') }}</span><button type="button" :disabled="disabled" @click="clearLocation">取消附近搜索</button></small>
     <small v-if="!error && !message && !center && !locating">搜索地点后查看经纬度。</small>
     <small v-if="message" class="place-search-message" role="status">{{ message }}</small>
     <small v-if="error" class="place-search-error" role="alert">{{ error }}</small>

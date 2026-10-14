@@ -111,13 +111,77 @@ class PlaceSearchTests(unittest.TestCase):
                                               'formatted_address': '江苏省常州市测试路'}}),
             response({'status': 0, 'result': {'formatted_address': '江苏省常州市测试路'}}),
         ]) as get:
-            self.assertEqual(reverse_geocode(31.6792, 119.9515), {'address': '江苏省常州市测试咖啡馆'})
-            self.assertEqual(reverse_geocode(31.6792, 119.9515), {'address': '江苏省常州市测试路'})
+            self.assertEqual(reverse_geocode(31.6792, 119.9515), {
+                'address': '江苏省常州市测试咖啡馆', 'place_name': '', 'nearby_results': [],
+            })
+            self.assertEqual(reverse_geocode(31.6792, 119.9515), {
+                'address': '江苏省常州市测试路', 'place_name': '', 'nearby_results': [],
+            })
         self.assertTrue(get.call_args.args[0].endswith('reverse_geocoding/v3/'))
         params = get.call_args.kwargs['params']
         self.assertEqual(params['location'], '31.6792,119.9515')
         self.assertEqual(params['coordtype'], 'wgs84ll')
         self.assertEqual(params['extensions_poi'], 1)
+        self.assertEqual(params['radius'], 1000)
+
+    def test_reverse_geocode_uses_containing_region_and_normalizes_nearby_pois(self):
+        payload = {'status': 0, 'result': {
+            'formatted_address_poi': '江苏省常州市测试园区',
+            'poiRegions': [
+                {'name': '附近但不在其中', 'direction_desc': '东北100米', 'distance': '100'},
+                {'name': '测试园区', 'direction_desc': '内', 'distance': '0'},
+            ],
+            'pois': [
+                {'name': '测试咖啡馆', 'addr': '测试路1号', 'uid': 'coffee', 'distance': '25',
+                 'point': {'x': 119.96, 'y': 31.68}},
+                {'name': '超范围地点', 'distance': '1100', 'point': {'x': 119.97, 'y': 31.69}},
+                {'name': '错误坐标', 'distance': '10', 'point': {'x': '119.96', 'y': 31.68}},
+                {'name': 42, 'distance': '10', 'point': {'x': 119.96, 'y': 31.68}},
+            ],
+        }}
+        with patch('place_search.requests.get', return_value=response(payload)):
+            result = reverse_geocode(31.6792, 119.9515)
+        self.assertEqual(result['address'], '江苏省常州市测试园区')
+        self.assertEqual(result['place_name'], '测试园区')
+        self.assertEqual(result['nearby_results'], [{
+            'name': '测试咖啡馆', 'address': '测试路1号', 'uid': 'coffee',
+            'location': {'lat': 31.68, 'lng': 119.96}, 'coordinate_system': 'bd09',
+            'distance_m': 25,
+        }])
+        self.assertNotIn('test-server-key', str(result))
+
+    def test_reverse_geocode_selects_nearest_poi_and_safe_fallback_names(self):
+        cases = [
+            ({'poiRegions': [{'name': '不在其中', 'direction_desc': '东北100米'}],
+              'pois': [{'name': '较远', 'distance': '150'},
+                       {'name': '最近', 'distance': '20'},
+                       {'name': '距离无效', 'distance': 'nan'}]}, '最近'),
+            ({'business_info': [{'name': '测试商圈'}]}, '测试商圈'),
+            ({'addressComponent': {'street': '测试路', 'town': '测试镇', 'district': '新北区'}}, '测试路'),
+            ({'addressComponent': {'street': None, 'town': '测试镇', 'district': '新北区'}}, '测试镇'),
+            ({'addressComponent': {'district': '新北区'}}, '新北区'),
+            ({'poiRegions': [{'name': '园' * 50, 'direction_desc': '内'}],
+              'business_info': [{'name': '短商圈'}]}, '短商圈'),
+        ]
+        for fields, expected in cases:
+            with self.subTest(expected=expected), patch('place_search.requests.get', return_value=response({
+                'status': 0, 'result': {'formatted_address': '江苏省常州市测试路', **fields},
+            })):
+                result = reverse_geocode(31.6792, 119.9515)
+            self.assertEqual(result['place_name'], expected)
+            self.assertLessEqual(len(result['place_name'].encode('utf-8')), 128)
+
+    def test_reverse_nearby_results_are_capped_at_ten_valid_points(self):
+        pois = [{'name': f'地点{index}', 'distance': str(index), 'point': {'x': 119.96, 'y': 31.68}}
+                for index in range(12)]
+        with patch('place_search.requests.get', return_value=response({
+            'status': 0, 'result': {'formatted_address': '江苏省常州市测试路', 'pois': pois},
+        })):
+            result = reverse_geocode(31.6792, 119.9515)
+        self.assertEqual(len(result['nearby_results']), 10)
+        self.assertEqual(result['nearby_results'][0]['name'], '地点0')
+        self.assertEqual(result['nearby_results'][9]['name'], '地点9')
+        self.assertEqual(result['place_name'], '地点0')
 
     def test_nearby_and_reverse_reject_invalid_inputs_without_upstream_requests(self):
         with patch('place_search.requests.get') as get:
@@ -161,7 +225,9 @@ class PlaceSearchTests(unittest.TestCase):
         self.assertEqual(nearby.status_code, 200)
         self.assertEqual(nearby.json()['results'][0]['name'], '测试公园')
         self.assertEqual(address.status_code, 200)
-        self.assertEqual(address.json(), {'address': '江苏省常州市测试路'})
+        self.assertEqual(address.json(), {
+            'address': '江苏省常州市测试路', 'place_name': '', 'nearby_results': [],
+        })
         self.assertEqual(client.get('/api/places/around', params={
             'query': '公园', 'latitude': 91, 'longitude': 119.9515,
         }).status_code, 422)
