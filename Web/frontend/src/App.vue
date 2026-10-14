@@ -20,7 +20,6 @@ const settingsPage = ref<'points' | 'mission'>('points')
 type LandingCheck = {
   state: 'mapped_building' | 'road_nearby' | 'no_road'
   search_radius_m: number
-  road_distance_m: number | null
   road_point: number[] | null
   message: string
   landing_verified: false
@@ -73,7 +72,6 @@ const locatingPoint = ref<PointTarget | null>(null)
 const locationFeedback = ref<LocationFeedback | null>(null)
 let locationRequestVersion = 0
 const error = ref('')
-const pointHint = ref('')
 const mapMode = ref<'start' | 'end'>('start')
 const baseMap = ref<'current' | 'earth'>('current')
 const earthMapMounted = ref(false)
@@ -258,7 +256,6 @@ function useCurrentLocation(target: PointTarget) {
       form[target].latitude = Number(coords.latitude.toFixed(6))
       form[target].longitude = Number(coords.longitude.toFixed(6))
       selectedWaypointIndex.value = null
-      pointHint.value = ''
       error.value = ''
       const accuracy = Number.isFinite(coords.accuracy) ? `，定位精度约 ${Math.ceil(coords.accuracy)} 米` : ''
       locationFeedback.value = { target, message: `已填入当前位置${accuracy}，请在地图上核对点位。` }
@@ -677,7 +674,6 @@ async function calculate(flyToRoute: boolean | SubmitEvent = true) {
   loading.value = true
   error.value = ''
   kmzError.value = ''
-  pointHint.value = ''
   preview.value = null
   drawCesiumRoute()
   try {
@@ -795,7 +791,6 @@ async function chooseMapPoint(point: Point) {
   const mode = mapMode.value
   checkingPoint.value = true
   error.value = ''
-  pointHint.value = ''
   try {
     const response = await fetch('/api/landing/check', {
       method: 'POST',
@@ -827,9 +822,6 @@ async function chooseMapPoint(point: Point) {
     // A map click changes the route, but should not reset the camera the user
     // is currently inspecting.
     void calculate(false)
-    if (mode === 'end' && inspection.state === 'road_nearby') {
-      pointHint.value = `终点 B 距已收录道路约 ${inspection.road_distance_m} 米；仅是候选落点，仍需现场核验。`
-    }
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '暂时无法检查该点位。'
   } finally {
@@ -1276,7 +1268,6 @@ onBeforeUnmount(() => {
          <div class="map-top"><div class="map-title-group"><span class="map-badge"><span class="svg-icon icon-layers" aria-hidden="true"></span>{{ (baseMap === 'earth' ? '地球模式' : '当前底图') + (mapViewMode === '3d' ? ' · 3D 航线' : ' · 2D 平面') }}</span><span class="map-mode-chip">{{ form.altitude_m }} m AGL</span><div class="map-source-switch base-map-switch" aria-label="底图"><button type="button" :class="{ active: baseMap === 'current' }" :aria-pressed="baseMap === 'current'" @click="chooseBaseMap('current')">当前底图</button><button type="button" :class="{ active: baseMap === 'earth' }" :aria-pressed="baseMap === 'earth'" @click="chooseBaseMap('earth')">地球模式</button></div><div class="map-source-switch" aria-label="路线数据源"><button type="button" :class="{ active: roadSource === 'local' }" :aria-pressed="roadSource === 'local'" :disabled="loading || checkingPoint" @click="chooseRoadSource('local')">本地</button><button type="button" :class="{ active: roadSource === 'online' }" :aria-pressed="roadSource === 'online'" :disabled="loading || checkingPoint" @click="chooseRoadSource('online')">在线</button></div><div class="map-edit-switch" aria-label="编辑对象"><button type="button" :class="{ active: mapEditMode === 'route' }" :aria-pressed="mapEditMode === 'route'" @click="mapEditMode = 'route'">路径 / A-B</button><button type="button" :class="{ active: mapEditMode === 'node' }" :aria-pressed="mapEditMode === 'node'" @click="mapEditMode = 'node'">节点 / 视角</button></div></div><span class="map-caption">{{ checkingPoint ? '正在检查点位…' : mapEditMode === 'node' ? '点击节点选中，拖动橙色镜头调整朝向' : `地图点击可设置 ${mapMode === 'start' ? '起点 A' : '终点 B'}` }}</span></div>
         <div class="map-view-switch map-source-switch view-mode-switch" aria-label="地图视图"><button type="button" :class="{ active: mapViewMode === '2d' }" :aria-pressed="mapViewMode === '2d'" @click="chooseMapViewMode('2d')">2D 平面</button><button type="button" :class="{ active: mapViewMode === '3d' }" :aria-pressed="mapViewMode === '3d'" @click="chooseMapViewMode('3d')">3D 视角</button></div>
         <div v-if="error" class="map-alert" role="alert">{{ error }}</div>
-        <div v-else-if="pointHint" class="map-point-hint" role="status">{{ pointHint }}</div>
          <div class="map-bottom"><div class="map-switch"><button :class="{ active: mapMode === 'start' }" :disabled="checkingPoint || mapEditMode !== 'route'" @click="mapMode = 'start'"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>设置起点 A</button><button :class="{ active: mapMode === 'end' }" :disabled="checkingPoint || mapEditMode !== 'route'" @click="mapMode = 'end'"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>设置终点 B</button></div><span class="map-radius"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>接路判定 {{ landingSearchRadiusM }} m</span><span class="map-scale"><span class="svg-icon icon-wind" aria-hidden="true"></span>任务高度 {{ form.altitude_m }} m</span></div>
         <div v-if="mapEditMode === 'node' && selectedWaypointIndex !== null && selectedWaypointSetting()" class="node-controller" aria-label="航点控制器"><div class="node-controller-head"><strong>节点 {{ selectedWaypointIndex + 1 }} · 视角控制</strong><span>{{ Math.round(waypointHeading(selectedWaypointIndex)) }}° · {{ selectedWaypointSetting()?.altitude_m ?? form.altitude_m }}m</span></div><div class="node-controller-body"><div class="wasd-pad" aria-label="WASD 平面移动控制"><button type="button" @click="moveSelectedWaypoint(0, 1)">W</button><button type="button" @click="moveSelectedWaypoint(-1, 0)">A</button><button type="button" @click="moveSelectedWaypoint(0, -1)">S</button><button type="button" @click="moveSelectedWaypoint(1, 0)">D</button></div><div class="node-dial"><button type="button" aria-label="逆时针旋转" @click="rotateSelectedWaypoint(-15)">↺</button><strong>{{ Math.round(waypointHeading(selectedWaypointIndex)) }}°</strong><button type="button" aria-label="顺时针旋转" @click="rotateSelectedWaypoint(15)">↻</button></div><div class="node-axis"><button type="button" @click="rotateSelectedWaypoint(0, 5)">镜头上</button><button type="button" @click="rotateSelectedWaypoint(0, -5)">镜头下</button><button type="button" @click="adjustSelectedWaypoint({ altitude_m: Math.min(1500, (selectedWaypointSetting()?.altitude_m ?? form.altitude_m) + 5) })">高度 +</button><button type="button" @click="adjustSelectedWaypoint({ altitude_m: Math.max(1, (selectedWaypointSetting()?.altitude_m ?? form.altitude_m) - 5) })">高度 −</button></div></div><small>W/S 平面前后 ±1m，A/D 平面左右 ±1m，Q/E 航向 ±5°，Z/C 俯仰 ±5°可直接调整水平朝向。</small></div>
         <div v-if="routeAssessment" class="weather-map-legend">沿线初筛：蓝 · 未触发，橙 · 关注，红 · 较强，灰 · 缺测<br />基于 0.25° 场，不是街道级风险，也不代表飞行许可。</div>
@@ -1328,6 +1319,6 @@ onBeforeUnmount(() => {
   .map-view-switch { top: 112px; left: 14px; }
 }
 @media (max-width: 720px) {
-  .map-alert, .map-point-hint { top: 150px; }
+  .map-alert { top: 150px; }
 }
 </style>
