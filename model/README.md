@@ -86,3 +86,7 @@ python -m waterwatch shoreline-change --before-rgb data/raw/shoreline/s001_befor
 - [河海大学堤坝双影像巡测论文](https://jour.hhu.edu.cn/hhdxxbzr/article/abstract/20230320?st=aipub)：双影像有工程应用，但受地面与温差条件影响。
 - [GAM4water 论文](https://www.sciencedirect.com/science/article/pii/S2215016124004060)：无人机 RGB＋热图可用于河段水面识别；其精度不适用于推断本项目的雨后小水坑性能。
 - [卡内基梅隆大学路面积水实验](https://mrsdprojects.ri.cmu.edu/2020teamb/implementation/perception-subsystem/)：积水和路面热平衡时，热图可能没有增益。因此本原型要求 RGB、热像、融合三组实测对照。
+
+## Public data reproduction
+
+See [REPRODUCTION.md](REPRODUCTION.md) for dataset locations, run commands, measured results, and limitations.
