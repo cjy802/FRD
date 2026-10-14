@@ -175,6 +175,20 @@ export class BaiduScene {
     this.engine.requestRender()
   }
 
+  followAt(pose: CameraPose, view: SceneView) {
+    const sceneCoordinate = [pose.longitude, pose.latitude, pose.altitude]
+    const currentRange = this.engine.map.getRange()
+    const currentPitch = this.engine.map.getPitch()
+    // Map headings turn counterclockwise; mission headings turn clockwise.
+    // Keep the observer's distance and tilt while the target tracks the drone.
+    this.engine.map.lookAt(sceneCoordinate, {
+      heading: ((360 - pose.heading) % 360 + 360) % 360,
+      pitch: view === '2d' ? 0 : Number.isFinite(currentPitch) ? currentPitch : 52,
+      range: Number.isFinite(currentRange) && currentRange > 0 ? currentRange : 900,
+    })
+    this.engine.requestRender()
+  }
+
   setTilt(degrees: number) { this.engine.map.setPitch(degrees); this.engine.requestRender() }
 
   getViewAngles(): { heading: number; pitch: number } {

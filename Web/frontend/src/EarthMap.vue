@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { createBaiduScene, type BaiduScene } from './baiduScene'
+import { createBaiduScene, type BaiduScene, type CameraPose } from './baiduScene'
 
 type Point = { longitude: number; latitude: number }
 type AnchorRole = 'start' | 'middle' | 'end'
@@ -11,6 +11,8 @@ const props = defineProps<{
   selectedIndex: number | null; editMode: 'route' | 'node'; footprint: number[][]
   weatherSegments: { start: number[]; end: number[]; level: string }[]
   showStartRange: boolean; showEndRange: boolean; rangeMeters: number
+  flightPose?: (CameraPose & { follow?: boolean; playing?: boolean }) | null
+  flightFootprint?: number[][]
 }>()
 const emit = defineEmits<{ 'select-waypoint': [index: number]; 'choose-point': [point: Point]; 'rotate-waypoint': [heading: number] }>()
 const earthElement = ref<HTMLElement | null>(null)
@@ -22,6 +24,7 @@ const overlay = reactive({
   groundNodes: [] as { x: number; y: number; index: number }[],
   anchors: [] as { id: string; x: number; y: number; label: string; role: 'start' | 'middle' | 'end' }[],
   autoNodes: [] as { index: number; x: number; y: number }[],
+  drone: null as { x: number; y: number; angle: number } | null,
 })
 let scene: BaiduScene | null = null
 let resizeObserver: ResizeObserver | null = null
@@ -31,6 +34,8 @@ let ctrlRotate: { pointerId: number; x: number; y: number; heading: number; pitc
 let mapPointerStart: { x: number; y: number } | null = null
 let mapPointerMoved = false
 let routeSignature = ''
+let footprintTimer: ReturnType<typeof setTimeout> | null = null
+let lastFlightFootprintAt = 0
 
 function anchorPoints(): Anchor[] {
   const valid = props.anchors?.filter(point => Number.isFinite(point.longitude) && Number.isFinite(point.latitude) && Math.abs(point.longitude) <= 180 && Math.abs(point.latitude) <= 90)
@@ -54,6 +59,22 @@ function circle(point: Point) {
     const angle = index * Math.PI / 32
     return [point.longitude + props.rangeMeters / (111320 * Math.cos(point.latitude * Math.PI / 180)) * Math.cos(angle), point.latitude + props.rangeMeters / 111320 * Math.sin(angle), 2]
   })
+}
+function projectedDrone() {
+  const pose = props.flightPose
+  if (!scene || !pose || ![pose.longitude, pose.latitude, pose.altitude, pose.heading].every(Number.isFinite)) return null
+  const altitude = props.viewMode === '2d' ? 3 : pose.altitude
+  const pixel = scene.project([pose.longitude, pose.latitude, altitude])
+  if (!pixel) return null
+  const heading = pose.heading * Math.PI / 180
+  const sampleMetres = 15
+  const latitudeDelta = Math.cos(heading) * sampleMetres / 111320
+  const longitudeDelta = Math.sin(heading) * sampleMetres / (111320 * Math.max(.01, Math.cos(pose.latitude * Math.PI / 180)))
+  const ahead = scene.project([pose.longitude + longitudeDelta, pose.latitude + latitudeDelta, altitude])
+  const behind = ahead ? null : scene.project([pose.longitude - longitudeDelta, pose.latitude - latitudeDelta, altitude])
+  const dx = ahead ? ahead.x - pixel.x : behind ? pixel.x - behind.x : 1
+  const dy = ahead ? ahead.y - pixel.y : behind ? pixel.y - behind.y : 0
+  return { x: pixel.x, y: pixel.y, angle: Math.atan2(dy, dx) * 180 / Math.PI }
 }
 function renderOverlay() {
   if (!scene || !props.active) return
@@ -85,6 +106,8 @@ function renderOverlay() {
   if (JSON.stringify(groundNodes) !== JSON.stringify(overlay.groundNodes)) overlay.groundNodes = groundNodes
   if (JSON.stringify(anchors) !== JSON.stringify(overlay.anchors)) overlay.anchors = anchors
   if (JSON.stringify(autoNodes) !== JSON.stringify(overlay.autoNodes)) overlay.autoNodes = autoNodes
+  const drone = projectedDrone()
+  if (JSON.stringify(drone) !== JSON.stringify(overlay.drone)) overlay.drone = drone
 }
 function refreshRoute() {
   if (!scene) return
@@ -95,18 +118,33 @@ function refreshRoute() {
     ...(props.showStartRange && start ? [circle(start)] : []), ...(props.showEndRange && end ? [circle(end)] : []),
   ])
   const signature = JSON.stringify(coordinates().map(point => point.slice(0, 2)))
-  if (!routeSignature || (signature !== routeSignature && props.editMode === 'route')) scene.fit(coordinates(), props.viewMode)
+  if (!props.flightPose?.follow && (!routeSignature || (signature !== routeSignature && props.editMode === 'route'))) scene.fit(coordinates(), props.viewMode)
   routeSignature = signature
   refreshFootprint()
 }
 function refreshFootprint() {
-  const origin = props.editMode === 'node' && props.selectedIndex !== null ? props.route?.[props.selectedIndex] ?? null : null
-  scene?.setFootprint(origin, props.footprint, props.viewMode)
+  if (!scene) return
+  if (footprintTimer !== null) { clearTimeout(footprintTimer); footprintTimer = null }
+  const apply = () => {
+    footprintTimer = null
+    if (!scene) return
+    const pose = props.flightPose
+    const origin = pose
+      ? [pose.longitude, pose.latitude, pose.altitude]
+      : props.editMode === 'node' && props.selectedIndex !== null ? props.route?.[props.selectedIndex] ?? null : null
+    scene.setFootprint(origin, pose ? props.flightFootprint ?? [] : props.footprint, props.viewMode)
+    lastFlightFootprintAt = performance.now()
+  }
+  if (!props.flightPose) { apply(); return }
+  const wait = Math.max(0, 120 - (performance.now() - lastFlightFootprintAt))
+  if (!wait) apply()
+  else footprintTimer = setTimeout(apply, wait)
 }
 function applyViewMode() {
   scene?.setView(props.viewMode, coordinates())
   tilt.value = props.viewMode === '2d' ? 0 : 52
   refreshRoute()
+  if (props.flightPose?.follow) scene?.followAt(props.flightPose, props.viewMode)
   renderOverlay()
 }
 function changeTilt(event: Event) { tilt.value = Number((event.target as HTMLInputElement).value); scene?.setTilt(tilt.value) }
@@ -116,7 +154,7 @@ defineExpose({ focusWaypoint })
 function onMapPointerDown(event: PointerEvent) { mapPointerStart = { x: event.clientX, y: event.clientY }; mapPointerMoved = false }
 function onMapPointerMove(event: PointerEvent) { if (mapPointerStart && Math.hypot(event.clientX - mapPointerStart.x, event.clientY - mapPointerStart.y) > 5) mapPointerMoved = true }
 function onCtrlRotateDown(event: PointerEvent) {
-  if (!scene || !props.active || props.viewMode !== '3d' || ctrlRotate || event.button !== 0 || !event.isPrimary || !event.ctrlKey ||
+  if (!scene || !props.active || props.flightPose?.playing || props.viewMode !== '3d' || ctrlRotate || event.button !== 0 || !event.isPrimary || !event.ctrlKey ||
       !earthElement.value?.contains(event.target as Node)) return
   event.preventDefault()
   event.stopImmediatePropagation()
@@ -156,16 +194,16 @@ function finishCtrlRotate() {
   window.removeEventListener('pointerup', onCtrlRotateEnd, true)
   window.removeEventListener('pointercancel', onCtrlRotateEnd, true)
   window.removeEventListener('blur', finishCtrlRotate)
-  scene?.setInputs(props.active)
+  scene?.setInputs(props.active && !props.flightPose?.playing)
 }
 function onMapClick(event: MouseEvent) {
-  if (!scene || !props.active || props.editMode !== 'route' || mapPointerMoved || !earthElement.value) return
+  if (!scene || !props.active || props.flightPose?.playing || props.editMode !== 'route' || mapPointerMoved || !earthElement.value) return
   const bounds = earthElement.value.getBoundingClientRect()
   const point = scene.pick(event.clientX - bounds.left, event.clientY - bounds.top)
   if (point) emit('choose-point', { longitude: Number(point[0].toFixed(5)), latitude: Number(point[1].toFixed(5)) })
 }
 function onNodeDown(event: PointerEvent, index: number) {
-  if (event.button !== 0 || !event.isPrimary || !props.active) return
+  if (event.button !== 0 || !event.isPrimary || !props.active || props.flightPose?.playing) return
   event.preventDefault(); event.stopPropagation()
   finishDrag()
   emit('select-waypoint', index)
@@ -187,10 +225,11 @@ function onNodeMove(event: PointerEvent) {
 function finishDrag() {
   const previous = drag; drag = null
   if (previous?.element.hasPointerCapture(previous.pointerId)) previous.element.releasePointerCapture(previous.pointerId)
-  scene?.setInputs(props.active)
+  scene?.setInputs(props.active && !props.flightPose?.playing)
   mapPointerStart = null
 }
 function onNodeUp(event: PointerEvent) { if (event.pointerId === drag?.pointerId) finishDrag() }
+function onNodeClick(index: number) { if (!props.flightPose?.playing) emit('select-waypoint', index) }
 async function initialize() {
   status.value = '正在加载地球模式…'; failed.value = false
   try {
@@ -201,6 +240,7 @@ async function initialize() {
     scene.onFrame(renderOverlay)
     applyViewMode()
     scene.setActive(props.active)
+    scene.setInputs(props.active && !props.flightPose?.playing)
     resizeObserver = new ResizeObserver(() => scene?.resize())
     resizeObserver.observe(earthElement.value!)
     status.value = ''
@@ -213,12 +253,21 @@ onMounted(() => {
   window.addEventListener('pointerup', finishDrag); window.addEventListener('pointercancel', finishDrag); window.addEventListener('blur', finishDrag)
   void initialize()
 })
-watch(() => props.active, async active => { finishDrag(); finishCtrlRotate(); await nextTick(); scene?.setActive(active); if (active) { scene?.resize(); renderOverlay() } })
+watch(() => props.active, async active => { finishDrag(); finishCtrlRotate(); await nextTick(); scene?.setActive(active); scene?.setInputs(active && !props.flightPose?.playing); if (active) { scene?.resize(); renderOverlay() } })
 watch(() => props.viewMode, () => { finishDrag(); finishCtrlRotate(); applyViewMode() })
 watch(() => [props.route, props.start, props.end, props.anchors, props.weatherSegments, props.showStartRange, props.showEndRange, props.rangeMeters], refreshRoute, { deep: true })
 watch(() => [props.footprint, props.selectedIndex, props.editMode], () => { refreshFootprint(); renderOverlay() }, { deep: true, flush: 'sync' })
+watch(() => props.flightPose, pose => {
+  if (pose?.playing) { finishDrag(); finishCtrlRotate() }
+  scene?.setInputs(props.active && !pose?.playing)
+  if (pose?.follow && scene && props.active) scene.followAt(pose, props.viewMode)
+  refreshFootprint()
+  renderOverlay()
+}, { deep: true, flush: 'sync' })
+watch(() => props.flightFootprint, refreshFootprint, { deep: true, flush: 'sync' })
 onBeforeUnmount(() => {
   unmounted = true; finishDrag(); finishCtrlRotate(); resizeObserver?.disconnect()
+  if (footprintTimer !== null) clearTimeout(footprintTimer)
   window.removeEventListener('pointerup', finishDrag); window.removeEventListener('pointercancel', finishDrag); window.removeEventListener('blur', finishDrag)
   scene?.dispose(); scene = null
 })
@@ -231,7 +280,8 @@ onBeforeUnmount(() => {
       <span v-for="anchor in overlay.anchors" :key="anchor.id" class="earth-endpoint" :class="anchor.role" :style="{ left: `${anchor.x}px`, top: `${anchor.y}px` }">{{ anchor.label }}</span>
       <span v-for="node in overlay.autoNodes" :key="`auto-${node.index}`" class="earth-auto-node" aria-hidden="true" :style="{ left: `${node.x}px`, top: `${node.y}px` }"></span>
       <span v-for="node in overlay.groundNodes" :key="`ground-${node.index}`" class="earth-ground-node" aria-hidden="true" :style="{ left: `${node.x}px`, top: `${node.y}px` }"><span></span></span>
-      <button v-for="node in overlay.nodes" :key="node.index" type="button" class="earth-node" :class="{ selected: node.index === selectedIndex }" :aria-label="`选择航点 ${node.index + 1}`" :aria-pressed="node.index === selectedIndex" :data-waypoint-index="node.index" :style="{ left: `${node.x}px`, top: `${node.y}px` }" @pointerdown="onNodeDown($event, node.index)" @pointermove="onNodeMove" @pointerup="onNodeUp" @pointercancel="onNodeUp" @lostpointercapture="onNodeUp" @click.stop="emit('select-waypoint', node.index)"><span></span></button>
+      <button v-for="node in overlay.nodes" :key="node.index" type="button" class="earth-node" :class="{ selected: node.index === selectedIndex }" :aria-label="`选择航点 ${node.index + 1}`" :aria-pressed="node.index === selectedIndex" :data-waypoint-index="node.index" :disabled="flightPose?.playing" :style="{ left: `${node.x}px`, top: `${node.y}px` }" @pointerdown="onNodeDown($event, node.index)" @pointermove="onNodeMove" @pointerup="onNodeUp" @pointercancel="onNodeUp" @lostpointercapture="onNodeUp" @click.stop="onNodeClick(node.index)"><span></span></button>
+      <span v-if="overlay.drone" class="earth-flight-drone" role="img" aria-label="模拟无人机位置" :style="{ left: `${overlay.drone.x}px`, top: `${overlay.drone.y}px`, transform: `translate(-50%, -50%) rotate(${overlay.drone.angle}deg)` }"><img src="/svg/jiantou.svg" alt="" /></span>
     </div>
     <label v-if="viewMode === '3d' && !status" class="earth-tilt-control">观察角度 <input aria-label="地球 3D 观察角度" type="range" min="0" max="75" :value="tilt" @input="changeTilt" /><span>{{ tilt }}°</span></label>
     <div v-if="status" class="earth-map-status" role="status"><span>{{ status }}</span><button v-if="failed" type="button" @click="initialize">重试</button></div>
@@ -257,6 +307,8 @@ onBeforeUnmount(() => {
 .earth-endpoint.middle { background: #197b78; }
 .earth-endpoint.end { background: #5b5fc7; }
 .earth-auto-node { position: absolute; width: 6px; height: 6px; transform: translate(-50%, -50%); border: 1px solid #fff; border-radius: 50%; background: #00aa83; box-shadow: 0 1px 3px rgb(18 52 59 / .5); pointer-events: none; }
+.earth-flight-drone { position: absolute; z-index: 3; width: 40px; height: 40px; display: grid; place-items: center; border: 2px solid #fff; border-radius: 50%; background: #126cb7; box-shadow: 0 0 0 5px rgb(18 108 183 / .19), 0 4px 14px rgb(9 42 74 / .45); pointer-events: none; will-change: left, top, transform; }
+.earth-flight-drone img { width: 28px; height: 28px; display: block; }
 .earth-tilt-control { position: absolute; z-index: 2; right: 16px; top: 80px; display: flex; align-items: center; gap: 6px; padding: 7px 10px; background: #fff; border: 1px solid #d8dde3; border-radius: 6px; font-size: 12px; }
 .earth-tilt-control input { width: 90px; }
 .earth-map-status { position: absolute; z-index: 2; top: 50%; left: 50%; display: grid; justify-items: center; gap: 9px; max-width: min(320px, 80%); transform: translate(-50%, -50%); padding: 12px 16px; background: #fff; border: 1px solid #d8dde3; color: #424242; text-align: center; font-size: 13px; }

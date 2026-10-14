@@ -11,6 +11,7 @@ import type { CameraPose } from './baiduScene'
 import type { RouteAssessment, WeatherLimits } from './weatherTypes'
 import { weatherOnlyChecks } from './weatherPresentation'
 import type { RoadPreview as Preview } from './routeTypes'
+import { createFlightTimeline, sampleFlight, type FlightSample } from './flightPlayback'
 
 type Point = { latitude: number; longitude: number }
 type MajorPoint = { id: string; latitude: number | null; longitude: number | null }
@@ -129,6 +130,15 @@ const cameraPreviewElement = ref<HTMLElement | null>(null)
 const cesiumCameraElement = ref<HTMLElement | null>(null)
 const cameraPreviewReady = ref(false)
 let cameraPreviewViewer: any = null
+const flightActive = ref(false)
+const flightPlaying = ref(false)
+const flightProgress = ref(0)
+const flightSpeed = ref(1)
+const flightCameraPose = ref<CameraPose | null>(null)
+let flightFrame: number | null = null
+let flightLastFrame: number | null = null
+let flightLastCameraUpdate = 0
+let flightWasPlayingBeforeSeek = false
 let waypointRenderFrame: number | null = null
 let waypointRouteDirty = false
 let selectedViewFrustum: ReturnType<typeof cameraFrustum> | null = null
@@ -166,6 +176,34 @@ const editorWaypoints = computed(() => {
   return [...indexes].sort((first, second) => first - second).map((index) => ({ index, setting: waypointSettings.value[index]! }))
 })
 const earthRoute = computed(() => preview.value?.geometry.coordinates.map(([longitude, latitude], index) => [longitude, latitude, waypointSettings.value[index]?.altitude_m ?? form.altitude_m]) ?? null)
+const flightTimeline = computed(() => {
+  const coordinates = preview.value?.geometry.coordinates
+  if (!coordinates || coordinates.length < 2) return null
+  try {
+    return createFlightTimeline({ coordinates, waypointSettings: waypointSettings.value,
+      speedKmh: Number(form.speed_kmh), defaultAltitudeM: Number(form.altitude_m) })
+  } catch { return null }
+})
+const flightSample = computed<FlightSample | null>(() => flightActive.value && flightTimeline.value
+  ? sampleFlight(flightTimeline.value, flightProgress.value) : null)
+const mapFlightPose = computed(() => flightSample.value ? {
+  longitude: flightSample.value.longitude, latitude: flightSample.value.latitude,
+  altitude: flightSample.value.altitude, heading: flightSample.value.heading,
+  pitch: flightSample.value.pitch, follow: true, playing: flightActive.value,
+} : null)
+const flightTimeLabel = computed(() => {
+  const sample = flightSample.value
+  const timeline = flightTimeline.value
+  if (!sample || !timeline) return '00:00 / 00:00'
+  return `${formatFlightTime(sample.elapsedSeconds)} / ${formatFlightTime(timeline.durationSeconds)}`
+})
+const flightNodeLabel = computed(() => {
+  const sample = flightSample.value
+  if (!sample) return '等待播放'
+  return sample.segmentFraction < .02 || sample.segmentFraction > .98
+    ? `节点 ${sample.waypointIndex + 1}`
+    : `节点 ${sample.segmentIndex + 1} → ${sample.segmentIndex + 2}`
+})
 const selectedCameraPose = computed<CameraPose | null>(() => {
   const index = selectedWaypointIndex.value
   const coordinate = index === null ? null : preview.value?.geometry.coordinates[index]
@@ -173,10 +211,19 @@ const selectedCameraPose = computed<CameraPose | null>(() => {
   return { longitude: coordinate[0], latitude: coordinate[1], altitude: waypointSettings.value[index]?.altitude_m ?? form.altitude_m,
     heading: waypointHeading(index), pitch: waypointSettings.value[index]?.gimbal_pitch_angle ?? 0 }
 })
+const currentCameraPose = computed<CameraPose | null>(() => flightActive.value ? flightCameraPose.value : selectedCameraPose.value)
 const earthFootprint = computed(() => {
   const index = selectedWaypointIndex.value
   if (!Cesium || !preview.value || index === null || mapEditMode.value !== 'node') return []
   return cameraFrustum(index, Math.max(10, Number(form.altitude_m) || 100)).ground.map((position: any) => {
+    const point = Cesium.Cartographic.fromCartesian(position)
+    return [Cesium.Math.toDegrees(point.longitude), Cesium.Math.toDegrees(point.latitude), point.height]
+  })
+})
+const flightFootprint = computed(() => {
+  const pose = flightCameraPose.value
+  if (!flightActive.value || !Cesium || !pose) return []
+  return cameraFrustumAt(pose).ground.map((position: any) => {
     const point = Cesium.Cartographic.fromCartesian(position)
     return [Cesium.Math.toDegrees(point.longitude), Cesium.Math.toDegrees(point.latitude), point.height]
   })
@@ -231,15 +278,107 @@ watch(workspacePanel, async () => {
   if (workspacePanel.value === 'map') viewer?.resize()
 })
 
+function formatFlightTime(seconds: number) {
+  const value = Math.max(0, Math.floor(seconds))
+  return `${String(Math.floor(value / 60)).padStart(2, '0')}:${String(value % 60).padStart(2, '0')}`
+}
+
+function pauseFlight() {
+  flightPlaying.value = false
+  flightLastFrame = null
+  if (flightFrame !== null) cancelAnimationFrame(flightFrame)
+  flightFrame = null
+}
+
+function stopFlight() {
+  pauseFlight()
+  flightActive.value = false
+  flightProgress.value = 0
+  flightCameraPose.value = null
+  flightWasPlayingBeforeSeek = false
+  syncCesiumFlight()
+  if (cameraPreviewViewer) void nextTick(updateCameraPreview)
+}
+
+function updateFlightCamera(now = performance.now(), force = false) {
+  if (!flightActive.value || (!force && now - flightLastCameraUpdate < 80)) return
+  const sample = flightSample.value
+  if (!sample) return
+  flightLastCameraUpdate = now
+  flightCameraPose.value = { longitude: sample.longitude, latitude: sample.latitude,
+    altitude: sample.altitude, heading: sample.heading, pitch: sample.pitch }
+  if (baseMap.value === 'current') void nextTick(updateCameraPreview)
+}
+
+function advanceFlight(now: number) {
+  flightFrame = null
+  if (!flightPlaying.value) return
+  const duration = flightTimeline.value?.durationSeconds ?? 0
+  if (duration <= 0) { stopFlight(); return }
+  if (flightLastFrame !== null) {
+    const elapsed = Math.max(0, Math.min(.25, (now - flightLastFrame) / 1000))
+    flightProgress.value = Math.min(1, flightProgress.value + elapsed * flightSpeed.value / duration)
+  }
+  flightLastFrame = now
+  syncCesiumFlight()
+  updateFlightCamera(now)
+  if (flightProgress.value >= 1) { pauseFlight(); updateFlightCamera(now, true); return }
+  flightFrame = requestAnimationFrame(advanceFlight)
+}
+
+function playFlight() {
+  if (!flightTimeline.value) return
+  if (flightProgress.value >= 1) flightProgress.value = 0
+  flightActive.value = true
+  mapEditMode.value = 'route'
+  flightPlaying.value = true
+  flightLastFrame = null
+  syncCesiumFlight()
+  updateFlightCamera(performance.now(), true)
+  if (flightFrame === null) flightFrame = requestAnimationFrame(advanceFlight)
+}
+
+function toggleFlight() {
+  if (flightPlaying.value) pauseFlight()
+  else playFlight()
+}
+
+function seekFlight(event: Event) {
+  if (!flightTimeline.value) return
+  flightActive.value = true
+  mapEditMode.value = 'route'
+  flightProgress.value = Math.max(0, Math.min(1, Number((event.target as HTMLInputElement).value) / 1000))
+  if (flightProgress.value >= 1) pauseFlight()
+  syncCesiumFlight()
+  updateFlightCamera(performance.now(), true)
+}
+
+function beginFlightSeek() {
+  flightWasPlayingBeforeSeek = flightPlaying.value
+  pauseFlight()
+}
+
+function endFlightSeek() {
+  const resume = flightWasPlayingBeforeSeek
+  flightWasPlayingBeforeSeek = false
+  if (resume && flightProgress.value < 1) playFlight()
+}
+
+watch(preview, (current, previous) => {
+  if (current !== previous) stopFlight()
+})
+
 async function chooseBaseMap(next: 'current' | 'earth') {
   if (baseMap.value === next) return
+  pauseFlight()
   cancelCameraPreviewDrag()
   finishMapCameraDrag()
   if (next === 'earth') earthMapMounted.value = true
   baseMap.value = next
   await nextTick()
   if (viewer) viewer.useDefaultRenderLoop = next === 'current'
-  if (cameraPreviewViewer) cameraPreviewViewer.useDefaultRenderLoop = next === 'current' && mapEditMode.value === 'node' && selectedWaypointIndex.value !== null
+  syncCesiumFlight()
+  if (cameraPreviewViewer) cameraPreviewViewer.useDefaultRenderLoop = next === 'current' && (flightActive.value || (mapEditMode.value === 'node' && selectedWaypointIndex.value !== null))
   if (next === 'current') {
     viewer?.resize()
     applyCurrentMapView()
@@ -261,6 +400,7 @@ function chooseMapViewMode(next: '2d' | '3d') {
   finishMapCameraDrag()
   mapViewMode.value = next
   if (baseMap.value === 'current') applyCurrentMapView()
+  syncCesiumFlight()
 }
 
 watch([mapEditMode, selectedWaypointIndex], () => {
@@ -452,9 +592,14 @@ function cameraFrustum(index: number, routeAltitude: number) {
   const coordinates = preview.value?.geometry.coordinates ?? []
   const [longitude, latitude] = coordinates[index] ?? [0, 0]
   const setting = waypointSettings.value[index]
-  const altitude = setting?.altitude_m ?? routeAltitude
-  const yaw = waypointHeading(index) * Math.PI / 180
-  const pitch = (setting?.gimbal_pitch_angle ?? 0) * Math.PI / 180
+  return cameraFrustumAt({ longitude, latitude, altitude: setting?.altitude_m ?? routeAltitude,
+    heading: waypointHeading(index), pitch: setting?.gimbal_pitch_angle ?? 0 })
+}
+
+function cameraFrustumAt(pose: CameraPose) {
+  const { longitude, latitude, altitude } = pose
+  const yaw = pose.heading * Math.PI / 180
+  const pitch = pose.pitch * Math.PI / 180
   const halfHorizontal = 78 * Math.PI / 360
   const halfVertical = 58 * Math.PI / 360
   const forward: LocalVector = { east: Math.sin(yaw) * Math.cos(pitch), north: Math.cos(yaw) * Math.cos(pitch), up: Math.sin(pitch) }
@@ -577,6 +722,7 @@ function onWaypointEditorToggle(event: Event) {
 
 function selectWaypoint(index: number) {
   if (!preview.value || index < 0 || index >= waypointSettings.value.length) return
+  if (flightActive.value) stopFlight()
   if (selectedWaypointIndex.value === index && mapEditMode.value === 'node') return
   selectedWaypointIndex.value = index
   mapEditMode.value = 'node'
@@ -614,18 +760,13 @@ function focusSelectedWaypoint() {
 
 function updateCameraPreview() {
   if (baseMap.value === 'earth') return
-  if (!preview.value || selectedWaypointIndex.value === null || mapEditMode.value !== 'node' || !Cesium) return
+  const pose = currentCameraPose.value
+  if (!pose || !Cesium) return
   if (!cameraPreviewViewer) initCameraPreview()
   if (!cameraPreviewViewer) return
-  const index = selectedWaypointIndex.value
-  const [longitude, latitude] = preview.value.geometry.coordinates[index]
-  const setting = waypointSettings.value[index]
-  const altitude = setting?.altitude_m ?? form.altitude_m
-  const heading = waypointHeading(index)
-  const pitch = setting?.gimbal_pitch_angle ?? 0
   cameraPreviewViewer.camera.setView({
-    destination: Cesium.Cartesian3.fromDegrees(longitude, latitude, altitude),
-    orientation: { heading: Cesium.Math.toRadians(heading), pitch: Cesium.Math.toRadians(pitch), roll: 0 },
+    destination: Cesium.Cartesian3.fromDegrees(pose.longitude, pose.latitude, pose.altitude),
+    orientation: { heading: Cesium.Math.toRadians(pose.heading), pitch: Cesium.Math.toRadians(pose.pitch), roll: 0 },
   })
   cameraPreviewViewer.camera.frustum.near = 0.5
   cameraPreviewViewer.camera.frustum.far = 5000
@@ -638,7 +779,7 @@ function handleCameraPreviewPointerDown(event: PointerEvent) {
   const index = selectedWaypointIndex.value
   const setting = selectedWaypointSetting()
   const element = cameraPreviewElement.value
-  if (event.button !== 0 || !event.isPrimary || cameraPreviewDrag || mapEditMode.value !== 'node' || index === null || !setting || !element) return
+  if (event.button !== 0 || !event.isPrimary || cameraPreviewDrag || flightActive.value || mapEditMode.value !== 'node' || index === null || !setting || !element) return
   event.preventDefault()
   const bounds = element.getBoundingClientRect()
   cameraPreviewDrag = {
@@ -701,9 +842,9 @@ function finishMapCameraDrag() {
   mapCameraInputsBeforeDrag = null
 }
 
-watch([mapEditMode, selectedWaypointIndex, baseMap], async () => {
+watch([mapEditMode, selectedWaypointIndex, baseMap, flightActive], async () => {
   await nextTick()
-  if (mapEditMode.value === 'node' && selectedWaypointIndex.value !== null) {
+  if (flightActive.value || (mapEditMode.value === 'node' && selectedWaypointIndex.value !== null)) {
     updateCameraPreview()
     if (cameraPreviewViewer && baseMap.value === 'current') {
       cameraPreviewViewer.useDefaultRenderLoop = true
@@ -711,7 +852,7 @@ watch([mapEditMode, selectedWaypointIndex, baseMap], async () => {
       cameraPreviewViewer.scene.requestRender()
     }
   }
-  if (cameraPreviewViewer && (baseMap.value === 'earth' || mapEditMode.value !== 'node' || selectedWaypointIndex.value === null)) {
+  if (cameraPreviewViewer && (baseMap.value === 'earth' || (!flightActive.value && (mapEditMode.value !== 'node' || selectedWaypointIndex.value === null)))) {
     cameraPreviewViewer.useDefaultRenderLoop = false
   }
 })
@@ -721,7 +862,7 @@ watch(mapEditMode, () => { drawCesiumRoute(false) })
 function handleWaypointKeydown(event: KeyboardEvent) {
   const target = event.target as HTMLElement | null
   if (target?.matches('input, select, textarea, [contenteditable="true"]')) return
-  if (mapEditMode.value !== 'node' || selectedWaypointIndex.value === null) return
+  if (flightActive.value || mapEditMode.value !== 'node' || selectedWaypointIndex.value === null) return
   const key = event.key.toLowerCase()
   if (key === 'w' || key === 's') {
     event.preventDefault()
@@ -1000,6 +1141,38 @@ async function chooseMapPoint(point: Point, target: string = selectedAnchorId.va
   } finally {
     checkingPoint.value = false
   }
+}
+
+function syncCesiumFlight() {
+  if (!viewer || !Cesium) return
+  const previous = viewer.entities.getById('flight-drone')
+  const sample = flightSample.value
+  const visible = baseMap.value === 'current' && mapElement.value?.classList.contains('visible')
+  if (!sample || !visible) {
+    if (previous) viewer.entities.remove(previous)
+    viewer.scene.requestRender()
+    return
+  }
+  const entity = previous ?? viewer.entities.add({
+    id: 'flight-drone', name: '模拟无人机位置',
+    position: Cesium.Cartesian3.fromDegrees(sample.longitude, sample.latitude, sample.altitude),
+    billboard: { image: '/svg/jiantou.svg', width: 38, height: 38,
+      verticalOrigin: Cesium.VerticalOrigin.CENTER, horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
+      disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      color: Cesium.Color.fromCssColorString('#1477bd') },
+  })
+  entity.position = Cesium.Cartesian3.fromDegrees(sample.longitude, sample.latitude, sample.altitude)
+  entity.billboard.rotation = Cesium.Math.toRadians(sample.heading - 90)
+  if (mapViewMode.value === '2d') {
+    viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(sample.longitude, sample.latitude, 900) })
+  } else {
+    const rear = offsetCoordinate(sample.longitude, sample.latitude, (sample.heading + 180) % 360, 200)
+    viewer.camera.setView({
+      destination: Cesium.Cartesian3.fromDegrees(rear[0], rear[1], sample.altitude + 160),
+      orientation: { heading: Cesium.Math.toRadians(sample.heading), pitch: Cesium.Math.toRadians(-28), roll: 0 },
+    })
+  }
+  viewer.scene.requestRender()
 }
 
 function drawCesiumRoute(flyToRoute = true) {
@@ -1373,6 +1546,9 @@ onMounted(() => {
   window.addEventListener('keydown', handleWaypointKeydown)
   window.addEventListener('blur', cancelCameraPreviewDrag)
   window.addEventListener('blur', finishMapCameraDrag)
+  window.addEventListener('blur', pauseFlight)
+  window.addEventListener('pointerup', endFlightSeek)
+  window.addEventListener('pointercancel', endFlightSeek)
   window.addEventListener('pointerup', finishMapCameraDrag)
   scheduleDepartureClock()
   void calculate()
@@ -1387,9 +1563,13 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleWaypointKeydown)
   window.removeEventListener('blur', cancelCameraPreviewDrag)
   window.removeEventListener('blur', finishMapCameraDrag)
+  window.removeEventListener('blur', pauseFlight)
+  window.removeEventListener('pointerup', endFlightSeek)
+  window.removeEventListener('pointercancel', endFlightSeek)
   window.removeEventListener('pointerup', finishMapCameraDrag)
   cancelCameraPreviewDrag()
   finishMapCameraDrag()
+  pauseFlight()
   if (departureClockTimer) clearTimeout(departureClockTimer)
   stopColumnResize()
   cancelCalculation()
@@ -1445,18 +1625,25 @@ onBeforeUnmount(() => {
 
       <section id="route-map" class="map-panel" :class="{ 'panel-active': workspacePanel === 'map' }" aria-label="航线地图">
         <div ref="mapElement" class="cesium-map" :class="{ visible: mapReady && baseMap === 'current' }"></div>
-        <EarthMap v-if="earthMapMounted" ref="earthMapRef" :active="baseMap === 'earth'" :view-mode="mapViewMode" :start="form.start" :end="form.end" :anchors="mapAnchors" :route="earthRoute" :selected-index="selectedWaypointIndex" :edit-mode="mapEditMode" :footprint="earthFootprint" :weather-segments="routeAssessment?.weather_risk.segments ?? []" :show-start-range="showStartRange" :show-end-range="showEndRange" :range-meters="landingSearchRadiusM" @select-waypoint="selectWaypoint" @choose-point="chooseMapPoint" @rotate-waypoint="setSelectedWaypointOrientation($event, undefined, true)" />
+        <EarthMap v-if="earthMapMounted" ref="earthMapRef" :active="baseMap === 'earth'" :view-mode="mapViewMode" :start="form.start" :end="form.end" :anchors="mapAnchors" :route="earthRoute" :selected-index="selectedWaypointIndex" :edit-mode="mapEditMode" :footprint="earthFootprint" :flight-pose="mapFlightPose" :flight-footprint="flightFootprint" :weather-segments="routeAssessment?.weather_risk.segments ?? []" :show-start-range="showStartRange" :show-end-range="showEndRange" :range-meters="landingSearchRadiusM" @select-waypoint="selectWaypoint" @choose-point="chooseMapPoint" @rotate-waypoint="setSelectedWaypointOrientation($event, undefined, true)" />
         <div v-if="!mapReady && baseMap === 'current'" class="map-fallback">
           <div class="grid-lines"></div>
           <p>地图底图加载中</p><small>道路路线按所选数据源计算</small>
         </div>
-         <div class="map-top"><div class="map-title-group"><span class="map-badge"><span class="svg-icon icon-layers" aria-hidden="true"></span>{{ (baseMap === 'earth' ? '地球模式' : '当前底图') + (mapViewMode === '3d' ? ' · 3D 航线' : ' · 2D 平面') }}</span><span class="map-mode-chip">{{ form.altitude_m }} m AGL</span><div class="map-source-switch base-map-switch" aria-label="底图"><button type="button" :class="{ active: baseMap === 'current' }" :aria-pressed="baseMap === 'current'" @click="chooseBaseMap('current')">当前底图</button><button type="button" :class="{ active: baseMap === 'earth' }" :aria-pressed="baseMap === 'earth'" @click="chooseBaseMap('earth')">地球模式</button></div><div class="map-source-switch" aria-label="路线数据源"><button type="button" :class="{ active: roadSource === 'local' }" :aria-pressed="roadSource === 'local'" :disabled="loading || checkingPoint" @click="chooseRoadSource('local')">本地</button><button type="button" :class="{ active: roadSource === 'online' }" :aria-pressed="roadSource === 'online'" :disabled="loading || checkingPoint" @click="chooseRoadSource('online')">在线</button></div><div class="map-edit-switch" aria-label="编辑对象"><button type="button" :class="{ active: mapEditMode === 'route' }" :aria-pressed="mapEditMode === 'route'" @click="mapEditMode = 'route'">路径 / 主点</button><button type="button" :class="{ active: mapEditMode === 'node' }" :aria-pressed="mapEditMode === 'node'" @click="mapEditMode = 'node'">节点 / 视角</button></div></div><span class="map-caption">{{ checkingPoint ? '正在检查点位…' : mapEditMode === 'node' ? '点击节点选中，拖动橙色镜头调整朝向' : `地图点击可设置 ${selectedAnchorChoice?.title} ${selectedAnchorChoice?.label}` }}</span></div>
+         <div class="map-top"><div class="map-title-group"><span class="map-badge"><span class="svg-icon icon-layers" aria-hidden="true"></span>{{ (baseMap === 'earth' ? '地球模式' : '当前底图') + (mapViewMode === '3d' ? ' · 3D 航线' : ' · 2D 平面') }}</span><span class="map-mode-chip">{{ form.altitude_m }} m AGL</span><div class="map-source-switch base-map-switch" aria-label="底图"><button type="button" :class="{ active: baseMap === 'current' }" :aria-pressed="baseMap === 'current'" @click="chooseBaseMap('current')">当前底图</button><button type="button" :class="{ active: baseMap === 'earth' }" :aria-pressed="baseMap === 'earth'" @click="chooseBaseMap('earth')">地球模式</button></div><div class="map-source-switch" aria-label="路线数据源"><button type="button" :class="{ active: roadSource === 'local' }" :aria-pressed="roadSource === 'local'" :disabled="loading || checkingPoint" @click="chooseRoadSource('local')">本地</button><button type="button" :class="{ active: roadSource === 'online' }" :aria-pressed="roadSource === 'online'" :disabled="loading || checkingPoint" @click="chooseRoadSource('online')">在线</button></div><div class="map-edit-switch" aria-label="编辑对象"><button type="button" :class="{ active: mapEditMode === 'route' }" :aria-pressed="mapEditMode === 'route'" @click="mapEditMode = 'route'">路径 / 主点</button><button type="button" :class="{ active: mapEditMode === 'node' }" :aria-pressed="mapEditMode === 'node'" @click="mapEditMode = 'node'">节点 / 视角</button></div></div>
+          <div class="flight-controls" aria-label="模拟飞行回放">
+            <button class="flight-toggle" type="button" :disabled="!flightTimeline" :aria-label="flightPlaying ? '暂停模拟飞行' : flightProgress >= 1 ? '重新播放模拟飞行' : flightActive ? '继续模拟飞行' : '开始模拟飞行'" :aria-pressed="flightPlaying" :title="flightPlaying ? '暂停' : flightProgress >= 1 ? '重播' : flightActive ? '继续' : '模拟飞行'" @click="toggleFlight"><span class="svg-icon icon-drone" aria-hidden="true"></span></button>
+            <label class="flight-speed">倍率<select v-model.number="flightSpeed" aria-label="模拟飞行倍率" :disabled="!flightTimeline"><option :value="0.5">0.5×</option><option :value="1">1×</option><option :value="2">2×</option><option :value="4">4×</option><option :value="8">8×</option></select></label>
+            <label class="flight-progress-wrap"><span class="sr-only">模拟飞行进度</span><input class="flight-progress" type="range" min="0" max="1000" step="1" :value="Math.round(flightProgress * 1000)" :disabled="!flightTimeline" :aria-valuetext="`${Math.round(flightProgress * 100)}%，${flightTimeLabel}`" :title="flightTimeLabel" @pointerdown="beginFlightSeek" @pointerup="endFlightSeek" @pointercancel="endFlightSeek" @input="seekFlight" /></label>
+            <span class="flight-percent">{{ Math.round(flightProgress * 100) }}%</span>
+          </div>
+          <span v-if="!flightTimeline" class="map-caption">{{ checkingPoint ? '正在检查点位…' : mapEditMode === 'node' ? '点击节点选中，拖动橙色镜头调整朝向' : `地图点击可设置 ${selectedAnchorChoice?.title} ${selectedAnchorChoice?.label}` }}</span></div>
         <div class="map-view-switch map-source-switch view-mode-switch" aria-label="地图视图"><button type="button" :class="{ active: mapViewMode === '2d' }" :aria-pressed="mapViewMode === '2d'" @click="chooseMapViewMode('2d')">2D 平面</button><button type="button" :class="{ active: mapViewMode === '3d' }" :aria-pressed="mapViewMode === '3d'" @click="chooseMapViewMode('3d')">3D 视角</button></div>
         <div v-if="error" class="map-alert" role="alert">{{ error }}</div>
          <div class="map-bottom"><label class="map-anchor-picker"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>地图选点 <select v-model="selectedAnchorId" :disabled="checkingPoint || mapEditMode !== 'route'"><option v-for="choice in anchorChoices" :key="choice.id" :value="choice.id">{{ choice.label }} · {{ choice.title }}</option></select></label><span class="map-radius"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>接路判定 {{ landingSearchRadiusM }} m</span><span class="map-scale"><span class="svg-icon icon-wind" aria-hidden="true"></span>任务高度 {{ form.altitude_m }} m</span></div>
-        <div v-if="mapEditMode === 'node' && selectedWaypointIndex !== null && selectedWaypointSetting()" class="node-controller" aria-label="航点控制器"><div class="node-controller-head"><strong>节点 {{ selectedWaypointIndex + 1 }} · 视角控制</strong><span>{{ Math.round(waypointHeading(selectedWaypointIndex)) }}° · {{ selectedWaypointSetting()?.altitude_m ?? form.altitude_m }}m</span></div><div class="node-controller-body"><div class="wasd-pad" aria-label="WASD 平面移动控制"><button type="button" @click="moveSelectedWaypoint(0, 1)">W</button><button type="button" @click="moveSelectedWaypoint(-1, 0)">A</button><button type="button" @click="moveSelectedWaypoint(0, -1)">S</button><button type="button" @click="moveSelectedWaypoint(1, 0)">D</button></div><div class="node-dial"><button type="button" aria-label="逆时针旋转" @click="rotateSelectedWaypoint(-15)">↺</button><strong>{{ Math.round(waypointHeading(selectedWaypointIndex)) }}°</strong><button type="button" aria-label="顺时针旋转" @click="rotateSelectedWaypoint(15)">↻</button></div><div class="node-axis"><button type="button" @click="rotateSelectedWaypoint(0, 5)">镜头上</button><button type="button" @click="rotateSelectedWaypoint(0, -5)">镜头下</button><button type="button" @click="adjustSelectedWaypoint({ altitude_m: Math.min(1500, (selectedWaypointSetting()?.altitude_m ?? form.altitude_m) + 5) })">高度 +</button><button type="button" @click="adjustSelectedWaypoint({ altitude_m: Math.max(1, (selectedWaypointSetting()?.altitude_m ?? form.altitude_m) - 5) })">高度 −</button></div></div><small>W/S 平面前后 ±1m，A/D 平面左右 ±1m，Q/E 航向 ±5°，Z/C 俯仰 ±5°可直接调整水平朝向。</small></div>
+        <div v-if="!flightActive && mapEditMode === 'node' && selectedWaypointIndex !== null && selectedWaypointSetting()" class="node-controller" aria-label="航点控制器"><div class="node-controller-head"><strong>节点 {{ selectedWaypointIndex + 1 }} · 视角控制</strong><span>{{ Math.round(waypointHeading(selectedWaypointIndex)) }}° · {{ selectedWaypointSetting()?.altitude_m ?? form.altitude_m }}m</span></div><div class="node-controller-body"><div class="wasd-pad" aria-label="WASD 平面移动控制"><button type="button" @click="moveSelectedWaypoint(0, 1)">W</button><button type="button" @click="moveSelectedWaypoint(-1, 0)">A</button><button type="button" @click="moveSelectedWaypoint(0, -1)">S</button><button type="button" @click="moveSelectedWaypoint(1, 0)">D</button></div><div class="node-dial"><button type="button" aria-label="逆时针旋转" @click="rotateSelectedWaypoint(-15)">↺</button><strong>{{ Math.round(waypointHeading(selectedWaypointIndex)) }}°</strong><button type="button" aria-label="顺时针旋转" @click="rotateSelectedWaypoint(15)">↻</button></div><div class="node-axis"><button type="button" @click="rotateSelectedWaypoint(0, 5)">镜头上</button><button type="button" @click="rotateSelectedWaypoint(0, -5)">镜头下</button><button type="button" @click="adjustSelectedWaypoint({ altitude_m: Math.min(1500, (selectedWaypointSetting()?.altitude_m ?? form.altitude_m) + 5) })">高度 +</button><button type="button" @click="adjustSelectedWaypoint({ altitude_m: Math.max(1, (selectedWaypointSetting()?.altitude_m ?? form.altitude_m) - 5) })">高度 −</button></div></div><small>W/S 平面前后 ±1m，A/D 平面左右 ±1m，Q/E 航向 ±5°，Z/C 俯仰 ±5°可直接调整水平朝向。</small></div>
         <div v-if="routeAssessment" class="weather-map-legend">沿线初筛：蓝 · 未触发，橙 · 关注，红 · 较强，灰 · 缺测<br />基于 0.25° 场，不是街道级风险，也不代表飞行许可。</div>
-        <div class="camera-preview" :class="{ visible: mapEditMode === 'node' && selectedWaypointIndex !== null && (baseMap === 'earth' || cameraPreviewReady) }" aria-label="当前节点相机视角预览"><div ref="cameraPreviewElement" class="camera-preview-map" :data-base-map="baseMap" @pointerdown.capture="handleCameraPreviewPointerDown" @pointermove="handleCameraPreviewPointerMove" @pointerup="handleCameraPreviewPointerEnd" @pointercancel="handleCameraPreviewPointerEnd" @lostpointercapture="handleCameraPreviewPointerEnd"><div ref="cesiumCameraElement" :style="{ position: 'absolute', inset: '0', visibility: baseMap === 'current' ? 'visible' : 'hidden' }"></div><BaiduCameraPreview v-if="baseMap === 'earth' && mapEditMode === 'node' && selectedWaypointIndex !== null" :active="baseMap === 'earth' && mapEditMode === 'node' && selectedWaypointIndex !== null" :pose="selectedCameraPose" /></div><div class="camera-preview-head"><strong>当前视角</strong><span v-if="selectedWaypointIndex !== null">节点 {{ selectedWaypointIndex + 1 }} · {{ Math.round(selectedWaypointSetting()?.gimbal_pitch_angle ?? 0) }}°</span></div><small>地图模拟视角 · 不是实时相机视频</small></div>
+        <div class="camera-preview" :class="{ visible: (flightActive || (mapEditMode === 'node' && selectedWaypointIndex !== null)) && (baseMap === 'earth' || cameraPreviewReady) }" aria-label="当前节点相机视角预览"><div ref="cameraPreviewElement" class="camera-preview-map" :data-base-map="baseMap" @pointerdown.capture="handleCameraPreviewPointerDown" @pointermove="handleCameraPreviewPointerMove" @pointerup="handleCameraPreviewPointerEnd" @pointercancel="handleCameraPreviewPointerEnd" @lostpointercapture="handleCameraPreviewPointerEnd"><div ref="cesiumCameraElement" :style="{ position: 'absolute', inset: '0', visibility: baseMap === 'current' ? 'visible' : 'hidden' }"></div><BaiduCameraPreview v-if="baseMap === 'earth' && (flightActive || (mapEditMode === 'node' && selectedWaypointIndex !== null))" :active="baseMap === 'earth' && (flightActive || (mapEditMode === 'node' && selectedWaypointIndex !== null))" :pose="currentCameraPose" /></div><div class="camera-preview-head"><strong>当前视角</strong><span v-if="flightActive">{{ flightNodeLabel }} / {{ Math.round(flightSample?.pitch ?? 0) }}&deg;</span><span v-else-if="selectedWaypointIndex !== null">节点 {{ selectedWaypointIndex + 1 }} · {{ Math.round(selectedWaypointSetting()?.gimbal_pitch_angle ?? 0) }}°</span></div><small>地图模拟视角 · 不是实时相机视频</small></div>
         <div v-if="loading" class="map-loading-overlay">
           <div class="map-loading-card">
             <button type="button" class="map-loading-cancel" aria-label="取消路线计算" title="取消" @click="cancelCalculation">×</button>
@@ -1513,6 +1700,20 @@ onBeforeUnmount(() => {
 .cesium-map { visibility: hidden; pointer-events: none; }
 .cesium-map.visible { visibility: visible; pointer-events: auto; }
 .map-top { flex-wrap: wrap; z-index: 3; }
+.flight-controls { display: flex; align-items: center; gap: 6px; flex: 0 0 min(340px, 100%); min-height: var(--map-control-height); margin-left: auto; padding: 4px 7px; border: 1px solid var(--map-control-border); border-radius: var(--map-control-radius); background: #fff; box-shadow: var(--map-control-shadow); pointer-events: auto; }
+.flight-toggle { display: grid; flex: none; place-items: center; width: 33px; height: 33px; padding: 0; border: 0; border-radius: 7px; background: #e6f1fb; color: #126cb7; }
+.flight-toggle[aria-pressed="true"] { background: #126cb7; color: #fff; }
+.flight-toggle:disabled { opacity: .45; cursor: default; }
+.flight-toggle .svg-icon { width: 22px; height: 22px; }
+.icon-drone { -webkit-mask-image: url('/svg/drone.svg'); mask-image: url('/svg/drone.svg'); }
+.flight-speed { display: inline-flex; align-items: center; gap: 3px; flex: none; color: #526273; font-size: 11px; white-space: nowrap; }
+.flight-speed select { width: 57px; min-height: 30px; padding: 0 2px; border: 1px solid #dbe2ea; border-radius: 6px; background: #f7fafc; color: #1769aa; font: inherit; font-weight: 700; }
+.flight-speed select:disabled { opacity: .5; }
+.flight-progress-wrap { display: flex; align-items: center; flex: 1; min-width: 60px; min-height: 30px; }
+.flight-progress { width: 100%; margin: 0; accent-color: #126cb7; cursor: pointer; }
+.flight-progress:disabled { opacity: .4; cursor: default; }
+.flight-percent { flex: none; width: 34px; color: #526273; font-size: 11px; font-variant-numeric: tabular-nums; text-align: right; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .map-bottom { z-index: 3; }
 .map-title-group { min-width: 0; }
 .base-map-switch button { white-space: nowrap; }
