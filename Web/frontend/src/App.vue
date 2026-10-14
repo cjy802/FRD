@@ -1109,7 +1109,10 @@ function initCameraPreview() {
       infoBox: false,
       selectionIndicator: false,
     })
-    cameraPreviewViewer.imageryLayers.addImageryProvider(new Cesium.OpenStreetMapImageryProvider({ url: 'https://tile.openstreetmap.org/' }))
+    cameraPreviewViewer.imageryLayers.addImageryProvider(new Cesium.OpenStreetMapImageryProvider({
+      url: 'https://tile.openstreetmap.org/',
+      credit: new Cesium.Credit('<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">© OpenStreetMap contributors</a>', true),
+    }))
     cameraPreviewViewer.scene.globe.depthTestAgainstTerrain = false
     const controller = cameraPreviewViewer.scene.screenSpaceCameraController
     controller.enableRotate = false
