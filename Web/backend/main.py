@@ -29,13 +29,17 @@ from dji_kmz import KmzExportError, build_dji_kmz
 from dji_rc2 import Rc2Error, rc2_imports
 from place_search import PlaceSearchError, reverse_geocode, search_nearby_places, search_places
 from mission_routes import MAX_MISSION_ANCHORS, MissionRouteError, MissionRouteLimitError, combine_mission_segments
+from route_templates import (
+    RouteTemplateStore, TemplateConflict, TemplateNotFound, TemplateTooLarge,
+    TemplateUpdate, TemplateWrite,
+)
 
 
 app = FastAPI(title="低空飞行决策工作台", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -153,6 +157,54 @@ def distance_km(a: Point, b: Point) -> float:
 @app.get("/api/health")
 def health():
     return {"status": "ok", "road_data": "jiangsu_pbf_index" if LOCAL_INDEX_FILE.is_file() else "campus_osm"}
+
+
+@lru_cache(maxsize=1)
+def route_template_store() -> RouteTemplateStore:
+    return RouteTemplateStore()
+
+
+@app.get("/api/route-templates")
+def list_route_templates():
+    return {"templates": route_template_store().list()}
+
+
+@app.post("/api/route-templates", status_code=status.HTTP_201_CREATED)
+def create_route_template(request: TemplateWrite):
+    try:
+        return route_template_store().create(request)
+    except TemplateConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except TemplateTooLarge as error:
+        raise HTTPException(status_code=413, detail=str(error)) from error
+
+
+@app.get("/api/route-templates/{template_id}")
+def get_route_template(template_id: str):
+    try:
+        return route_template_store().get(template_id)
+    except TemplateNotFound:
+        raise HTTPException(status_code=404, detail="模板不存在") from None
+
+
+@app.put("/api/route-templates/{template_id}")
+def update_route_template(template_id: str, request: TemplateUpdate):
+    try:
+        return route_template_store().update(template_id, request)
+    except TemplateNotFound:
+        raise HTTPException(status_code=404, detail="模板不存在") from None
+    except TemplateConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except TemplateTooLarge as error:
+        raise HTTPException(status_code=413, detail=str(error)) from error
+
+
+@app.delete("/api/route-templates/{template_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_route_template(template_id: str):
+    try:
+        route_template_store().delete(template_id)
+    except TemplateNotFound:
+        raise HTTPException(status_code=404, detail="模板不存在") from None
 
 
 @app.get("/api/places/search")

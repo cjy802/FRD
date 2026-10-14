@@ -7,11 +7,14 @@ import RoadWeatherComparison from './RoadWeatherComparison.vue'
 import EarthMap from './EarthMap.vue'
 import PlaceSearch from './PlaceSearch.vue'
 import BaiduCameraPreview from './BaiduCameraPreview.vue'
+import RouteTemplatePanel from './RouteTemplatePanel.vue'
 import type { CameraPose } from './baiduScene'
 import type { RouteAssessment, WeatherLimits } from './weatherTypes'
 import { weatherOnlyChecks } from './weatherPresentation'
 import type { RoadPreview as Preview } from './routeTypes'
 import { createFlightTimeline, sampleFlight, type FlightSample } from './flightPlayback'
+import { createRouteTemplate, deleteRouteTemplate, getRouteTemplate, listRouteTemplates, RouteTemplateApiError, updateRouteTemplate,
+  type RouteTemplatePayload, type RouteTemplateRecord, type RouteTemplateSummary } from './routeTemplates'
 
 type Point = { latitude: number; longitude: number }
 type MajorPoint = { id: string; latitude: number | null; longitude: number | null }
@@ -77,6 +80,7 @@ const settingsRoute = ref<Preview | null>(null)
 const previewKey = ref('')
 const weatherJobId = ref<string | null>(null)
 const weatherState = ref({ status: 'idle', message: '等待天气预测。' })
+const weatherRefreshVersion = ref(0)
 const routeAssessment = ref<RouteAssessment | null>(null)
 const routePhase = ref({ pending: false, error: '' })
 const windowPhase = ref('waiting')
@@ -214,6 +218,33 @@ const distance = computed(() => preview.value ? `${preview.value.distance_km.toF
 const layoutStyle = computed(() => ({ '--sidebar-width': `${sidebarWidth.value}px`, '--insights-width': `${insightsWidth.value}px` }))
 const routeKey = computed(() => JSON.stringify([anchors.value.map((anchor) => [anchor.id, anchor.latitude, anchor.longitude]), roadSource.value, form.clearance_m]))
 const weatherCoordinates = computed(() => preview.value && previewKey.value === routeKey.value ? preview.value.geometry.coordinates : null)
+const templateSummaries = ref<RouteTemplateSummary[]>([])
+const activeTemplate = ref<RouteTemplateRecord | null>(null)
+const savedTemplateFingerprint = ref('')
+const templatesBusy = ref(false)
+const templatesError = ref('')
+const templatesStatus = ref('')
+const templatePanelBusy = computed(() => templatesBusy.value || loading.value || checkingPoint.value || locatingPoint.value !== null || kmzLoading.value)
+const hasSavableRoute = computed(() => allAnchorsReady.value && !!preview.value && previewKey.value === routeKey.value
+  && waypointSettings.value.length === preview.value.geometry.coordinates.length
+  && Number.isFinite(form.altitude_m) && form.altitude_m >= 0 && form.altitude_m <= 1000
+  && Number.isFinite(form.speed_kmh) && form.speed_kmh > 0 && form.speed_kmh <= 200
+  && Number.isFinite(form.clearance_m) && form.clearance_m >= 0 && form.clearance_m <= 20)
+const canSaveTemplate = computed(() => hasSavableRoute.value && !templatePanelBusy.value)
+const templateFingerprint = computed(() => JSON.stringify({
+  schema_version: 1,
+  plan_input: {
+    anchors: anchors.value.map((anchor) => ({ id: anchor.id, latitude: anchor.latitude, longitude: anchor.longitude })),
+    road_source: roadSource.value,
+    altitude_m: form.altitude_m,
+    speed_kmh: form.speed_kmh,
+    clearance_m: form.clearance_m,
+  },
+  route_snapshot: preview.value,
+  waypoint_settings: waypointSettings.value,
+  dji_model: djiModel.value,
+}))
+const templateDirty = computed(() => !!activeTemplate.value && templateFingerprint.value !== savedTemplateFingerprint.value)
 const generatedPointCount = computed(() => preview.value ? Math.max(0, preview.value.geometry.coordinates.length - (preview.value.anchor_indices?.length ?? anchors.value.length)) : 0)
 const batchAnchorRange = computed(() => {
   if (batchBoundaryIds.value.length !== 2) return null
@@ -1225,6 +1256,185 @@ function chooseRoadSource(source: 'local' | 'online') {
   calculate()
 }
 
+function templatePayloadSnapshot(): RouteTemplatePayload {
+  if (!hasSavableRoute.value) throw new Error('请先计算一条完整路线，再保存模板。')
+  return JSON.parse(templateFingerprint.value) as RouteTemplatePayload
+}
+
+function templateSummary(record: RouteTemplateRecord): RouteTemplateSummary {
+  const { payload, ...metadata } = record
+  const points = payload.plan_input.anchors
+  return { ...metadata, anchor_count: points.length,
+    start: { latitude: points[0].latitude, longitude: points[0].longitude },
+    end: { latitude: points[points.length - 1].latitude, longitude: points[points.length - 1].longitude } }
+}
+
+function upsertTemplate(record: RouteTemplateRecord) {
+  templateSummaries.value = [templateSummary(record), ...templateSummaries.value.filter((item) => item.id !== record.id)]
+    .sort((first, second) => second.updated_at.localeCompare(first.updated_at))
+}
+
+function templateErrorMessage(cause: unknown): string {
+  if (cause instanceof RouteTemplateApiError && cause.status === 422) return '模板数据未通过校验，请检查路线和逐点设置。'
+  if (cause instanceof RouteTemplateApiError && cause.status === 413) return '路线数据过大，无法保存为模板。'
+  if (cause instanceof TypeError) return '无法连接模板服务，请检查后端是否运行。'
+  return cause instanceof Error ? cause.message : '模板操作失败，请稍后重试。'
+}
+
+async function runTemplateOperation(action: () => Promise<void>) {
+  if (templatePanelBusy.value) return
+  templatesBusy.value = true
+  templatesError.value = ''
+  templatesStatus.value = ''
+  try { await action() }
+  catch (cause) { templatesError.value = templateErrorMessage(cause) }
+  finally { templatesBusy.value = false }
+}
+
+async function refreshRouteTemplates(silent = false) {
+  await runTemplateOperation(async () => {
+    templateSummaries.value = await listRouteTemplates()
+    if (activeTemplate.value && !templateSummaries.value.some((item) => item.id === activeTemplate.value?.id)) {
+      activeTemplate.value = null
+      savedTemplateFingerprint.value = ''
+    }
+    if (!silent) templatesStatus.value = '模板列表已刷新。'
+  })
+}
+
+async function saveRouteTemplateAsNew(name: string) {
+  if (!canSaveTemplate.value) return
+  const payload = templatePayloadSnapshot()
+  const fingerprint = templateFingerprint.value
+  await runTemplateOperation(async () => {
+    const record = await createRouteTemplate({ name, payload })
+    activeTemplate.value = record
+    savedTemplateFingerprint.value = fingerprint
+    upsertTemplate(record)
+    templatesStatus.value = `已保存模板“${record.name}”。`
+  })
+}
+
+async function saveCurrentRouteTemplate() {
+  if (!canSaveTemplate.value || !activeTemplate.value) return
+  const current = activeTemplate.value
+  const payload = templatePayloadSnapshot()
+  const fingerprint = templateFingerprint.value
+  await runTemplateOperation(async () => {
+    const record = await updateRouteTemplate(current.id, { name: current.name, description: current.description,
+      payload, expected_version: current.version })
+    activeTemplate.value = record
+    savedTemplateFingerprint.value = fingerprint
+    upsertTemplate(record)
+    templatesStatus.value = `已更新模板“${record.name}”。`
+  })
+}
+
+async function loadRouteTemplate(id: string) {
+  await runTemplateOperation(async () => {
+    const record = await getRouteTemplate(id)
+    const payload = record.payload
+    if (payload.schema_version !== 1 || payload.plan_input.anchors.length < 2
+      || payload.waypoint_settings.length !== payload.route_snapshot.geometry.coordinates.length) {
+      throw new Error('模板版本或路线数据无法识别。')
+    }
+    if ((templateDirty.value || (!activeTemplate.value && !!preview.value))
+      && !window.confirm('当前路线尚未保存，载入模板会覆盖当前编辑内容。确定载入吗？')) {
+      templatesStatus.value = '已取消载入。'
+      return
+    }
+
+    const restoredAnchors = payload.plan_input.anchors.map((point) => ({ ...point }))
+    const restoredRoute = JSON.parse(JSON.stringify(payload.route_snapshot)) as Preview
+    const restoredSettings = JSON.parse(JSON.stringify(payload.waypoint_settings)) as WaypointSetting[]
+    cancelCalculation()
+    stopFlight()
+    cancelCameraPreviewDrag()
+    finishMapCameraDrag()
+    clearBatchRange()
+    selectedWaypointIndex.value = null
+    mapEditMode.value = 'route'
+    preview.value = null
+    settingsRoute.value = null
+    waypointSettings.value = []
+    anchors.value = restoredAnchors
+    selectedAnchorId.value = restoredAnchors[0].id
+    nextAnchorNumber = Math.max(nextAnchorNumber,
+      ...restoredAnchors.map((point) => Number(/^anchor-(\d+)$/.exec(point.id)?.[1] ?? 0) + 1))
+    roadSource.value = payload.plan_input.road_source
+    form.altitude_m = payload.plan_input.altitude_m
+    form.speed_kmh = payload.plan_input.speed_kmh
+    form.clearance_m = payload.plan_input.clearance_m
+    djiModel.value = payload.dji_model
+    await nextTick()
+    previewKey.value = routeKey.value
+    settingsRoute.value = restoredRoute
+    waypointSettings.value = restoredSettings
+    preview.value = restoredRoute
+    activeTemplate.value = record
+    savedTemplateFingerprint.value = templateFingerprint.value
+    error.value = ''
+    kmzError.value = ''
+    locationFeedback.value = null
+    placeSelectionFeedback.value = null
+    weatherJobId.value = null
+    weatherState.value = { status: 'idle', message: '等待天气预测。' }
+    routeAssessment.value = null
+    routePhase.value = { pending: false, error: '' }
+    windowPhase.value = 'waiting'
+    comparisonPhase.value = 'waiting'
+    const departure = currentDepartureBeijing()
+    latestDepartureBeijing.value = departure
+    departureBeijing.value = departure
+    departureAutoManaged.value = true
+    weatherRefreshVersion.value += 1
+    workspacePanel.value = 'map'
+    drawCesiumRoute(true)
+    templatesStatus.value = `已载入模板“${record.name}”，天气正在重新获取。`
+  })
+}
+
+async function renameRouteTemplate(id: string, name: string) {
+  await runTemplateOperation(async () => {
+    const source = activeTemplate.value?.id === id ? activeTemplate.value : await getRouteTemplate(id)
+    const record = await updateRouteTemplate(id, { name, description: source.description,
+      payload: source.payload, expected_version: source.version })
+    if (activeTemplate.value?.id === id) activeTemplate.value = record
+    upsertTemplate(record)
+    templatesStatus.value = `已将模板改名为“${record.name}”。`
+  })
+}
+
+async function duplicateRouteTemplate(id: string) {
+  await runTemplateOperation(async () => {
+    const source = await getRouteTemplate(id)
+    const usedNames = new Set(templateSummaries.value.map((item) => item.name.toLocaleLowerCase()))
+    const copyName = (copy: number) => {
+      const suffix = copy === 1 ? ' 副本' : ` 副本 ${copy}`
+      return `${source.name.slice(0, 80 - suffix.length)}${suffix}`
+    }
+    let copy = 1
+    while (usedNames.has(copyName(copy).toLocaleLowerCase())) copy += 1
+    const name = copyName(copy)
+    const record = await createRouteTemplate({ name, description: source.description, payload: source.payload })
+    upsertTemplate(record)
+    templatesStatus.value = `已复制模板“${record.name}”。`
+  })
+}
+
+async function removeRouteTemplate(id: string) {
+  await runTemplateOperation(async () => {
+    const name = templateSummaries.value.find((item) => item.id === id)?.name ?? '所选模板'
+    await deleteRouteTemplate(id)
+    templateSummaries.value = templateSummaries.value.filter((item) => item.id !== id)
+    if (activeTemplate.value?.id === id) {
+      activeTemplate.value = null
+      savedTemplateFingerprint.value = ''
+    }
+    templatesStatus.value = `已删除模板“${name}”。当前编辑的路线仍可另存为新模板。`
+  })
+}
+
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(Math.max(value, minimum), maximum)
 }
@@ -1790,6 +2000,7 @@ onMounted(() => {
   window.addEventListener('pointercancel', endFlightSeek)
   window.addEventListener('pointerup', finishMapCameraDrag)
   scheduleDepartureClock()
+  void refreshRouteTemplates(true)
   void calculate()
   if ((window as any).Cesium) {
     initMap()
@@ -1842,6 +2053,11 @@ onBeforeUnmount(() => {
         <form class="route-form" @submit.prevent="calculate" @invalid.capture="revealInvalidSetting">
           <nav class="settings-pages" aria-label="航线设置分组"><button type="button" :aria-pressed="settingsPage === 'points'" @click="settingsPage = 'points'">主点与坐标</button><button type="button" :aria-pressed="settingsPage === 'mission'" @click="settingsPage = 'mission'">飞行参数</button></nav>
           <div class="settings-fields">
+          <RouteTemplatePanel :templates="templateSummaries" :active-id="activeTemplate?.id ?? null" :dirty="templateDirty"
+            :busy="templatePanelBusy" :can-save="canSaveTemplate" :error="templatesError" :status="templatesStatus"
+            @save-new="saveRouteTemplateAsNew" @save-current="saveCurrentRouteTemplate" @load="loadRouteTemplate"
+            @rename="renameRouteTemplate" @duplicate="duplicateRouteTemplate" @remove="removeRouteTemplate"
+            @refresh="refreshRouteTemplates()" />
           <div class="settings-group" data-settings-page="points" :class="{ 'settings-active': settingsPage === 'points' }">
           <p class="batch-range-guide">{{ batchRouteAnchorIndices ? batchBoundaryIds.length === 1 ? '再勾选一个主点，确定批量视角区间。' : '勾选两个主点，统一设置两端及中间航点的视角。' : '计算道路路线后可勾选两个主点，批量设置视角。' }}</p>
           <div v-for="(anchor, index) in anchors" :key="anchor.id" class="major-point-card" :class="{ 'is-selected': selectedAnchorId === anchor.id, 'is-batch-boundary': batchBoundaryIds.includes(anchor.id), 'is-batch-range': batchAnchorRange && index >= batchAnchorRange.first && index <= batchAnchorRange.last }">
@@ -1916,7 +2132,7 @@ onBeforeUnmount(() => {
         <details class="overview-group" open>
            <summary><span><span class="svg-icon icon-cloud-rain" aria-hidden="true"></span>沿线天气检查</span><small>风、降雨、阵风和能见度</small></summary>
           <div class="overview-group-body overview-weather">
-            <WeatherPanels v-if="allAnchorsReady" :altitude-m="form.altitude_m" :start="form.start" :end="form.end" @job-ready="weatherJobId = $event" @state-changed="weatherState = $event" />
+            <WeatherPanels v-if="allAnchorsReady" :key="weatherRefreshVersion" :altitude-m="form.altitude_m" :start="form.start" :end="form.end" @job-ready="weatherJobId = $event" @state-changed="weatherState = $event" />
             <RouteWeatherPanel :job-id="weatherJobId" :coordinates="weatherCoordinates" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" :limits="activeLimits" @assessed="routeAssessment = $event" @phase="routePhase = $event" />
           </div>
         </details>
