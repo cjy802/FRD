@@ -1,0 +1,13 @@
+{
+  "case_id": "p001",
+  "site_id": "road_site_a",
+  "captured_at": "2026-10-14T15:30:00+08:00",
+  "scene_type": "road",
+  "rgb_device": "填写实际无人机与相机型号",
+  "thermal_device": "填写独立热成像设备型号，若没有则删除该字段",
+  "thermal_captured_at": "2026-10-14T15:30:05+08:00",
+  "thermal_format": "radiometric",
+  "latitude": null,
+  "longitude": null,
+  "notes": "说明光照、雨停后的时间、路面材质和拍摄角度"
+}

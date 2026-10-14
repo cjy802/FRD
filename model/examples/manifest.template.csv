@@ -1,0 +1,4 @@
+case_id,site_id,task,split,captured_at,rgb,thermal,thermal_registration,mask
+p001,road_site_a,ponding,train,2026-10-14T15:30:00+08:00,raw/ponding/p001/rgb.jpg,raw/ponding/p001/thermal.tif,raw/ponding/p001/thermal_to_rgb.json,labels/p001.png
+s001_before,river_site_a,shoreline,train,2026-10-14T15:30:00+08:00,raw/shoreline/s001_before/rgb.jpg,,,labels/s001_before.png
+s001_after,river_site_a,shoreline,train,2026-10-15T15:30:00+08:00,raw/shoreline/s001_after/rgb.jpg,,,labels/s001_after.png

@@ -1,0 +1,9 @@
+{
+  "event_id": "example-rain-warning",
+  "source_url": "https://example.invalid/replace-with-specific-official-announcement",
+  "issued_at": "2026-10-14T12:00:00+08:00",
+  "region": "填写预警或水情实际适用范围",
+  "event_type": "rain_warning",
+  "summary": "填写官方原文摘要，勿编造精确到单个积水点的雨量",
+  "notes": "历史事件与影像采集日期不同，应明确标注为案例回放"
+}
