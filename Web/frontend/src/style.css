@@ -28,6 +28,7 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .svg-icon { display: inline-block; width: 1.05em; height: 1.05em; flex: 0 0 auto; background: currentColor; -webkit-mask: center / contain no-repeat; mask: center / contain no-repeat; vertical-align: -.16em; }
 .icon-route { -webkit-mask-image: url('/svg/route.svg'); mask-image: url('/svg/route.svg'); }
 .icon-map-pin { -webkit-mask-image: url('/svg/map-pin.svg'); mask-image: url('/svg/map-pin.svg'); }
+.icon-location-on { -webkit-mask-image: url('/svg/location_on.svg'); mask-image: url('/svg/location_on.svg'); }
 .icon-eye { -webkit-mask-image: url('/svg/eye.svg'); mask-image: url('/svg/eye.svg'); }
 .icon-layers { -webkit-mask-image: url('/svg/layers-selected-bottom.svg'); mask-image: url('/svg/layers-selected-bottom.svg'); }
 .icon-wind { -webkit-mask-image: url('/svg/wind.svg'); mask-image: url('/svg/wind.svg'); }
@@ -84,6 +85,14 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .point-b { color: #5b5fc7; }
 .point-heading strong { display: block; font-size: var(--font-body); font-weight: 600; }
 .point-heading small { display: block; margin-top: 1px; color: var(--ui-muted); font-size: var(--font-caption); }
+.point-title-row { display: flex; align-items: center; gap: 4px; }
+.point-location-button { display: grid; place-items: center; flex: none; width: 28px; height: 28px; padding: 0; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--ui-accent); }
+.point-b + div .point-location-button { color: #5b5fc7; }
+.point-location-button:hover:not(:disabled) { border-color: #bfdbfe; background: #eff6ff; }
+.point-location-button:disabled { opacity: .5; cursor: wait; }
+.point-location-button .svg-icon { width: 20px; height: 20px; }
+.point-location-feedback { margin: 5px 0 0 36px; color: var(--ui-muted); font-size: var(--font-caption); line-height: 1.4; }
+.point-location-feedback.is-error { color: #a4262c; }
 .range-toggle { display: inline-flex; align-items: center; gap: 5px; flex: none; min-height: 32px; padding: 5px 8px; border: 1px solid var(--ui-line); border-radius: var(--ui-radius); background: #fff; color: var(--ui-muted); font-size: var(--font-caption); white-space: nowrap; }
 .range-toggle .svg-icon { width: 15px; height: 15px; }
 .range-toggle:hover { background: #f3f5f7; }

@@ -13,6 +13,8 @@ import { weatherOnlyChecks } from './weatherPresentation'
 import type { RoadPreview as Preview } from './routeTypes'
 
 type Point = { latitude: number; longitude: number }
+type PointTarget = 'start' | 'end'
+type LocationFeedback = { target: PointTarget; message: string; error?: boolean }
 const workspacePanel = ref<'settings' | 'map' | 'overview'>('overview')
 const settingsPage = ref<'points' | 'mission'>('points')
 type LandingCheck = {
@@ -67,6 +69,9 @@ type WaypointSetting = {
 }
 const waypointSettings = ref<WaypointSetting[]>([])
 const checkingPoint = ref(false)
+const locatingPoint = ref<PointTarget | null>(null)
+const locationFeedback = ref<LocationFeedback | null>(null)
+let locationRequestVersion = 0
 const error = ref('')
 const pointHint = ref('')
 const mapMode = ref<'start' | 'end'>('start')
@@ -220,7 +225,55 @@ function revealInvalidSetting(event: Event) {
 }
 
 function formatted(point: Point) {
-  return `${point.latitude.toFixed(4)}°N, ${point.longitude.toFixed(4)}°E`
+  return `${Math.abs(point.latitude).toFixed(4)}°${point.latitude < 0 ? 'S' : 'N'}, ${Math.abs(point.longitude).toFixed(4)}°${point.longitude < 0 ? 'W' : 'E'}`
+}
+
+function clearLocationFeedback(target: PointTarget) {
+  if (locationFeedback.value?.target === target) locationFeedback.value = null
+}
+
+function useCurrentLocation(target: PointTarget) {
+  if (loading.value || checkingPoint.value || locatingPoint.value) return
+  if (!navigator.geolocation) {
+    locationFeedback.value = { target, message: '当前页面无法使用定位，请用 HTTPS 或本机地址打开并检查浏览器权限。', error: true }
+    return
+  }
+
+  const requestVersion = ++locationRequestVersion
+  locatingPoint.value = target
+  locationFeedback.value = { target, message: '正在获取当前位置…' }
+  try {
+    navigator.geolocation.getCurrentPosition(({ coords }) => {
+      if (requestVersion !== locationRequestVersion) return
+      locatingPoint.value = null
+      if (loading.value || checkingPoint.value) {
+        locationFeedback.value = { target, message: '正在处理其他点位，请稍后重新定位。', error: true }
+        return
+      }
+      if (!Number.isFinite(coords.latitude) || !Number.isFinite(coords.longitude)
+        || Math.abs(coords.latitude) > 90 || Math.abs(coords.longitude) > 180) {
+        locationFeedback.value = { target, message: '浏览器返回的位置坐标无效，请重试。', error: true }
+        return
+      }
+      form[target].latitude = Number(coords.latitude.toFixed(6))
+      form[target].longitude = Number(coords.longitude.toFixed(6))
+      selectedWaypointIndex.value = null
+      pointHint.value = ''
+      error.value = ''
+      const accuracy = Number.isFinite(coords.accuracy) ? `，定位精度约 ${Math.ceil(coords.accuracy)} 米` : ''
+      locationFeedback.value = { target, message: `已填入当前位置${accuracy}，请在地图上核对点位。` }
+    }, (cause) => {
+      if (requestVersion !== locationRequestVersion) return
+      locatingPoint.value = null
+      const message = cause.code === 1 ? '浏览器未允许读取位置，请在站点设置中开启定位权限。'
+        : cause.code === 2 ? '暂时无法确定位置，请检查设备定位服务后重试。'
+          : cause.code === 3 ? '获取位置超时，请重试。' : '获取位置失败，请重试。'
+      locationFeedback.value = { target, message, error: true }
+    }, { enableHighAccuracy: true, maximumAge: 0, timeout: 15_000 })
+  } catch {
+    locatingPoint.value = null
+    locationFeedback.value = { target, message: '当前浏览器无法获取位置，请检查定位权限后重试。', error: true }
+  }
 }
 
 function refreshDepartureClock() {
@@ -616,7 +669,7 @@ async function exportDjiKmz() {
 }
 
 async function calculate(flyToRoute: boolean | SubmitEvent = true) {
-  if (loading.value) return
+  if (loading.value || locatingPoint.value) return
   const controller = new AbortController()
   const requestVersion = ++routeRequestVersion
   const requestedKey = routeKey.value
@@ -738,7 +791,7 @@ function toggleRange(point: 'start' | 'end') {
 }
 
 async function chooseMapPoint(point: Point) {
-  if (loading.value || checkingPoint.value) return
+  if (loading.value || checkingPoint.value || locatingPoint.value) return
   const mode = mapMode.value
   checkingPoint.value = true
   error.value = ''
@@ -762,6 +815,7 @@ async function chooseMapPoint(point: Point) {
     const selected = mode === 'start' ? form.start : form.end
     selected.latitude = point.latitude
     selected.longitude = point.longitude
+    clearLocationFeedback(mode)
     landingSearchRadiusM.value = inspection.search_radius_m
     if (inspection.state === 'no_road' && roadSource.value === 'local') {
       preview.value = null
@@ -1150,6 +1204,7 @@ onMounted(() => {
   else window.addEventListener('load', initMap, { once: true })
 })
 onBeforeUnmount(() => {
+  locationRequestVersion++
   window.removeEventListener('keydown', handleWaypointKeydown)
   window.removeEventListener('blur', cancelCameraPreviewDrag)
   window.removeEventListener('blur', finishMapCameraDrag)
@@ -1187,13 +1242,15 @@ onBeforeUnmount(() => {
           <nav class="settings-pages" aria-label="航线设置分组"><button type="button" :aria-pressed="settingsPage === 'points'" @click="settingsPage = 'points'">起点与终点</button><button type="button" :aria-pressed="settingsPage === 'mission'" @click="settingsPage = 'mission'">飞行参数</button></nav>
           <div class="settings-fields">
           <div class="settings-group" data-settings-page="points" :class="{ 'settings-active': settingsPage === 'points' }">
-           <div class="point-heading"><span class="point-mark point-a">A</span><div><strong>起点</strong><small>{{ formatted(form.start) }}</small></div><button type="button" class="range-toggle" :class="{ active: showStartRange }" :aria-pressed="showStartRange" :disabled="loading || checkingPoint" title="显示或隐藏 35 米接路搜索范围" @click="toggleRange('start')"><span class="svg-icon icon-eye" aria-hidden="true"></span><span>范围：{{ showStartRange ? '开' : '关' }}</span></button></div>
-          <div class="coordinate-row"><label>纬度<input v-model.number="form.start.latitude" type="number" step="0.00001" min="-90" max="90" required :disabled="loading" /></label><label>经度<input v-model.number="form.start.longitude" type="number" step="0.00001" min="-180" max="180" required :disabled="loading" /></label></div>
+           <div class="point-heading"><span class="point-mark point-a">A</span><div><div class="point-title-row"><strong>起点</strong><button type="button" class="point-location-button" :disabled="loading || checkingPoint || locatingPoint !== null" :aria-label="locatingPoint === 'start' ? '正在定位起点 A' : '使用当前位置设置起点 A'" title="使用当前位置设置起点 A" @click="useCurrentLocation('start')"><span class="svg-icon icon-location-on" aria-hidden="true"></span></button></div><small>{{ formatted(form.start) }}</small></div><button type="button" class="range-toggle" :class="{ active: showStartRange }" :aria-pressed="showStartRange" :disabled="loading || checkingPoint" title="显示或隐藏 35 米接路搜索范围" @click="toggleRange('start')"><span class="svg-icon icon-eye" aria-hidden="true"></span><span>范围：{{ showStartRange ? '开' : '关' }}</span></button></div>
+          <div class="coordinate-row"><label>纬度<input v-model.number="form.start.latitude" type="number" step="0.000001" min="-90" max="90" required :disabled="loading" @input="clearLocationFeedback('start')" /></label><label>经度<input v-model.number="form.start.longitude" type="number" step="0.000001" min="-180" max="180" required :disabled="loading" @input="clearLocationFeedback('start')" /></label></div>
+          <p v-if="locationFeedback?.target === 'start'" class="point-location-feedback" :class="{ 'is-error': locationFeedback.error }" :role="locationFeedback.error ? 'alert' : 'status'">{{ locationFeedback.message }}</p>
 
           <div class="route-divider" aria-hidden="true"></div>
 
-           <div class="point-heading"><span class="point-mark point-b">B</span><div><strong>终点</strong><small>{{ formatted(form.end) }}</small></div><button type="button" class="range-toggle" :class="{ active: showEndRange }" :aria-pressed="showEndRange" :disabled="loading || checkingPoint" title="显示或隐藏 35 米接路搜索范围" @click="toggleRange('end')"><span class="svg-icon icon-eye" aria-hidden="true"></span><span>范围：{{ showEndRange ? '开' : '关' }}</span></button></div>
-          <div class="coordinate-row"><label>纬度<input v-model.number="form.end.latitude" type="number" step="0.00001" min="-90" max="90" required :disabled="loading" /></label><label>经度<input v-model.number="form.end.longitude" type="number" step="0.00001" min="-180" max="180" required :disabled="loading" /></label></div>
+           <div class="point-heading"><span class="point-mark point-b">B</span><div><div class="point-title-row"><strong>终点</strong><button type="button" class="point-location-button" :disabled="loading || checkingPoint || locatingPoint !== null" :aria-label="locatingPoint === 'end' ? '正在定位终点 B' : '使用当前位置设置终点 B'" title="使用当前位置设置终点 B" @click="useCurrentLocation('end')"><span class="svg-icon icon-location-on" aria-hidden="true"></span></button></div><small>{{ formatted(form.end) }}</small></div><button type="button" class="range-toggle" :class="{ active: showEndRange }" :aria-pressed="showEndRange" :disabled="loading || checkingPoint" title="显示或隐藏 35 米接路搜索范围" @click="toggleRange('end')"><span class="svg-icon icon-eye" aria-hidden="true"></span><span>范围：{{ showEndRange ? '开' : '关' }}</span></button></div>
+          <div class="coordinate-row"><label>纬度<input v-model.number="form.end.latitude" type="number" step="0.000001" min="-90" max="90" required :disabled="loading" @input="clearLocationFeedback('end')" /></label><label>经度<input v-model.number="form.end.longitude" type="number" step="0.000001" min="-180" max="180" required :disabled="loading" @input="clearLocationFeedback('end')" /></label></div>
+          <p v-if="locationFeedback?.target === 'end'" class="point-location-feedback" :class="{ 'is-error': locationFeedback.error }" :role="locationFeedback.error ? 'alert' : 'status'">{{ locationFeedback.message }}</p>
           </div>
 
           <div class="settings-group" data-settings-page="mission" :class="{ 'settings-active': settingsPage === 'mission' }">
@@ -1204,7 +1261,7 @@ onBeforeUnmount(() => {
           <div class="clearance-row"><label>建筑缓冲 · 米（演示）<input v-model.number="form.clearance_m" type="number" min="0" max="20" step="0.5" required :disabled="loading || roadSource === 'online'" /></label><span>{{ roadSource === 'local' ? '用于排除靠近建筑的道路段' : '在线机动车路线不使用此参数' }}</span></div>
           </div>
           </div>
-           <fluent-button class="primary-button" appearance="primary" type="submit" :disabled="loading"><span class="svg-icon" :class="loading ? 'icon-refresh is-spinning' : 'icon-route'" aria-hidden="true"></span><span>{{ loading ? '计算中…' : '计算道路路线' }}</span></fluent-button>
+           <fluent-button class="primary-button" appearance="primary" type="submit" :disabled="loading || locatingPoint !== null"><span class="svg-icon" :class="loading ? 'icon-refresh is-spinning' : 'icon-route'" aria-hidden="true"></span><span>{{ loading ? '计算中…' : '计算道路路线' }}</span></fluent-button>
           <p v-if="error" class="form-error" role="alert">{{ error }}</p>
         </form>
       </aside>
