@@ -108,6 +108,11 @@ type WaypointSetting = {
 }
 const waypointSettings = ref<WaypointSetting[]>([])
 const waypointEditorExpanded = ref(false)
+const batchBoundaryIds = ref<string[]>([])
+const batchHeadingInput = ref('')
+const batchPitchInput = ref('')
+const batchFeedback = ref<{ message: string; error: boolean } | null>(null)
+const batchPanelElement = ref<HTMLElement | null>(null)
 const checkingPoint = ref(false)
 const locatingPoint = ref<string | null>(null)
 const locationFeedback = ref<LocationFeedback | null>(null)
@@ -168,6 +173,32 @@ const layoutStyle = computed(() => ({ '--sidebar-width': `${sidebarWidth.value}p
 const routeKey = computed(() => JSON.stringify([anchors.value.map((anchor) => [anchor.id, anchor.latitude, anchor.longitude]), roadSource.value, form.clearance_m]))
 const weatherCoordinates = computed(() => preview.value && previewKey.value === routeKey.value ? preview.value.geometry.coordinates : null)
 const generatedPointCount = computed(() => preview.value ? Math.max(0, preview.value.geometry.coordinates.length - (preview.value.anchor_indices?.length ?? anchors.value.length)) : 0)
+const batchAnchorRange = computed(() => {
+  if (batchBoundaryIds.value.length !== 2) return null
+  const positions = batchBoundaryIds.value.map((id) => anchors.value.findIndex((anchor) => anchor.id === id))
+  if (positions.some((index) => index < 0) || positions[0] === positions[1]) return null
+  return { first: Math.min(...positions), last: Math.max(...positions) }
+})
+const batchRouteAnchorIndices = computed(() => {
+  const route = preview.value
+  if (!route || previewKey.value !== routeKey.value || waypointSettings.value.length !== route.geometry.coordinates.length) return null
+  const indices = route.anchor_indices ?? (anchors.value.length === 2 ? [0, route.geometry.coordinates.length - 1] : null)
+  if (!indices || indices.length !== anchors.value.length) return null
+  if (route.anchors && (route.anchors.length !== anchors.value.length
+    || route.anchors.some((anchor, index) => anchor.id !== anchors.value[index]?.id))) return null
+  if (indices.some((index, position) => !Number.isInteger(index) || index < 0 || index >= route.geometry.coordinates.length
+    || (position > 0 && index <= indices[position - 1]))) return null
+  return indices
+})
+const batchWaypointRange = computed(() => {
+  const anchorRange = batchAnchorRange.value
+  const indices = batchRouteAnchorIndices.value
+  if (!anchorRange || !indices) return null
+  const start = indices[anchorRange.first]
+  const end = indices[anchorRange.last]
+  return { start, end, count: end - start + 1,
+    from: majorPointLabel(anchorRange.first), to: majorPointLabel(anchorRange.last) }
+})
 const editorWaypoints = computed(() => {
   if (!waypointEditorExpanded.value) return []
   const indexes = new Set<number>()
@@ -270,6 +301,7 @@ const planningProgress = computed(() => {
 })
 
 watch(routeKey, () => {
+  clearBatchRange()
   if (preview.value && previewKey.value !== routeKey.value) { preview.value = null; routeAssessment.value = null; drawCesiumRoute(false) }
 })
 watch(routeAssessment, () => { drawCesiumRoute(false) })
@@ -427,6 +459,7 @@ function clearLocationFeedback(target: string) {
 }
 
 function addMajorPoint(point?: Point) {
+  clearBatchRange()
   const id = `anchor-${nextAnchorNumber++}`
   anchors.value.push({ id, latitude: point?.latitude ?? null, longitude: point?.longitude ?? null })
   selectedAnchorId.value = id
@@ -440,6 +473,7 @@ function removeMajorPoint(id: string) {
   if (anchors.value.length <= 2 || loading.value || checkingPoint.value || locatingPoint.value) return
   const index = anchors.value.findIndex((anchor) => anchor.id === id)
   if (index < 0) return
+  clearBatchRange()
   anchors.value.splice(index, 1)
   if (selectedAnchorId.value === id) selectedAnchorId.value = anchors.value[Math.min(index, anchors.value.length - 1)].id
   clearLocationFeedback(id)
@@ -451,6 +485,7 @@ function moveMajorPoint(id: string, direction: -1 | 1) {
   const index = anchors.value.findIndex((anchor) => anchor.id === id)
   const target = index + direction
   if (index < 0 || target < 0 || target >= anchors.value.length) return
+  clearBatchRange()
   ;[anchors.value[index], anchors.value[target]] = [anchors.value[target], anchors.value[index]]
   selectedWaypointIndex.value = null
 }
@@ -716,6 +751,54 @@ function markWaypointEdited(event: Event) {
   }
 }
 
+function clearBatchRange() {
+  batchBoundaryIds.value = []
+  batchHeadingInput.value = ''
+  batchPitchInput.value = ''
+  batchFeedback.value = null
+}
+
+function toggleBatchBoundary(id: string) {
+  if (!batchRouteAnchorIndices.value || loading.value || checkingPoint.value) return
+  const current = batchBoundaryIds.value
+  batchBoundaryIds.value = current.includes(id) ? current.filter((item) => item !== id)
+    : current.length < 2 ? [...current, id] : current
+  batchFeedback.value = null
+  if (batchBoundaryIds.value.length === 2) void nextTick(() => batchPanelElement.value?.scrollIntoView({ block: 'nearest' }))
+}
+
+function applyBatchCamera() {
+  const range = batchWaypointRange.value
+  if (!range || loading.value || checkingPoint.value || kmzLoading.value) return
+  const headingText = batchHeadingInput.value.trim()
+  const pitchText = batchPitchInput.value.trim()
+  if (!headingText && !pitchText) {
+    batchFeedback.value = { message: '请至少填写一个视角参数。', error: true }
+    return
+  }
+  const heading = headingText ? Number(headingText) : null
+  const pitch = pitchText ? Number(pitchText) : null
+  if (heading !== null && (!Number.isFinite(heading) || heading < 0 || heading > 360)) {
+    batchFeedback.value = { message: '机头水平角度须在 0–360° 之间。', error: true }
+    return
+  }
+  if (pitch !== null && (!Number.isFinite(pitch) || pitch < -90 || pitch > 45)) {
+    batchFeedback.value = { message: '镜头俯仰角须在 -90–45° 之间。', error: true }
+    return
+  }
+  for (let index = range.start; index <= range.end; index++) {
+    const setting = waypointSettings.value[index]
+    if (heading !== null) {
+      setting.heading_mode = 'fixed'
+      setting.heading_angle = heading % 360
+    }
+    if (pitch !== null) setting.gimbal_pitch_angle = pitch
+  }
+  batchFeedback.value = { message: `已应用到 ${range.count} 个航点（含 ${range.from} 和 ${range.to}）。`, error: false }
+  kmzError.value = ''
+  scheduleWaypointRender(true)
+}
+
 function onWaypointEditorToggle(event: Event) {
   waypointEditorExpanded.value = (event.target as HTMLDetailsElement).open
 }
@@ -885,6 +968,7 @@ function handleWaypointKeydown(event: KeyboardEvent) {
 
 function chooseRoad(route: Preview) {
   if (anchors.value.length > 2) return
+  clearBatchRange()
   cancelCalculation()
   syncWaypointSettings(route)
   preview.value = route
@@ -930,6 +1014,7 @@ async function calculate(flyToRoute: boolean | SubmitEvent = true) {
     error.value = missingIndex >= 0 ? `请先填写主点 ${majorPointLabel(missingIndex)} 的有效经纬度。` : '至少需要两个有效主点。'
     return
   }
+  clearBatchRange()
   const controller = new AbortController()
   const requestVersion = ++routeRequestVersion
   const requestedKey = routeKey.value
@@ -1601,13 +1686,21 @@ onBeforeUnmount(() => {
           <nav class="settings-pages" aria-label="航线设置分组"><button type="button" :aria-pressed="settingsPage === 'points'" @click="settingsPage = 'points'">主点与坐标</button><button type="button" :aria-pressed="settingsPage === 'mission'" @click="settingsPage = 'mission'">飞行参数</button></nav>
           <div class="settings-fields">
           <div class="settings-group" data-settings-page="points" :class="{ 'settings-active': settingsPage === 'points' }">
-          <div v-for="(anchor, index) in anchors" :key="anchor.id" class="major-point-card" :class="{ 'is-selected': selectedAnchorId === anchor.id }">
-            <div class="point-heading"><span class="point-mark" :class="index === 0 ? 'point-a' : index === anchors.length - 1 ? 'point-b' : 'point-middle'">{{ majorPointLabel(index) }}</span><div><div class="point-title-row"><strong>{{ majorPointTitle(index) }}</strong><button type="button" class="point-location-button" :disabled="loading || checkingPoint || locatingPoint !== null" :aria-label="locatingPoint === anchor.id ? `正在定位${majorPointTitle(index)} ${majorPointLabel(index)}` : `使用当前位置设置${majorPointTitle(index)} ${majorPointLabel(index)}`" :title="`使用当前位置设置${majorPointTitle(index)} ${majorPointLabel(index)}`" @click="useCurrentLocation(anchor.id)"><span class="svg-icon icon-location-on" aria-hidden="true"></span></button></div><small>{{ formatted(anchor) }}</small></div><button v-if="index === 0 || index === anchors.length - 1" type="button" class="range-toggle" :class="{ active: index === 0 ? showStartRange : showEndRange }" :aria-pressed="index === 0 ? showStartRange : showEndRange" :disabled="loading || checkingPoint" title="显示或隐藏接路搜索范围" @click="toggleRange(index === 0 ? 'start' : 'end')"><span class="svg-icon icon-eye" aria-hidden="true"></span><span>范围：{{ (index === 0 ? showStartRange : showEndRange) ? '开' : '关' }}</span></button></div>
+          <p class="batch-range-guide">{{ batchRouteAnchorIndices ? batchBoundaryIds.length === 1 ? '再勾选一个主点，确定批量视角区间。' : '勾选两个主点，统一设置两端及中间航点的视角。' : '计算道路路线后可勾选两个主点，批量设置视角。' }}</p>
+          <div v-for="(anchor, index) in anchors" :key="anchor.id" class="major-point-card" :class="{ 'is-selected': selectedAnchorId === anchor.id, 'is-batch-boundary': batchBoundaryIds.includes(anchor.id), 'is-batch-range': batchAnchorRange && index >= batchAnchorRange.first && index <= batchAnchorRange.last }">
+            <div class="point-heading"><input class="batch-boundary-checkbox" type="checkbox" :checked="batchBoundaryIds.includes(anchor.id)" :disabled="!batchRouteAnchorIndices || loading || checkingPoint || (batchBoundaryIds.length === 2 && !batchBoundaryIds.includes(anchor.id))" :aria-label="`选择 ${majorPointLabel(index)} 作为批量视角区间边界`" @change="toggleBatchBoundary(anchor.id)" /><span class="point-mark" :class="index === 0 ? 'point-a' : index === anchors.length - 1 ? 'point-b' : 'point-middle'">{{ majorPointLabel(index) }}</span><div><div class="point-title-row"><strong>{{ majorPointTitle(index) }}</strong><button type="button" class="point-location-button" :disabled="loading || checkingPoint || locatingPoint !== null" :aria-label="locatingPoint === anchor.id ? `正在定位${majorPointTitle(index)} ${majorPointLabel(index)}` : `使用当前位置设置${majorPointTitle(index)} ${majorPointLabel(index)}`" :title="`使用当前位置设置${majorPointTitle(index)} ${majorPointLabel(index)}`" @click="useCurrentLocation(anchor.id)"><span class="svg-icon icon-location-on" aria-hidden="true"></span></button></div><small>{{ formatted(anchor) }}</small></div><button v-if="index === 0 || index === anchors.length - 1" type="button" class="range-toggle" :class="{ active: index === 0 ? showStartRange : showEndRange }" :aria-pressed="index === 0 ? showStartRange : showEndRange" :disabled="loading || checkingPoint" title="显示或隐藏接路搜索范围" @click="toggleRange(index === 0 ? 'start' : 'end')"><span class="svg-icon icon-eye" aria-hidden="true"></span><span>范围：{{ (index === 0 ? showStartRange : showEndRange) ? '开' : '关' }}</span></button></div>
             <div class="coordinate-row"><label>纬度<input v-model.number="anchor.latitude" type="number" step="0.000001" min="-90" max="90" required :disabled="loading" @input="clearLocationFeedback(anchor.id)" /></label><label>经度<input v-model.number="anchor.longitude" type="number" step="0.000001" min="-180" max="180" required :disabled="loading" @input="clearLocationFeedback(anchor.id)" /></label></div>
             <p v-if="locationFeedback?.target === anchor.id" class="point-location-feedback" :class="{ 'is-error': locationFeedback.error }" :role="locationFeedback.error ? 'alert' : 'status'">{{ locationFeedback.message }}</p>
             <div class="major-point-actions"><button type="button" :class="{ active: selectedAnchorId === anchor.id }" :aria-pressed="selectedAnchorId === anchor.id" :disabled="checkingPoint || loading" @click="selectedAnchorId = anchor.id; mapEditMode = 'route'">地图选此点</button><button type="button" :disabled="index === 0 || loading || checkingPoint" :aria-label="`上移主点 ${majorPointLabel(index)}`" @click="moveMajorPoint(anchor.id, -1)">上移</button><button type="button" :disabled="index === anchors.length - 1 || loading || checkingPoint" :aria-label="`下移主点 ${majorPointLabel(index)}`" @click="moveMajorPoint(anchor.id, 1)">下移</button><button type="button" :disabled="anchors.length <= 2 || loading || checkingPoint" :aria-label="`删除主点 ${majorPointLabel(index)}`" @click="removeMajorPoint(anchor.id)">删除</button></div>
           </div>
           <button type="button" class="major-point-add" :disabled="loading || checkingPoint || locatingPoint !== null" @click="addMajorPoint()">＋ 添加主点</button>
+          <div v-if="batchAnchorRange" ref="batchPanelElement" class="batch-camera-panel" aria-label="批量视角设置">
+            <strong>{{ majorPointLabel(batchAnchorRange.first) }}–{{ majorPointLabel(batchAnchorRange.last) }} 批量视角</strong>
+            <small v-if="batchWaypointRange">含两个边界点及中间自动生成的点，共 {{ batchWaypointRange.count }} 个航点。</small>
+            <div class="batch-camera-fields"><label>机头水平角度 · °<input v-model="batchHeadingInput" type="text" inputmode="decimal" placeholder="留空保持原值" @input="batchFeedback = null" /></label><label>镜头俯仰角 · °<input v-model="batchPitchInput" type="text" inputmode="decimal" placeholder="留空保持原值" @input="batchFeedback = null" /></label></div>
+            <button type="button" :disabled="!batchWaypointRange || loading || checkingPoint || kmzLoading" @click="applyBatchCamera">应用到区间</button>
+            <p v-if="batchFeedback" :class="{ 'is-error': batchFeedback.error }" :role="batchFeedback.error ? 'alert' : 'status'">{{ batchFeedback.message }}</p>
+          </div>
           </div>
 
           <div class="settings-group" data-settings-page="mission" :class="{ 'settings-active': settingsPage === 'mission' }">
@@ -1680,9 +1773,14 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .route-form .settings-fields { overflow-y: auto; overscroll-behavior: contain; padding-right: 5px; }
-.major-point-card { padding: 12px 4px; border-bottom: 1px solid var(--ui-line); }
+.batch-range-guide { margin: 2px 4px 6px; color: var(--ui-muted); font-size: var(--font-caption); line-height: 1.4; }
+.major-point-card { container-type: inline-size; padding: 12px 4px; border-bottom: 1px solid var(--ui-line); }
+.major-point-card.is-batch-range { background: #f0faf9; }
+.major-point-card.is-batch-boundary { box-shadow: inset 3px 0 #168782; }
 .major-point-card.is-selected { margin-left: -7px; padding-left: 8px; border-left: 3px solid var(--ui-accent); background: #f8fbff; }
 .major-point-card .point-heading { margin-bottom: 8px; }
+.batch-boundary-checkbox { flex: none; width: 20px; height: 20px; margin: 0; accent-color: #168782; cursor: pointer; }
+.batch-boundary-checkbox:disabled { cursor: default; opacity: .5; }
 .major-point-card .point-mark { width: 28px; flex: none; }
 .major-point-card .point-middle, .major-point-card .point-middle + div .point-location-button { color: #197b78; }
 .major-point-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
@@ -1693,6 +1791,22 @@ onBeforeUnmount(() => {
 .major-point-add { display: block; width: 100%; min-height: 38px; margin-top: 12px; border: 1px dashed #83b5df; border-radius: 8px; background: #f2f8fe; color: #0f6cbd; font-size: 13px; font-weight: 700; cursor: pointer; }
 .major-point-add:hover:not(:disabled) { background: #e6f1fb; }
 .major-point-add:disabled { opacity: .5; cursor: default; }
+.batch-camera-panel { margin-top: 12px; padding: 12px; border: 1px solid #b8dedb; border-radius: 8px; background: #f7fffe; box-shadow: 0 4px 16px #172b4d1c; }
+.batch-camera-panel > strong, .batch-camera-panel > small { display: block; }
+.batch-camera-panel > strong { color: #0b625f; font-size: var(--font-body); }
+.batch-camera-panel > small { margin-top: 3px; color: var(--ui-muted); font-size: 11px; line-height: 1.4; }
+.batch-camera-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+.batch-camera-fields label { min-width: 0; color: #344455; font-size: 11px; font-weight: 600; }
+.batch-camera-fields input { display: block; width: 100%; min-height: 34px; margin-top: 4px; padding: 5px 7px; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; }
+.batch-camera-panel > button { width: 100%; min-height: 34px; margin-top: 10px; border: 0; border-radius: 6px; background: #087b76; color: #fff; font-size: var(--font-caption); font-weight: 700; }
+.batch-camera-panel > button:disabled { opacity: .55; cursor: default; }
+.batch-camera-panel > p { margin: 7px 0 0; color: #0b625f; font-size: var(--font-caption); }
+.batch-camera-panel > p.is-error { color: #a4262c; }
+@container (max-width: 320px) {
+  .major-point-card .point-heading { flex-wrap: wrap; }
+  .major-point-card .point-heading > div { flex: 1 0 calc(100% - 72px); }
+  .major-point-card .range-toggle { margin-left: 72px; }
+}
 .map-anchor-picker { display: inline-flex; align-items: center; gap: 6px; min-height: var(--map-control-height); padding: 3px 8px; border: 1px solid var(--map-control-border); border-radius: var(--map-control-radius); background: #fff; box-shadow: var(--map-control-shadow); color: #344455; font-size: var(--font-caption); white-space: nowrap; pointer-events: auto; }
 .map-anchor-picker .svg-icon { width: 15px; height: 15px; color: var(--ui-accent); }
 .map-anchor-picker select { max-width: 130px; min-height: 28px; border: 0; border-radius: 5px; background: #e6f1fb; color: #1769aa; font: inherit; font-weight: 600; }

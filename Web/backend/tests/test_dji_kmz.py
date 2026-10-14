@@ -77,7 +77,7 @@ class DjiKmzTests(unittest.TestCase):
     def test_preserves_edited_orientation_without_exporting_every_default_point(self):
         coordinates = [[119.95 + index * 0.0001, 31.67] for index in range(10)]
         settings = [
-            {"altitude_m": 80, "heading_mode": "followWayline", "heading_angle": 0, "gimbal_pitch_angle": -30}
+            {"altitude_m": 80, "heading_mode": "followWayline", "heading_angle": 0, "gimbal_pitch_angle": 0}
             for _ in coordinates
         ]
         settings[4].update({"heading_mode": "smoothTransition", "heading_angle": 315, "gimbal_pitch_angle": -48, "export_anchor": True})
@@ -94,6 +94,45 @@ class DjiKmzTests(unittest.TestCase):
             self.assertEqual(edited[0].findtext("wpml:waypointHeadingParam/wpml:waypointHeadingAngle", namespaces=namespace), "-45")
             self.assertEqual(edited[0].findtext("wpml:gimbalPitchAngle", namespaces=namespace), "-48")
 
+    def test_simplifies_long_uniform_camera_range_without_losing_boundaries(self):
+        coordinates = []
+        for index in range(640):
+            rise = min(max(index - 100, 0), max(540 - index, 0)) / 220
+            coordinates.append([119.95 + index * 0.00005, 31.67 + rise * 0.0005])
+        settings = [{} for _ in coordinates]
+        for index in range(100, 541):
+            settings[index] = {"heading_mode": "fixed", "heading_angle": 72, "gimbal_pitch_angle": -35}
+        settings[300]["export_anchor"] = True
+
+        payload = build_dji_kmz(coordinates, 80, 36, "fly", settings)
+        namespace = {"wpml": "http://www.uav.com/wpmz/1.0.2", "kml": "http://www.opengis.net/kml/2.2"}
+        with ZipFile(BytesIO(payload)) as archive:
+            for name in ("wpmz/template.kml", "wpmz/waylines.wpml"):
+                with self.subTest(name=name):
+                    points = ElementTree.fromstring(archive.read(name)).findall(".//kml:Placemark", namespace)
+                    self.assertLess(len(points), 500)
+                    by_source_index = {
+                        round((float(point.findtext("kml:Point/kml:coordinates", namespaces=namespace).split(",")[0]) - 119.95) / 0.00005): point
+                        for point in points
+                    }
+                    for index in (99, 100, 300, 320, 540, 541):
+                        self.assertIn(index, by_source_index)
+                    for index, point in by_source_index.items():
+                        heading = point.find("wpml:waypointHeadingParam", namespace)
+                        if 100 <= index <= 540:
+                            self.assertEqual(heading.findtext("wpml:waypointHeadingMode", namespaces=namespace), "smoothTransition")
+                            self.assertEqual(heading.findtext("wpml:waypointHeadingAngle", namespaces=namespace), "72")
+                            self.assertEqual(point.findtext("wpml:gimbalPitchAngle", namespaces=namespace), "-35")
+                        else:
+                            self.assertEqual(heading.findtext("wpml:waypointHeadingMode", namespaces=namespace), "followWayline")
+                            self.assertEqual(point.findtext("wpml:gimbalPitchAngle", namespaces=namespace), "0")
+
+    def test_rejects_too_many_distinct_camera_settings(self):
+        coordinates = [[119.95 + index * 0.00005, 31.67] for index in range(502)]
+        settings = [{"gimbal_pitch_angle": -30 + index * 0.001} for index in range(502)]
+        with self.assertRaisesRegex(KmzExportError, "已编辑航点超过 500 个"):
+            build_dji_kmz(coordinates, 80, 36, "fly", settings)
+
     def test_unedited_waypoint_settings_still_allow_simplification(self):
         coordinates = [[119.95 + index * 0.0001, 31.67] for index in range(10)]
         payload = build_dji_kmz(coordinates, 80, 36, "fly", [{} for _ in coordinates])
@@ -102,11 +141,11 @@ class DjiKmzTests(unittest.TestCase):
         namespace = {"wpml": "http://www.uav.com/wpmz/1.0.2", "kml": "http://www.opengis.net/kml/2.2"}
         placemarks = waylines.findall(".//kml:Placemark", namespace)
         self.assertLess(len(placemarks), len(coordinates))
-        self.assertTrue(all(point.findtext("wpml:gimbalPitchAngle", namespaces=namespace) == "-30" for point in placemarks))
+        self.assertTrue(all(point.findtext("wpml:gimbalPitchAngle", namespaces=namespace) == "0" for point in placemarks))
 
     def test_pitch_only_second_waypoint_keeps_course_heading_in_both_files(self):
         coordinates = [[119.952, 31.67], [119.951, 31.67], [119.95, 31.67]]
-        settings = [{"heading_mode": "followWayline", "heading_angle": 0, "gimbal_pitch_angle": -30} for _ in coordinates]
+        settings = [{} for _ in coordinates]
         settings[1].update({"gimbal_pitch_angle": -53.8, "export_anchor": True})
         for profile in ("fly", "m30", "m3e"):
             with self.subTest(profile=profile):
@@ -117,7 +156,7 @@ class DjiKmzTests(unittest.TestCase):
                     for name in ("wpmz/template.kml", "wpmz/waylines.wpml"):
                         points = ElementTree.fromstring(archive.read(name)).findall(".//kml:Placemark", namespace)
                         self.assertEqual(len(points), 3)
-                        self.assertEqual([point.findtext("wpml:gimbalPitchAngle", namespaces=namespace) for point in points], ["-30", "-53.8", "-30"])
+                        self.assertEqual([point.findtext("wpml:gimbalPitchAngle", namespaces=namespace) for point in points], ["0", "-53.8", "0"])
                         for point in points:
                             heading = point.find("wpml:waypointHeadingParam", namespace)
                             self.assertEqual(heading.findtext("wpml:waypointHeadingMode", namespaces=namespace), "followWayline")
