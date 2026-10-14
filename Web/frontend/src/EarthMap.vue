@@ -3,8 +3,11 @@ import { nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { createBaiduScene, type BaiduScene } from './baiduScene'
 
 type Point = { longitude: number; latitude: number }
+type AnchorRole = 'start' | 'middle' | 'end'
+type Anchor = Point & { id: string; label?: string; role?: AnchorRole }
 const props = defineProps<{
   active: boolean; viewMode: '2d' | '3d'; start: Point; end: Point; route: number[][] | null
+  anchors?: Anchor[]
   selectedIndex: number | null; editMode: 'route' | 'node'; footprint: number[][]
   weatherSegments: { start: number[]; end: number[]; level: string }[]
   showStartRange: boolean; showEndRange: boolean; rangeMeters: number
@@ -17,8 +20,8 @@ const tilt = ref(52)
 const overlay = reactive({
   nodes: [] as { x: number; y: number; index: number }[],
   groundNodes: [] as { x: number; y: number; index: number }[],
-  start: null as { x: number; y: number } | null,
-  end: null as { x: number; y: number } | null,
+  anchors: [] as { id: string; x: number; y: number; label: string; role: 'start' | 'middle' | 'end' }[],
+  autoNodes: [] as { index: number; x: number; y: number }[],
 })
 let scene: BaiduScene | null = null
 let resizeObserver: ResizeObserver | null = null
@@ -29,7 +32,23 @@ let mapPointerStart: { x: number; y: number } | null = null
 let mapPointerMoved = false
 let routeSignature = ''
 
-function coordinates() { return props.route?.length ? props.route : [[props.start.longitude, props.start.latitude, 0], [props.end.longitude, props.end.latitude, 0]] }
+function anchorPoints(): Anchor[] {
+  const valid = props.anchors?.filter(point => Number.isFinite(point.longitude) && Number.isFinite(point.latitude) && Math.abs(point.longitude) <= 180 && Math.abs(point.latitude) <= 90)
+  return valid ?? [{ id: 'start', ...props.start }, { id: 'end', ...props.end }]
+}
+function anchorLabel(index: number): string {
+  let value = index + 1
+  let label = ''
+  while (value > 0) { value--; label = String.fromCharCode(65 + value % 26) + label; value = Math.floor(value / 26) }
+  return label
+}
+function anchorRole(point: Anchor, index: number, count: number): AnchorRole {
+  return point.role ?? (index === 0 ? 'start' : index === count - 1 ? 'end' : 'middle')
+}
+function coordinates() {
+  if (props.route?.length) return props.route
+  return anchorPoints().map(point => [point.longitude, point.latitude, 0])
+}
 function circle(point: Point) {
   return Array.from({ length: 64 }, (_, index) => {
     const angle = index * Math.PI / 32
@@ -38,6 +57,22 @@ function circle(point: Point) {
 }
 function renderOverlay() {
   if (!scene || !props.active) return
+  const majorAnchors = anchorPoints()
+  const anchors = majorAnchors.flatMap((point, index, all) => {
+    const pixel = scene!.project([point.longitude, point.latitude, 2])
+    return pixel ? [{ id: point.id, ...pixel, label: point.label ?? anchorLabel(index), role: anchorRole(point, index, all.length) }] : []
+  })
+  const route = props.route ?? []
+  const stride = Math.max(1, Math.ceil(Math.max(0, route.length - 2) / 120))
+  const autoNodes: { index: number; x: number; y: number }[] = []
+  if (props.editMode === 'route') {
+    for (let index = 1; index < route.length - 1; index += stride) {
+      const point = route[index]
+      if (majorAnchors.some(anchor => Math.abs(point[0] - anchor.longitude) < 1e-7 && Math.abs(point[1] - anchor.latitude) < 1e-7)) continue
+      const pixel = scene.project([point[0], point[1], props.viewMode === '2d' ? 2 : (point[2] ?? 100)])
+      if (pixel && anchors.every(anchor => Math.hypot(pixel.x - anchor.x, pixel.y - anchor.y) > 18)) autoNodes.push({ index, ...pixel })
+    }
+  }
   const nodes = props.editMode === 'node' ? (props.route ?? []).flatMap((point, index) => {
     const pixel = scene!.project([point[0], point[1], props.viewMode === '2d' ? 2 : (point[2] ?? 100)])
     return pixel ? [{ ...pixel, index }] : []
@@ -48,13 +83,16 @@ function renderOverlay() {
   }) : []
   if (JSON.stringify(nodes) !== JSON.stringify(overlay.nodes)) overlay.nodes = nodes
   if (JSON.stringify(groundNodes) !== JSON.stringify(overlay.groundNodes)) overlay.groundNodes = groundNodes
-  overlay.start = scene.project([props.start.longitude, props.start.latitude, 2])
-  overlay.end = scene.project([props.end.longitude, props.end.latitude, 2])
+  if (JSON.stringify(anchors) !== JSON.stringify(overlay.anchors)) overlay.anchors = anchors
+  if (JSON.stringify(autoNodes) !== JSON.stringify(overlay.autoNodes)) overlay.autoNodes = autoNodes
 }
 function refreshRoute() {
   if (!scene) return
+  const anchors = anchorPoints()
+  const start = anchors.find((point, index) => anchorRole(point, index, anchors.length) === 'start')
+  const end = anchors.find((point, index) => anchorRole(point, index, anchors.length) === 'end')
   scene.setRoute(props.route ?? [], props.viewMode, props.weatherSegments, [
-    ...(props.showStartRange ? [circle(props.start)] : []), ...(props.showEndRange ? [circle(props.end)] : []),
+    ...(props.showStartRange && start ? [circle(start)] : []), ...(props.showEndRange && end ? [circle(end)] : []),
   ])
   const signature = JSON.stringify(coordinates().map(point => point.slice(0, 2)))
   if (!routeSignature || (signature !== routeSignature && props.editMode === 'route')) scene.fit(coordinates(), props.viewMode)
@@ -156,7 +194,8 @@ function onNodeUp(event: PointerEvent) { if (event.pointerId === drag?.pointerId
 async function initialize() {
   status.value = '正在加载地球模式…'; failed.value = false
   try {
-    const nextScene = await createBaiduScene(earthElement.value!, coordinates()[0])
+    // The engine needs a center on startup, even when all user anchors are blank.
+    const nextScene = await createBaiduScene(earthElement.value!, coordinates()[0] ?? [props.start.longitude, props.start.latitude, 0])
     if (unmounted) { nextScene.dispose(); return }
     scene = nextScene
     scene.onFrame(renderOverlay)
@@ -176,7 +215,7 @@ onMounted(() => {
 })
 watch(() => props.active, async active => { finishDrag(); finishCtrlRotate(); await nextTick(); scene?.setActive(active); if (active) { scene?.resize(); renderOverlay() } })
 watch(() => props.viewMode, () => { finishDrag(); finishCtrlRotate(); applyViewMode() })
-watch(() => [props.route, props.start, props.end, props.weatherSegments, props.showStartRange, props.showEndRange, props.rangeMeters], refreshRoute, { deep: true })
+watch(() => [props.route, props.start, props.end, props.anchors, props.weatherSegments, props.showStartRange, props.showEndRange, props.rangeMeters], refreshRoute, { deep: true })
 watch(() => [props.footprint, props.selectedIndex, props.editMode], () => { refreshFootprint(); renderOverlay() }, { deep: true, flush: 'sync' })
 onBeforeUnmount(() => {
   unmounted = true; finishDrag(); finishCtrlRotate(); resizeObserver?.disconnect()
@@ -189,8 +228,8 @@ onBeforeUnmount(() => {
   <div class="earth-map" :class="{ active }" aria-label="百度地图地球模式" :data-view-mode="viewMode" @pointerdown.capture="onCtrlRotateDown" @mousedown.capture="onCtrlMouseDown">
     <div ref="earthElement" class="earth-map-canvas" @pointerdown="onMapPointerDown" @pointermove="onMapPointerMove" @click="onMapClick"></div>
     <div class="earth-map-overlay">
-      <span v-if="overlay.start" class="earth-endpoint start" :style="{ left: `${overlay.start.x}px`, top: `${overlay.start.y}px` }">A</span>
-      <span v-if="overlay.end" class="earth-endpoint end" :style="{ left: `${overlay.end.x}px`, top: `${overlay.end.y}px` }">B</span>
+      <span v-for="anchor in overlay.anchors" :key="anchor.id" class="earth-endpoint" :class="anchor.role" :style="{ left: `${anchor.x}px`, top: `${anchor.y}px` }">{{ anchor.label }}</span>
+      <span v-for="node in overlay.autoNodes" :key="`auto-${node.index}`" class="earth-auto-node" aria-hidden="true" :style="{ left: `${node.x}px`, top: `${node.y}px` }"></span>
       <span v-for="node in overlay.groundNodes" :key="`ground-${node.index}`" class="earth-ground-node" aria-hidden="true" :style="{ left: `${node.x}px`, top: `${node.y}px` }"><span></span></span>
       <button v-for="node in overlay.nodes" :key="node.index" type="button" class="earth-node" :class="{ selected: node.index === selectedIndex }" :aria-label="`选择航点 ${node.index + 1}`" :aria-pressed="node.index === selectedIndex" :data-waypoint-index="node.index" :style="{ left: `${node.x}px`, top: `${node.y}px` }" @pointerdown="onNodeDown($event, node.index)" @pointermove="onNodeMove" @pointerup="onNodeUp" @pointercancel="onNodeUp" @lostpointercapture="onNodeUp" @click.stop="emit('select-waypoint', node.index)"><span></span></button>
     </div>
@@ -215,7 +254,9 @@ onBeforeUnmount(() => {
 .earth-ground-node span { width: 8px; height: 8px; border: 2px solid #fff; border-radius: 50%; background: #36dfba; box-shadow: 0 1px 4px #12343b; }
 .earth-endpoint { position: absolute; transform: translate(-50%, -100%); padding: 3px 6px; border-radius: 4px; color: #fff; font-size: 12px; font-weight: 700; }
 .earth-endpoint.start { background: #0f6cbd; }
+.earth-endpoint.middle { background: #197b78; }
 .earth-endpoint.end { background: #5b5fc7; }
+.earth-auto-node { position: absolute; width: 6px; height: 6px; transform: translate(-50%, -50%); border: 1px solid #fff; border-radius: 50%; background: #00aa83; box-shadow: 0 1px 3px rgb(18 52 59 / .5); pointer-events: none; }
 .earth-tilt-control { position: absolute; z-index: 2; right: 16px; top: 80px; display: flex; align-items: center; gap: 6px; padding: 7px 10px; background: #fff; border: 1px solid #d8dde3; border-radius: 6px; font-size: 12px; }
 .earth-tilt-control input { width: 90px; }
 .earth-map-status { position: absolute; z-index: 2; top: 50%; left: 50%; display: grid; justify-items: center; gap: 9px; max-width: min(320px, 80%); transform: translate(-50%, -50%); padding: 12px 16px; background: #fff; border: 1px solid #d8dde3; color: #424242; text-align: center; font-size: 13px; }

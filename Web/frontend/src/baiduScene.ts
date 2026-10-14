@@ -30,7 +30,7 @@ export async function createBaiduScene(element: HTMLElement, center: Coordinate,
     rendering: { enableAnimationLoop: true },
   } as any)
   if (preview) engine.map.fov = 58
-  return new BaiduScene(engine, sdk, element)
+  return new BaiduScene(engine, sdk, element, !preview)
 }
 
 export class BaiduScene {
@@ -41,7 +41,7 @@ export class BaiduScene {
   private disposed = false
   private beforeRender = () => { for (const callback of this.frameListeners) callback() }
 
-  constructor(readonly engine: any, private sdk: any, private element: HTMLElement) {
+  constructor(readonly engine: any, private sdk: any, private element: HTMLElement, private interactive = true) {
     engine.addBeforeRenderListener(this.beforeRender)
   }
 
@@ -231,7 +231,16 @@ export class BaiduScene {
   }
 
   onFrame(callback: () => void) { this.frameListeners.add(callback); return () => this.frameListeners.delete(callback) }
-  setActive(active: boolean) { this.engine.rendering.enableAnimationLoop = active; if (active) this.engine.requestRender() }
+  setInputs(enabled: boolean) {
+    this.engine.controller.enabled = enabled && this.interactive
+    const controller = this.engine.map._map?.controller
+    if (controller && 'enableInputs' in controller) controller.enableInputs = enabled && this.interactive
+  }
+  setActive(active: boolean) {
+    this.setInputs(active)
+    this.engine.rendering.enableAnimationLoop = active
+    if (active) this.engine.requestRender()
+  }
   resize() { this.engine.requestRender() }
   dispose() {
     if (this.disposed) return

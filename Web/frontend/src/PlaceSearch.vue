@@ -3,10 +3,10 @@ import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { fetchLocationAddress, fetchNearbyPlaces, fetchPlaces, placeToPoint, type PlaceResult } from './placeSearch'
 
 type SearchCenter = { latitude: number; longitude: number }
-type PointTarget = 'start' | 'end'
-const props = defineProps<{ disabled?: boolean; selectionFeedback?: { message: string; error: boolean } | null }>()
+type PointChoice = { id: string; label: string; title: string }
+const props = defineProps<{ disabled?: boolean; selectionFeedback?: { message: string; error: boolean } | null; targets: PointChoice[] }>()
 const emit = defineEmits<{
-  (event: 'choose-point', selection: { target: PointTarget; point: SearchCenter }): void
+  (event: 'choose-point', selection: { target: string; point: SearchCenter }): void
   (event: 'clear-selection-feedback'): void
 }>()
 const query = ref('')
@@ -54,7 +54,7 @@ function openAssignmentDialog(place: PlaceResult, event: MouseEvent) {
   })
 }
 
-function applySelectedPlace(target: PointTarget) {
+function applySelectedPlace(target: string) {
   if (!selectedPlace.value || props.disabled) return
   try {
     restoreAssignmentFocus = true
@@ -241,7 +241,7 @@ function coordinates(place: PlaceResult) {
             <span class="place-coordinates">{{ coordinates(place) }}</span>
             <span v-if="place.precision?.precise === 0" class="place-match-note">模糊匹配，请在地图上核对位置。</span>
           </div>
-          <button type="button" class="place-result-apply" :disabled="disabled" :aria-label="`选择 ${place.name} 作为起点或终点`" :title="`选择 ${place.name} 作为起点或终点`" @click="openAssignmentDialog(place, $event)"><span class="svg-icon place-result-action-icon" aria-hidden="true"></span></button>
+          <button type="button" class="place-result-apply" :disabled="disabled" :aria-label="`选择 ${place.name} 作为主点`" :title="`选择 ${place.name} 作为主点`" @click="openAssignmentDialog(place, $event)"><span class="svg-icon place-result-action-icon" aria-hidden="true"></span></button>
         </li>
       </ul>
       <small class="place-attribution">地点数据 © 百度地图</small>
@@ -252,10 +252,11 @@ function coordinates(place: PlaceResult) {
       <div v-if="selectedPlace" class="place-assignment-content">
         <div class="place-assignment-top"><span>应用搜索地点</span><button type="button" class="place-assignment-close" aria-label="关闭点位选择" @click="closeAssignmentDialog">×</button></div>
         <h2 id="place-assignment-title">将此地点设为哪个点位？</h2>
-        <p id="place-assignment-description">选择起点 A 或终点 B 后，系统会检查该点位并更新航线。</p>
+        <p id="place-assignment-description">选择要替换的主点，或将此地点添加为新的终点。起点和终点会检查候选起降位置。</p>
         <div class="place-assignment-place"><strong>{{ selectedPlace.name }}</strong><span v-if="selectedPlace.address">{{ selectedPlace.address }}</span><small>{{ coordinates(selectedPlace) }}</small></div>
         <p v-if="selectedPlace.precision?.precise === 0" class="place-assignment-warning">该地点为模糊匹配，请在地图上核对位置。</p>
-        <div class="place-assignment-actions"><button type="button" autofocus :disabled="disabled" @click="applySelectedPlace('start')"><b>A</b><span>设为起点 A</span></button><button type="button" :disabled="disabled" @click="applySelectedPlace('end')"><b>B</b><span>设为终点 B</span></button></div>
+        <div class="place-assignment-actions"><button v-for="(target, index) in targets" :key="target.id" type="button" :autofocus="index === 0" :disabled="disabled" @click="applySelectedPlace(target.id)"><b>{{ target.label }}</b><span>设为{{ target.title }} {{ target.label }}</span></button></div>
+        <button type="button" class="place-assignment-new" :disabled="disabled" @click="applySelectedPlace('new')">＋ 添加为新主点</button>
         <button type="button" class="place-assignment-cancel" @click="closeAssignmentDialog">取消</button>
       </div>
     </dialog>
@@ -321,6 +322,8 @@ function coordinates(place: PlaceResult) {
 .place-assignment-actions button:hover:not(:disabled) { border-color: #0f6cbd; background: #f1f7fd; }
 .place-assignment-actions button b { display: grid; place-items: center; flex: none; width: 27px; height: 27px; border-radius: 7px; background: #e6f1fb; color: #0f6cbd; }
 .place-assignment-actions button:nth-child(2) b { background: #eeeeff; color: #5b5fc7; }
+.place-assignment-new { display: block; width: 100%; min-height: 42px; margin-top: 10px; border: 1px dashed #83b5df; border-radius: 9px; background: #f2f8fe; color: #0f6cbd; font-size: 13px; font-weight: 600; cursor: pointer; }
+.place-assignment-new:hover:not(:disabled) { background: #e6f1fb; }
 .place-assignment-dialog button:focus-visible { outline: 2px solid #0f6cbd; outline-offset: 2px; }
 .place-assignment-cancel { display: block; margin: 15px auto 0; padding: 5px 10px; border: 0; border-radius: 6px; background: transparent; color: #617186; font-size: 12px; cursor: pointer; }
 .place-assignment-cancel:hover { background: #f0f4f8; }

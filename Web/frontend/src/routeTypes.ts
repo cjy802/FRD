@@ -4,4 +4,11 @@ export type RoadPreview = {
   altitude_m: number; road_names: string[]; start_snap_m: number; end_snap_m: number
   building_clearance_m: number | null; data_source: string
   risk: { level: string; score: number | null; reason: string }
+  anchors?: Array<{ id: string; latitude: number; longitude: number }>
+  anchor_indices?: number[]
+  segments?: Array<{
+    id: string; index: number; from_id: string; to_id: string
+    start_index: number; end_index: number; distance_m: number; distance_km: number
+    estimated_minutes: number; road_names: string[]; start_snap_m: number; end_snap_m: number
+  }>
 }

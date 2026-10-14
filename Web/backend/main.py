@@ -16,7 +16,7 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from online_router import OnlineServiceUnavailable, plan_online_route, plan_online_alternatives
 from road_planner import CampusRoadNetwork, LOCAL_INDEX_FILE, LocalRoadStore, RouteUnavailable
@@ -26,6 +26,7 @@ from route_candidates import local_road_candidates
 from weather_routes import compare_road_weather
 from dji_kmz import KmzExportError, build_dji_kmz
 from place_search import PlaceSearchError, reverse_geocode, search_nearby_places, search_places
+from mission_routes import MAX_MISSION_ANCHORS, MissionRouteError, MissionRouteLimitError, combine_mission_segments
 
 
 app = FastAPI(title="低空飞行决策工作台", version="0.1.0")
@@ -49,6 +50,32 @@ class RouteRequest(BaseModel):
     altitude_m: float = Field(default=100, ge=0, le=1000, allow_inf_nan=False)
     speed_kmh: float = Field(default=45, gt=0, le=200)
     clearance_m: float = Field(default=2.0, ge=0, le=20)
+
+
+class MissionAnchor(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    latitude: float = Field(ge=-90, le=90, allow_inf_nan=False)
+    longitude: float = Field(ge=-180, le=180, allow_inf_nan=False)
+
+
+class MissionRouteRequest(BaseModel):
+    anchors: list[MissionAnchor] = Field(min_length=2, max_length=MAX_MISSION_ANCHORS)
+    road_source: Literal["local", "online"] = "local"
+    altitude_m: float = Field(default=100, ge=0, le=1000, allow_inf_nan=False)
+    speed_kmh: float = Field(default=45, gt=0, le=200, allow_inf_nan=False)
+    clearance_m: float = Field(default=2.0, ge=0, le=20, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def validate_anchors(self):
+        ids = [anchor.id for anchor in self.anchors]
+        if any(not value.strip() for value in ids):
+            raise ValueError("主点 ID 不能为空。")
+        if len(ids) != len(set(ids)):
+            raise ValueError("主点 ID 必须唯一。")
+        for index, (start, end) in enumerate(zip(self.anchors, self.anchors[1:]), start=1):
+            if start.latitude == end.latitude and start.longitude == end.longitude:
+                raise ValueError(f"第 {index} 段的相邻主点不能重合。")
+        return self
 
 
 class LandingCheckRequest(BaseModel):
@@ -306,6 +333,46 @@ def plan_road_route(route: RouteRequest):
     except RouteUnavailable as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     return route_response(route, result)
+
+
+@app.post("/api/routes/plan-mission")
+def plan_mission_route(route: MissionRouteRequest):
+    """Plan each user-selected anchor pair and join their generated vertices."""
+    anchors = [anchor.model_dump() for anchor in route.anchors]
+    planner = None
+    results = []
+    for index, (start, end) in enumerate(zip(route.anchors, route.anchors[1:]), start=1):
+        try:
+            if route.road_source == "online":
+                result = plan_online_route(
+                    start.latitude, start.longitude, end.latitude, end.longitude,
+                    clearance_m=route.clearance_m,
+                )
+            else:
+                if planner is None:
+                    planner = local_road_store() if LOCAL_INDEX_FILE.is_file() else road_network()
+                result = planner.plan(
+                    start.latitude, start.longitude, end.latitude, end.longitude,
+                    clearance_m=route.clearance_m,
+                )
+        except OnlineServiceUnavailable as error:
+            raise HTTPException(
+                status_code=503,
+                detail=f"第 {index} 段（{start.id}→{end.id}）规划失败：{error}",
+            ) from error
+        except RouteUnavailable as error:
+            raise HTTPException(
+                status_code=422,
+                detail=f"第 {index} 段（{start.id}→{end.id}）规划失败：{error}",
+            ) from error
+        results.append(result)
+    try:
+        combined = combine_mission_segments(anchors, results, route.speed_kmh)
+    except MissionRouteLimitError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except MissionRouteError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    return route_response(route, combined)
 
 
 @app.post("/api/routes/export-kmz")
