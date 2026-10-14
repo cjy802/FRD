@@ -5,6 +5,8 @@ import RouteWeatherPanel from './RouteWeatherPanel.vue'
 import WeatherWindowsPanel from './WeatherWindowsPanel.vue'
 import RoadWeatherComparison from './RoadWeatherComparison.vue'
 import EarthMap from './EarthMap.vue'
+import BaiduCameraPreview from './BaiduCameraPreview.vue'
+import type { CameraPose } from './baiduScene'
 import type { RouteAssessment, WeatherLimits } from './weatherTypes'
 import { weatherOnlyChecks } from './weatherPresentation'
 import type { RoadPreview as Preview } from './routeTypes'
@@ -69,6 +71,7 @@ const pointHint = ref('')
 const mapMode = ref<'start' | 'end'>('start')
 const baseMap = ref<'current' | 'earth'>('current')
 const earthMapMounted = ref(false)
+const earthMapRef = ref<InstanceType<typeof EarthMap> | null>(null)
 const mapViewMode = ref<'2d' | '3d'>('3d')
 const mapEditMode = ref<'route' | 'node'>('route')
 const selectedWaypointIndex = ref<number | null>(null)
@@ -79,6 +82,7 @@ const roadSource = ref<'local' | 'online'>('local')
 const mapReady = ref(false)
 const mapElement = ref<HTMLElement | null>(null)
 const cameraPreviewElement = ref<HTMLElement | null>(null)
+const cesiumCameraElement = ref<HTMLElement | null>(null)
 const cameraPreviewReady = ref(false)
 let cameraPreviewViewer: any = null
 let waypointRenderFrame: number | null = null
@@ -103,6 +107,14 @@ const distance = computed(() => preview.value ? `${preview.value.distance_km.toF
 const layoutStyle = computed(() => ({ '--sidebar-width': `${sidebarWidth.value}px`, '--insights-width': `${insightsWidth.value}px` }))
 const routeKey = computed(() => JSON.stringify([form.start, form.end, roadSource.value, form.clearance_m]))
 const weatherCoordinates = computed(() => preview.value && previewKey.value === routeKey.value ? preview.value.geometry.coordinates : null)
+const earthRoute = computed(() => preview.value?.geometry.coordinates.map(([longitude, latitude], index) => [longitude, latitude, waypointSettings.value[index]?.altitude_m ?? form.altitude_m]) ?? null)
+const selectedCameraPose = computed<CameraPose | null>(() => {
+  const index = selectedWaypointIndex.value
+  const coordinate = index === null ? null : preview.value?.geometry.coordinates[index]
+  if (index === null || !coordinate) return null
+  return { longitude: coordinate[0], latitude: coordinate[1], altitude: waypointSettings.value[index]?.altitude_m ?? form.altitude_m,
+    heading: waypointHeading(index), pitch: waypointSettings.value[index]?.gimbal_pitch_angle ?? 0 }
+})
 const earthFootprint = computed(() => {
   const index = selectedWaypointIndex.value
   if (!Cesium || !preview.value || index === null || mapEditMode.value !== 'node') return []
@@ -162,27 +174,34 @@ watch(workspacePanel, async () => {
 
 async function chooseBaseMap(next: 'current' | 'earth') {
   if (baseMap.value === next) return
+  cancelCameraPreviewDrag()
+  finishMapCameraDrag()
   if (next === 'earth') earthMapMounted.value = true
   baseMap.value = next
   await nextTick()
+  if (viewer) viewer.useDefaultRenderLoop = next === 'current'
+  if (cameraPreviewViewer) cameraPreviewViewer.useDefaultRenderLoop = next === 'current' && mapEditMode.value === 'node' && selectedWaypointIndex.value !== null
   if (next === 'current') {
     viewer?.resize()
-    if (viewer?.scene) {
-      if (mapViewMode.value === '2d') viewer.scene.morphTo2D(0.6)
-      else viewer.scene.morphTo3D(0.6)
-    }
-    viewer?.scene.requestRender()
+    applyCurrentMapView()
+    updateCameraPreview()
   }
+}
+
+function applyCurrentMapView() {
+  if (!viewer?.scene) return
+  if (mapViewMode.value === '2d') viewer.scene.morphTo2D(0)
+  else viewer.scene.morphTo3D(0)
+  drawCesiumRoute(true)
+  viewer.scene.requestRender()
 }
 
 function chooseMapViewMode(next: '2d' | '3d') {
   if (mapViewMode.value === next) return
+  cancelCameraPreviewDrag()
+  finishMapCameraDrag()
   mapViewMode.value = next
-  if (baseMap.value === 'current' && viewer?.scene) {
-    if (next === '2d') viewer.scene.morphTo2D(0.6)
-    else viewer.scene.morphTo3D(0.6)
-    viewer.scene.requestRender()
-  }
+  if (baseMap.value === 'current') applyCurrentMapView()
 }
 
 watch([mapEditMode, selectedWaypointIndex], () => {
@@ -231,7 +250,7 @@ function syncWaypointSettings(route: Preview) {
     altitude_m: form.altitude_m,
     heading_mode: 'followWayline',
     heading_angle: 0,
-    gimbal_pitch_angle: -30,
+    gimbal_pitch_angle: 0,
   }))
 }
 
@@ -273,7 +292,7 @@ function cameraFrustum(index: number, routeAltitude: number) {
   const setting = waypointSettings.value[index]
   const altitude = setting?.altitude_m ?? routeAltitude
   const yaw = waypointHeading(index) * Math.PI / 180
-  const pitch = (setting?.gimbal_pitch_angle ?? -30) * Math.PI / 180
+  const pitch = (setting?.gimbal_pitch_angle ?? 0) * Math.PI / 180
   const halfHorizontal = 78 * Math.PI / 360
   const halfVertical = 58 * Math.PI / 360
   const forward: LocalVector = { east: Math.sin(yaw) * Math.cos(pitch), north: Math.cos(yaw) * Math.cos(pitch), up: Math.sin(pitch) }
@@ -400,12 +419,24 @@ function selectWaypoint(index: number) {
 }
 
 function focusSelectedWaypoint() {
-  if (!viewer || !preview.value || selectedWaypointIndex.value === null || !Cesium) return
+  if (!preview.value || selectedWaypointIndex.value === null) return
   const index = selectedWaypointIndex.value
+  if (baseMap.value === 'earth') {
+    earthMapRef.value?.focusWaypoint(index)
+    return
+  }
+  if (!viewer || !Cesium) return
   const [longitude, latitude] = preview.value.geometry.coordinates[index]
   const setting = waypointSettings.value[index]
   const altitude = setting?.altitude_m ?? form.altitude_m
   const heading = waypointHeading(index)
+  if (mapViewMode.value === '2d') {
+    viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(longitude, latitude, 700),
+      orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 } })
+    viewer.scene.requestRender()
+    updateCameraPreview()
+    return
+  }
   const rear = offsetCoordinate(longitude, latitude, (heading + 180) % 360, 220)
   viewer.camera.flyTo({
     destination: Cesium.Cartesian3.fromDegrees(rear[0], rear[1], altitude + 150),
@@ -416,6 +447,7 @@ function focusSelectedWaypoint() {
 }
 
 function updateCameraPreview() {
+  if (baseMap.value === 'earth') return
   if (!preview.value || selectedWaypointIndex.value === null || mapEditMode.value !== 'node' || !Cesium) return
   if (!cameraPreviewViewer) initCameraPreview()
   if (!cameraPreviewViewer) return
@@ -424,7 +456,7 @@ function updateCameraPreview() {
   const setting = waypointSettings.value[index]
   const altitude = setting?.altitude_m ?? form.altitude_m
   const heading = waypointHeading(index)
-  const pitch = setting?.gimbal_pitch_angle ?? -30
+  const pitch = setting?.gimbal_pitch_angle ?? 0
   cameraPreviewViewer.camera.setView({
     destination: Cesium.Cartesian3.fromDegrees(longitude, latitude, altitude),
     orientation: { heading: Cesium.Math.toRadians(heading), pitch: Cesium.Math.toRadians(pitch), roll: 0 },
@@ -451,7 +483,7 @@ function handleCameraPreviewPointerDown(event: PointerEvent) {
     heading: waypointHeading(index),
     headingMode: setting.heading_mode,
     headingAngle: setting.heading_angle,
-    pitch: setting.gimbal_pitch_angle,
+    pitch: setting.gimbal_pitch_angle ?? 0,
     width: Math.max(1, bounds.width),
     height: Math.max(1, bounds.height),
     axis: null,
@@ -503,16 +535,17 @@ function finishMapCameraDrag() {
   mapCameraInputsBeforeDrag = null
 }
 
-watch([mapEditMode, selectedWaypointIndex], async () => {
+watch([mapEditMode, selectedWaypointIndex, baseMap], async () => {
   await nextTick()
   if (mapEditMode.value === 'node' && selectedWaypointIndex.value !== null) {
     updateCameraPreview()
-    if (cameraPreviewViewer) {
+    if (cameraPreviewViewer && baseMap.value === 'current') {
       cameraPreviewViewer.useDefaultRenderLoop = true
       cameraPreviewViewer.resize()
       cameraPreviewViewer.scene.requestRender()
     }
-  } else if (cameraPreviewViewer) {
+  }
+  if (cameraPreviewViewer && (baseMap.value === 'earth' || mapEditMode.value !== 'node' || selectedWaypointIndex.value === null)) {
     cameraPreviewViewer.useDefaultRenderLoop = false
   }
 })
@@ -750,6 +783,7 @@ async function chooseMapPoint(point: Point) {
 }
 
 function drawCesiumRoute(flyToRoute = true) {
+  const flatView = mapViewMode.value === '2d'
   if (!viewer || !Cesium) return
   selectedViewFrustum = null
   viewer.entities.removeAll()
@@ -807,7 +841,7 @@ function drawCesiumRoute(flyToRoute = true) {
     coordinates.flatMap(([longitude, latitude]) => [longitude, latitude]),
   )
   const elevatedPositions = Cesium.Cartesian3.fromDegreesArrayHeights(
-    coordinates.flatMap(([longitude, latitude], index) => [longitude, latitude, waypointSettings.value[index]?.altitude_m ?? routeAltitude]),
+    coordinates.flatMap(([longitude, latitude], index) => [longitude, latitude, mapViewMode.value === '2d' ? 1 : waypointSettings.value[index]?.altitude_m ?? routeAltitude]),
   )
 
   // Keep a low-contrast ground trace so the route remains readable against the 2D imagery.
@@ -859,8 +893,8 @@ function drawCesiumRoute(flyToRoute = true) {
     const [longitude, latitude] = coordinates[index]
     const ground = Cesium.Cartesian3.fromDegrees(longitude, latitude, 0)
     const waypointAltitude = waypointSettings.value[index]?.altitude_m ?? routeAltitude
-    const elevated = Cesium.Cartesian3.fromDegrees(longitude, latitude, waypointAltitude)
-    viewer.entities.add({
+    const elevated = Cesium.Cartesian3.fromDegrees(longitude, latitude, mapViewMode.value === '2d' ? 1 : waypointAltitude)
+    if (!flatView) viewer.entities.add({
       name: `航点 ${index + 1} 垂直投影`,
       polyline: {
         positions: [ground, elevated],
@@ -879,7 +913,7 @@ function drawCesiumRoute(flyToRoute = true) {
       name: `航点 ${index + 1}`,
       properties: { waypointIndex: index },
       position: elevated,
-      point: { show: mapEditMode.value !== 'node' || selected, disableDepthTestDistance: Number.POSITIVE_INFINITY, pixelSize: selected ? 28 : index === 0 || index === coordinates.length - 1 ? 13 : 10, color: selected ? Cesium.Color.fromCssColorString('#ffb547') : routeColor, outlineColor: selected ? Cesium.Color.fromCssColorString('#ffd54f') : Cesium.Color.WHITE, outlineWidth: selected ? 4 : 2 },
+      point: { show: flatView || mapEditMode.value !== 'node' || selected, disableDepthTestDistance: Number.POSITIVE_INFINITY, pixelSize: selected ? 28 : index === 0 || index === coordinates.length - 1 ? 13 : 10, color: selected ? Cesium.Color.fromCssColorString('#ffb547') : routeColor, outlineColor: selected ? Cesium.Color.fromCssColorString('#ffd54f') : Cesium.Color.WHITE, outlineWidth: selected ? 4 : 2 },
       label: {
         text: index === 0 ? 'A 3D 起点' : index === coordinates.length - 1 ? 'B 3D 终点' : `W${String(index + 1).padStart(2, '0')}`,
         font: '600 12px sans-serif',
@@ -911,7 +945,7 @@ function drawCesiumRoute(flyToRoute = true) {
           name: `航点 ${index + 1} 视角方向`,
           polyline: { positions: new Cesium.CallbackProperty(() => selectedViewFrustum ? [selectedViewFrustum.origin, selectedViewFrustum.groundCenter] : [], false), width: 4, material: Cesium.PolylineDashMaterialProperty ? new Cesium.PolylineDashMaterialProperty({ color: viewColor, dashLength: 12 }) : viewColor, clampToGround: false },
         })
-        frustum.faces.forEach((face, faceIndex) => viewer.entities.add({
+        if (!flatView) frustum.faces.forEach((face, faceIndex) => viewer.entities.add({
           id: `selected-view-face-${faceIndex}`,
           name: `航点 ${index + 1} 视锥体侧面 ${faceIndex + 1}`,
           polygon: { hierarchy: new Cesium.CallbackProperty(() => new Cesium.PolygonHierarchy(selectedViewFrustum?.faces[faceIndex] ?? []), false), perPositionHeight: true, arcType: Cesium.ArcType.NONE, material: Cesium.Color.fromCssColorString('#72e6c2').withAlpha(0.22), outline: true, outlineColor: viewColor.withAlpha(0.62), outlineWidth: 1 },
@@ -949,7 +983,7 @@ function drawCesiumRoute(flyToRoute = true) {
   if (flyToRoute) {
     viewer.camera.flyTo({
       destination: Cesium.Cartesian3.fromDegrees(centerLongitude, centerLatitude, cameraHeight),
-      orientation: { heading: Cesium.Math.toRadians(0), pitch: Cesium.Math.toRadians(-34), roll: 0 },
+      orientation: { heading: 0, pitch: Cesium.Math.toRadians(mapViewMode.value === '2d' ? -90 : -34), roll: 0 },
       duration: 0.8,
     })
   }
@@ -983,7 +1017,7 @@ function initMap() {
     viewer.scene.globe.depthTestAgainstTerrain = false
     viewer.camera.setView({
       destination: Cesium.Cartesian3.fromDegrees(119.95050, 31.67980, 1100),
-      orientation: { heading: Cesium.Math.toRadians(0), pitch: Cesium.Math.toRadians(-34), roll: 0 },
+      orientation: { heading: 0, pitch: Cesium.Math.toRadians(mapViewMode.value === '2d' ? -90 : -34), roll: 0 },
     })
     const clickHandler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas)
     const pickEntity = (position: any) => {
@@ -1058,7 +1092,7 @@ function initMap() {
 function initCameraPreview() {
   if (!Cesium || !cameraPreviewElement.value || cameraPreviewViewer) return
   try {
-    cameraPreviewViewer = new Cesium.Viewer(cameraPreviewElement.value, {
+    cameraPreviewViewer = new Cesium.Viewer(cesiumCameraElement.value ?? cameraPreviewElement.value, {
       baseLayer: false,
       terrainProvider: new Cesium.EllipsoidTerrainProvider(),
       requestRenderMode: true,
@@ -1173,19 +1207,19 @@ onBeforeUnmount(() => {
 
       <section id="route-map" class="map-panel" :class="{ 'panel-active': workspacePanel === 'map' }" aria-label="航线地图">
         <div ref="mapElement" class="cesium-map" :class="{ visible: mapReady && baseMap === 'current' }"></div>
-        <EarthMap v-if="earthMapMounted" :active="baseMap === 'earth'" :view-mode="mapViewMode" :start="form.start" :end="form.end" :route="preview?.geometry.coordinates ?? null" :selected-index="selectedWaypointIndex" :edit-mode="mapEditMode" :footprint="earthFootprint" :weather-segments="routeAssessment?.weather_risk.segments ?? []" :show-start-range="showStartRange" :show-end-range="showEndRange" :range-meters="landingSearchRadiusM" @select-waypoint="selectWaypoint" @choose-point="chooseMapPoint" @rotate-waypoint="setSelectedWaypointOrientation($event, undefined, true)" />
+        <EarthMap v-if="earthMapMounted" ref="earthMapRef" :active="baseMap === 'earth'" :view-mode="mapViewMode" :start="form.start" :end="form.end" :route="earthRoute" :selected-index="selectedWaypointIndex" :edit-mode="mapEditMode" :footprint="earthFootprint" :weather-segments="routeAssessment?.weather_risk.segments ?? []" :show-start-range="showStartRange" :show-end-range="showEndRange" :range-meters="landingSearchRadiusM" @select-waypoint="selectWaypoint" @choose-point="chooseMapPoint" @rotate-waypoint="setSelectedWaypointOrientation($event, undefined, true)" />
         <div v-if="!mapReady && baseMap === 'current'" class="map-fallback">
           <div class="grid-lines"></div>
           <p>地图底图加载中</p><small>道路路线按所选数据源计算</small>
         </div>
-         <div class="map-top"><div class="map-title-group"><span class="map-badge"><span class="svg-icon icon-layers" aria-hidden="true"></span>{{ baseMap === 'earth' ? '地球模式 · 航线预览' : '2D 底图 · 3D 航线预览' }}</span><span class="map-mode-chip">{{ form.altitude_m }} m AGL</span><div class="map-source-switch base-map-switch" aria-label="底图"><button type="button" :class="{ active: baseMap === 'current' }" :aria-pressed="baseMap === 'current'" @click="chooseBaseMap('current')">当前底图</button><button type="button" :class="{ active: baseMap === 'earth' }" :aria-pressed="baseMap === 'earth'" @click="chooseBaseMap('earth')">地球模式</button></div><div class="map-source-switch" aria-label="路线数据源"><button type="button" :class="{ active: roadSource === 'local' }" :aria-pressed="roadSource === 'local'" :disabled="loading || checkingPoint" @click="chooseRoadSource('local')">本地</button><button type="button" :class="{ active: roadSource === 'online' }" :aria-pressed="roadSource === 'online'" :disabled="loading || checkingPoint" @click="chooseRoadSource('online')">在线</button></div><div class="map-edit-switch" aria-label="编辑对象"><button type="button" :class="{ active: mapEditMode === 'route' }" :aria-pressed="mapEditMode === 'route'" @click="mapEditMode = 'route'">路径 / A-B</button><button type="button" :class="{ active: mapEditMode === 'node' }" :aria-pressed="mapEditMode === 'node'" @click="mapEditMode = 'node'">节点 / 视角</button></div></div><span class="map-caption">{{ checkingPoint ? '正在检查点位…' : mapEditMode === 'node' ? '点击节点选中，拖动橙色镜头调整朝向' : `地图点击可设置 ${mapMode === 'start' ? '起点 A' : '终点 B'}` }}</span></div>
+         <div class="map-top"><div class="map-title-group"><span class="map-badge"><span class="svg-icon icon-layers" aria-hidden="true"></span>{{ (baseMap === 'earth' ? '地球模式' : '当前底图') + (mapViewMode === '3d' ? ' · 3D 航线' : ' · 2D 平面') }}</span><span class="map-mode-chip">{{ form.altitude_m }} m AGL</span><div class="map-source-switch base-map-switch" aria-label="底图"><button type="button" :class="{ active: baseMap === 'current' }" :aria-pressed="baseMap === 'current'" @click="chooseBaseMap('current')">当前底图</button><button type="button" :class="{ active: baseMap === 'earth' }" :aria-pressed="baseMap === 'earth'" @click="chooseBaseMap('earth')">地球模式</button></div><div class="map-source-switch" aria-label="路线数据源"><button type="button" :class="{ active: roadSource === 'local' }" :aria-pressed="roadSource === 'local'" :disabled="loading || checkingPoint" @click="chooseRoadSource('local')">本地</button><button type="button" :class="{ active: roadSource === 'online' }" :aria-pressed="roadSource === 'online'" :disabled="loading || checkingPoint" @click="chooseRoadSource('online')">在线</button></div><div class="map-edit-switch" aria-label="编辑对象"><button type="button" :class="{ active: mapEditMode === 'route' }" :aria-pressed="mapEditMode === 'route'" @click="mapEditMode = 'route'">路径 / A-B</button><button type="button" :class="{ active: mapEditMode === 'node' }" :aria-pressed="mapEditMode === 'node'" @click="mapEditMode = 'node'">节点 / 视角</button></div></div><span class="map-caption">{{ checkingPoint ? '正在检查点位…' : mapEditMode === 'node' ? '点击节点选中，拖动橙色镜头调整朝向' : `地图点击可设置 ${mapMode === 'start' ? '起点 A' : '终点 B'}` }}</span></div>
         <div class="map-view-switch map-source-switch view-mode-switch" aria-label="地图视图"><button type="button" :class="{ active: mapViewMode === '2d' }" :aria-pressed="mapViewMode === '2d'" @click="chooseMapViewMode('2d')">2D 平面</button><button type="button" :class="{ active: mapViewMode === '3d' }" :aria-pressed="mapViewMode === '3d'" @click="chooseMapViewMode('3d')">3D 视角</button></div>
         <div v-if="error" class="map-alert" role="alert">{{ error }}</div>
         <div v-else-if="pointHint" class="map-point-hint" role="status">{{ pointHint }}</div>
          <div class="map-bottom"><div class="map-switch"><button :class="{ active: mapMode === 'start' }" :disabled="checkingPoint || mapEditMode !== 'route'" @click="mapMode = 'start'"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>设置起点 A</button><button :class="{ active: mapMode === 'end' }" :disabled="checkingPoint || mapEditMode !== 'route'" @click="mapMode = 'end'"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>设置终点 B</button></div><span class="map-radius"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>接路判定 {{ landingSearchRadiusM }} m</span><span class="map-scale"><span class="svg-icon icon-wind" aria-hidden="true"></span>任务高度 {{ form.altitude_m }} m</span></div>
         <div v-if="mapEditMode === 'node' && selectedWaypointIndex !== null && selectedWaypointSetting()" class="node-controller" aria-label="航点控制器"><div class="node-controller-head"><strong>节点 {{ selectedWaypointIndex + 1 }} · 视角控制</strong><span>{{ Math.round(waypointHeading(selectedWaypointIndex)) }}° · {{ selectedWaypointSetting()?.altitude_m ?? form.altitude_m }}m</span></div><div class="node-controller-body"><div class="wasd-pad" aria-label="WASD 平面移动控制"><button type="button" @click="moveSelectedWaypoint(0, 1)">W</button><button type="button" @click="moveSelectedWaypoint(-1, 0)">A</button><button type="button" @click="moveSelectedWaypoint(0, -1)">S</button><button type="button" @click="moveSelectedWaypoint(1, 0)">D</button></div><div class="node-dial"><button type="button" aria-label="逆时针旋转" @click="rotateSelectedWaypoint(-15)">↺</button><strong>{{ Math.round(waypointHeading(selectedWaypointIndex)) }}°</strong><button type="button" aria-label="顺时针旋转" @click="rotateSelectedWaypoint(15)">↻</button></div><div class="node-axis"><button type="button" @click="rotateSelectedWaypoint(0, 5)">镜头上</button><button type="button" @click="rotateSelectedWaypoint(0, -5)">镜头下</button><button type="button" @click="adjustSelectedWaypoint({ altitude_m: Math.min(1500, (selectedWaypointSetting()?.altitude_m ?? form.altitude_m) + 5) })">高度 +</button><button type="button" @click="adjustSelectedWaypoint({ altitude_m: Math.max(1, (selectedWaypointSetting()?.altitude_m ?? form.altitude_m) - 5) })">高度 −</button></div></div><small>W/S 平面前后 ±1m，A/D 平面左右 ±1m，Q/E 航向 ±5°，Z/C 俯仰 ±5°可直接调整水平朝向。</small></div>
         <div v-if="routeAssessment" class="weather-map-legend">沿线初筛：蓝 · 未触发，橙 · 关注，红 · 较强，灰 · 缺测<br />基于 0.25° 场，不是街道级风险，也不代表飞行许可。</div>
-        <div class="camera-preview" :class="{ visible: mapEditMode === 'node' && selectedWaypointIndex !== null && cameraPreviewReady }" aria-label="当前节点相机视角预览"><div ref="cameraPreviewElement" class="camera-preview-map" @pointerdown.capture="handleCameraPreviewPointerDown" @pointermove="handleCameraPreviewPointerMove" @pointerup="handleCameraPreviewPointerEnd" @pointercancel="handleCameraPreviewPointerEnd" @lostpointercapture="handleCameraPreviewPointerEnd"></div><div class="camera-preview-head"><strong>当前视角</strong><span v-if="selectedWaypointIndex !== null">节点 {{ selectedWaypointIndex + 1 }} · {{ Math.round(selectedWaypointSetting()?.gimbal_pitch_angle ?? -30) }}°</span></div><small>地图模拟视角 · 不是实时相机视频</small></div>
+        <div class="camera-preview" :class="{ visible: mapEditMode === 'node' && selectedWaypointIndex !== null && (baseMap === 'earth' || cameraPreviewReady) }" aria-label="当前节点相机视角预览"><div ref="cameraPreviewElement" class="camera-preview-map" :data-base-map="baseMap" @pointerdown.capture="handleCameraPreviewPointerDown" @pointermove="handleCameraPreviewPointerMove" @pointerup="handleCameraPreviewPointerEnd" @pointercancel="handleCameraPreviewPointerEnd" @lostpointercapture="handleCameraPreviewPointerEnd"><div ref="cesiumCameraElement" :style="{ position: 'absolute', inset: '0', visibility: baseMap === 'current' ? 'visible' : 'hidden' }"></div><BaiduCameraPreview v-if="baseMap === 'earth' && mapEditMode === 'node' && selectedWaypointIndex !== null" :active="baseMap === 'earth' && mapEditMode === 'node' && selectedWaypointIndex !== null" :pose="selectedCameraPose" /></div><div class="camera-preview-head"><strong>当前视角</strong><span v-if="selectedWaypointIndex !== null">节点 {{ selectedWaypointIndex + 1 }} · {{ Math.round(selectedWaypointSetting()?.gimbal_pitch_angle ?? 0) }}°</span></div><small>地图模拟视角 · 不是实时相机视频</small></div>
         <div v-if="loading" class="map-loading-overlay">
           <div class="map-loading-card">
             <button type="button" class="map-loading-cancel" aria-label="取消路线计算" title="取消" @click="cancelCalculation">×</button>

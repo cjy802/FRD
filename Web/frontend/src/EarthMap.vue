@@ -1,357 +1,158 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { bd09ToWgs84, wgs84ToBd09, type LngLat } from './baiduCoordinates'
+import { createBaiduScene, type BaiduScene } from './baiduScene'
 
 type Point = { longitude: number; latitude: number }
-type WeatherSegment = { start: number[]; end: number[]; level: string }
-type ScreenPoint = { x: number; y: number }
-
 const props = defineProps<{
-  active: boolean
-  viewMode: '2d' | '3d'
-  start: Point
-  end: Point
-  route: number[][] | null
-  selectedIndex: number | null
-  editMode: 'route' | 'node'
-  footprint: number[][]
-  weatherSegments: WeatherSegment[]
-  showStartRange: boolean
-  showEndRange: boolean
-  rangeMeters: number
+  active: boolean; viewMode: '2d' | '3d'; start: Point; end: Point; route: number[][] | null
+  selectedIndex: number | null; editMode: 'route' | 'node'; footprint: number[][]
+  weatherSegments: { start: number[]; end: number[]; level: string }[]
+  showStartRange: boolean; showEndRange: boolean; rangeMeters: number
 }>()
-const emit = defineEmits<{
-  'select-waypoint': [index: number]
-  'choose-point': [point: Point]
-  'rotate-waypoint': [heading: number]
-}>()
-
+const emit = defineEmits<{ 'select-waypoint': [index: number]; 'choose-point': [point: Point]; 'rotate-waypoint': [heading: number] }>()
 const earthElement = ref<HTMLElement | null>(null)
 const status = ref('正在加载地球模式…')
-const ready = ref(false)
 const failed = ref(false)
+const tilt = ref(52)
 const overlay = reactive({
-  width: 1,
-  height: 1,
-  route: [] as string[],
-  footprint: '',
-  rays: '',
-  startRange: '',
-  endRange: '',
-  weather: [] as { path: string; color: string }[],
-  start: null as ScreenPoint | null,
-  end: null as ScreenPoint | null,
-  nodes: [] as (ScreenPoint & { index: number })[],
+  nodes: [] as { x: number; y: number; index: number }[],
+  groundNodes: [] as { x: number; y: number; index: number }[],
+  start: null as { x: number; y: number } | null,
+  end: null as { x: number; y: number } | null,
 })
-
-let map: any = null
-let BMapGL: any = null
-let renderFrame: number | null = null
+let scene: BaiduScene | null = null
 let resizeObserver: ResizeObserver | null = null
-let dragIndex: number | null = null
-let dragPointer: number | null = null
-let keepRendering = false
-let mapPointerStart: ScreenPoint | null = null
+let unmounted = false
+let drag: { index: number; pointerId: number; x: number; y: number; element: HTMLElement; moved: boolean } | null = null
+let mapPointerStart: { x: number; y: number } | null = null
 let mapPointerMoved = false
-let pointClickFrame: number | null = null
-let pendingPointClick: { lng: number; lat: number; priority: number } | null = null
+let routeSignature = ''
 
-let scriptPromise: Promise<any> | null = null
-function loadBaiduMap() {
-  if ((window as any).BMapGL?.Map) return Promise.resolve((window as any).BMapGL)
-  if (scriptPromise) return scriptPromise
-  const ak = import.meta.env.VITE_BAIDU_MAP_AK?.trim()
-  if (!ak) return Promise.reject(new Error('尚未配置百度地图 AK。'))
-  scriptPromise = new Promise((resolve, reject) => {
-    const script = document.createElement('script')
-    const callbackName = `__baiduEarthReady${Date.now()}`
-    let settled = false
-    ;(window as any)[callbackName] = () => {
-      if (settled) return
-      settled = true
-      window.clearTimeout(deadline)
-      delete (window as any)[callbackName]
-      if ((window as any).BMapGL?.Map) resolve((window as any).BMapGL)
-      else reject(new Error('百度地图初始化失败，请检查 AK 配置。'))
-    }
-    const deadline = window.setTimeout(() => {
-      settled = true
-      script.remove()
-      delete (window as any)[callbackName]
-      reject(new Error('百度地图加载超时。'))
-    }, 15000)
-    script.src = `https://api.map.baidu.com/api?v=1.0&type=webgl&ak=${encodeURIComponent(ak)}&callback=${callbackName}`
-    script.onerror = () => {
-      settled = true
-      window.clearTimeout(deadline)
-      script.remove()
-      delete (window as any)[callbackName]
-      reject(new Error('百度地图脚本加载失败。'))
-    }
-    document.head.appendChild(script)
-  }).catch((error) => { scriptPromise = null; throw error })
-  return scriptPromise
-}
-
-function toPoint([longitude, latitude]: number[]): any {
-  const [lng, lat] = wgs84ToBd09([longitude, latitude])
-  return new BMapGL.Point(lng, lat)
-}
-
-function project(coordinate: number[]): ScreenPoint | null {
-  if (!map) return null
-  const pixel = map.pointToPixel(toPoint(coordinate))
-  if (!pixel || !Number.isFinite(pixel.x) || !Number.isFinite(pixel.y)) return null
-  return { x: pixel.x, y: pixel.y }
-}
-
-function path(coordinates: number[][], close = false) {
-  const pixels = coordinates.map(project)
-  if (pixels.some(pixel => !pixel)) return ''
-  const points = pixels as ScreenPoint[]
-  return points.map((point, index) => `${index ? 'L' : 'M'}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(' ') + (close ? ' Z' : '')
-}
-
-function paths(coordinates: number[][]) {
-  const result: string[] = []
-  let segment: number[][] = []
-  const flush = () => {
-    if (segment.length > 1) result.push(path(segment))
-    segment = []
-  }
-  coordinates.forEach((coordinate) => {
-    if (project(coordinate)) segment.push(coordinate)
-    else flush()
-  })
-  flush()
-  return result
-}
-
+function coordinates() { return props.route?.length ? props.route : [[props.start.longitude, props.start.latitude, 0], [props.end.longitude, props.end.latitude, 0]] }
 function circle(point: Point) {
-  const latitudeRadians = point.latitude * Math.PI / 180
-  const latitudeStep = props.rangeMeters / 111320
-  const longitudeStep = latitudeStep / Math.cos(latitudeRadians)
-  return path(Array.from({ length: 32 }, (_, index) => {
-    const angle = index * Math.PI / 16
-    return [point.longitude + longitudeStep * Math.cos(angle), point.latitude + latitudeStep * Math.sin(angle)]
-  }), true)
+  return Array.from({ length: 64 }, (_, index) => {
+    const angle = index * Math.PI / 32
+    return [point.longitude + props.rangeMeters / (111320 * Math.cos(point.latitude * Math.PI / 180)) * Math.cos(angle), point.latitude + props.rangeMeters / 111320 * Math.sin(angle), 2]
+  })
 }
-
 function renderOverlay() {
-  if (!map || !earthElement.value || !props.active) return
-  const bounds = earthElement.value.getBoundingClientRect()
-  overlay.width = Math.max(1, bounds.width)
-  overlay.height = Math.max(1, bounds.height)
-  overlay.route = props.route?.length && props.route.length > 1 ? paths(props.route) : []
-  overlay.start = project([props.start.longitude, props.start.latitude])
-  overlay.end = project([props.end.longitude, props.end.latitude])
-  overlay.startRange = props.showStartRange ? circle(props.start) : ''
-  overlay.endRange = props.showEndRange ? circle(props.end) : ''
-  overlay.nodes = props.editMode === 'node' ? (props.route ?? []).flatMap((point, index) => {
-    const pixel = project(point)
+  if (!scene || !props.active) return
+  const nodes = props.editMode === 'node' ? (props.route ?? []).flatMap((point, index) => {
+    const pixel = scene!.project([point[0], point[1], props.viewMode === '2d' ? 2 : (point[2] ?? 100)])
     return pixel ? [{ ...pixel, index }] : []
   }) : []
-  overlay.footprint = props.selectedIndex !== null && props.footprint.length >= 3 ? path(props.footprint, true) : ''
-  overlay.rays = props.selectedIndex !== null && props.route?.[props.selectedIndex]
-    ? props.footprint.map(point => path([props.route![props.selectedIndex!], point])).join(' ')
-    : ''
-  const colors: Record<string, string> = { no_trigger: '#0f6cbd', attention: '#b66a00', elevated: '#b42318', incomplete: '#6e7781' }
-  overlay.weather = props.weatherSegments.map(segment => ({
-    path: path([segment.start, segment.end]), color: colors[segment.level] ?? '#6e7781',
-  }))
+  const groundNodes = props.editMode === 'node' && props.viewMode === '3d' ? (props.route ?? []).flatMap((point, index) => {
+    const pixel = scene!.project([point[0], point[1], 1])
+    return pixel ? [{ ...pixel, index }] : []
+  }) : []
+  if (JSON.stringify(nodes) !== JSON.stringify(overlay.nodes)) overlay.nodes = nodes
+  if (JSON.stringify(groundNodes) !== JSON.stringify(overlay.groundNodes)) overlay.groundNodes = groundNodes
+  overlay.start = scene.project([props.start.longitude, props.start.latitude, 2])
+  overlay.end = scene.project([props.end.longitude, props.end.latitude, 2])
 }
-
-function scheduleOverlay() {
-  if (renderFrame !== null) return
-  renderFrame = requestAnimationFrame(() => {
-    renderFrame = null
-    renderOverlay()
-    if (keepRendering && props.active) scheduleOverlay()
-  })
+function refreshRoute() {
+  if (!scene) return
+  scene.setRoute(props.route ?? [], props.viewMode, props.weatherSegments, [
+    ...(props.showStartRange ? [circle(props.start)] : []), ...(props.showEndRange ? [circle(props.end)] : []),
+  ])
+  const signature = JSON.stringify(coordinates().map(point => point.slice(0, 2)))
+  if (!routeSignature || (signature !== routeSignature && props.editMode === 'route')) scene.fit(coordinates(), props.viewMode)
+  routeSignature = signature
+  refreshFootprint()
 }
-
-function fitRoute() {
-  if (!map || !BMapGL) return
-  const coordinates = props.route?.length ? props.route : [[props.start.longitude, props.start.latitude], [props.end.longitude, props.end.latitude]]
-  const points = coordinates.map(toPoint)
-  if (points.length > 1) map.setViewport?.(points, { margins: [48, 48, 48, 48], zoomFactor: -1 })
+function refreshFootprint() {
+  const origin = props.editMode === 'node' && props.selectedIndex !== null ? props.route?.[props.selectedIndex] ?? null : null
+  scene?.setFootprint(origin, props.footprint, props.viewMode)
 }
-
 function applyViewMode() {
-  if (!map || !BMapGL) return
-  const mapType = props.viewMode === '3d' ? (window as any).BMAP_EARTH_MAP : (window as any).BMAP_SATELLITE_MAP
-  if (mapType) map.setMapType(mapType)
-  fitRoute()
-  scheduleOverlay()
+  scene?.setView(props.viewMode, coordinates())
+  tilt.value = props.viewMode === '2d' ? 0 : 52
+  refreshRoute()
+  renderOverlay()
 }
+function changeTilt(event: Event) { tilt.value = Number((event.target as HTMLInputElement).value); scene?.setTilt(tilt.value) }
+function focusWaypoint(index: number) { const point = props.route?.[index]; if (point) scene?.focus(point, props.viewMode) }
+defineExpose({ focusWaypoint })
 
-function onMapPointerDown(event: PointerEvent) {
-  mapPointerStart = { x: event.clientX, y: event.clientY }
-  mapPointerMoved = false
-  keepRendering = true
-  scheduleOverlay()
-}
-function onMapPointerMove(event: PointerEvent) {
-  if (mapPointerStart && Math.hypot(event.clientX - mapPointerStart.x, event.clientY - mapPointerStart.y) > 5) mapPointerMoved = true
-}
-function onMapPointerUp() { keepRendering = false; mapPointerStart = null; scheduleOverlay() }
-function stopOverlayTracking() { keepRendering = false; mapPointerStart = null }
-
-function onMapClick(event: {
-  latlng?: { lng: number; lat: number }
-  point?: { lng: number; lat: number }
-  pixel?: { x: number; y: number }
-}) {
-  if (mapPointerMoved || !props.active || props.editMode !== 'route') return
-  // JSAPI GL uses latlng; retain point/pixel fallbacks for older event variants.
-  const point = event.latlng ?? event.point ?? (
-    event.pixel && map && BMapGL && Number.isFinite(event.pixel.x) && Number.isFinite(event.pixel.y)
-      ? map.pixelToPoint(new BMapGL.Pixel(event.pixel.x, event.pixel.y))
-      : null
-  )
-  if (!point || !Number.isFinite(point.lng) || !Number.isFinite(point.lat)
-    || Math.abs(point.lng) > 180 || Math.abs(point.lat) > 90) return
-  const priority = event.latlng ? 2 : event.point ? 1 : 0
-  if (!pendingPointClick || priority >= pendingPointClick.priority) pendingPointClick = { lng: point.lng, lat: point.lat, priority }
-  if (pointClickFrame !== null) return
-  // The SDK event and DOM fallback can describe the same click. Emit once,
-  // using the SDK's geographic coordinate when both are available.
-  pointClickFrame = requestAnimationFrame(() => {
-    pointClickFrame = null
-    const selected = pendingPointClick
-    pendingPointClick = null
-    if (!selected || mapPointerMoved || !props.active || props.editMode !== 'route') return
-    const [longitude, latitude] = bd09ToWgs84([selected.lng, selected.lat])
-    emit('choose-point', { longitude: Number(longitude.toFixed(5)), latitude: Number(latitude.toFixed(5)) })
-  })
-}
-
-function onMapDomClick(event: MouseEvent) {
-  if (!map || !BMapGL || !earthElement.value) return
+function onMapPointerDown(event: PointerEvent) { mapPointerStart = { x: event.clientX, y: event.clientY }; mapPointerMoved = false }
+function onMapPointerMove(event: PointerEvent) { if (mapPointerStart && Math.hypot(event.clientX - mapPointerStart.x, event.clientY - mapPointerStart.y) > 5) mapPointerMoved = true }
+function onMapClick(event: MouseEvent) {
+  if (!scene || !props.active || props.editMode !== 'route' || mapPointerMoved || !earthElement.value) return
   const bounds = earthElement.value.getBoundingClientRect()
-  const x = event.clientX - bounds.left
-  const y = event.clientY - bounds.top
-  if (x < 0 || y < 0 || x > bounds.width || y > bounds.height) return
-  onMapClick({ pixel: { x, y } })
+  const point = scene.pick(event.clientX - bounds.left, event.clientY - bounds.top)
+  if (point) emit('choose-point', { longitude: Number(point[0].toFixed(5)), latitude: Number(point[1].toFixed(5)) })
 }
-
-function bearing(origin: number[], target: LngLat) {
-  const lat1 = origin[1] * Math.PI / 180
-  const lat2 = target[1] * Math.PI / 180
-  const deltaLongitude = (target[0] - origin[0]) * Math.PI / 180
-  return Math.atan2(Math.sin(deltaLongitude) * Math.cos(lat2), Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(deltaLongitude)) * 180 / Math.PI
-}
-
 function onNodeDown(event: PointerEvent, index: number) {
-  event.stopPropagation()
+  if (event.button !== 0 || !event.isPrimary || !props.active) return
+  event.preventDefault(); event.stopPropagation()
+  finishDrag()
   emit('select-waypoint', index)
-  dragIndex = index
-  dragPointer = event.pointerId
-  ;(event.currentTarget as Element).setPointerCapture(event.pointerId)
+  const element = event.currentTarget as HTMLElement
+  drag = { index, pointerId: event.pointerId, x: event.clientX, y: event.clientY, element, moved: false }
+  element.setPointerCapture(event.pointerId)
+  scene?.setInputs(false)
 }
-
 function onNodeMove(event: PointerEvent) {
-  if (dragIndex === null || dragPointer !== event.pointerId || !map || !BMapGL || !props.route?.[dragIndex] || !earthElement.value) return
+  if (!drag || drag.pointerId !== event.pointerId || !scene || !earthElement.value || !props.route?.[drag.index]) return
+  if (!drag.moved && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 5) return
+  drag.moved = true
   const bounds = earthElement.value.getBoundingClientRect()
-  const point = map.pixelToPoint(new BMapGL.Pixel(event.clientX - bounds.left, event.clientY - bounds.top))
-  if (!point) return
-  emit('rotate-waypoint', bearing(props.route[dragIndex], bd09ToWgs84([point.lng, point.lat])))
+  const target = scene.pick(event.clientX - bounds.left, event.clientY - bounds.top)
+  if (!target) return
+  const origin = props.route[drag.index], lat1 = origin[1] * Math.PI / 180, lat2 = target[1] * Math.PI / 180, longitude = (target[0] - origin[0]) * Math.PI / 180
+  emit('rotate-waypoint', Math.atan2(Math.sin(longitude) * Math.cos(lat2), Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(longitude)) * 180 / Math.PI)
 }
-
-function onNodeUp(event: PointerEvent) {
-  if (dragPointer !== event.pointerId) return
-  dragIndex = null
-  dragPointer = null
-  const target = event.currentTarget as Element
-  if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId)
+function finishDrag() {
+  const previous = drag; drag = null
+  if (previous?.element.hasPointerCapture(previous.pointerId)) previous.element.releasePointerCapture(previous.pointerId)
+  scene?.setInputs(props.active)
+  mapPointerStart = null
 }
-
-async function initializeEarthMap() {
-  failed.value = false
-  status.value = '正在加载地球模式…'
+function onNodeUp(event: PointerEvent) { if (event.pointerId === drag?.pointerId) finishDrag() }
+async function initialize() {
+  status.value = '正在加载地球模式…'; failed.value = false
   try {
-    BMapGL = await loadBaiduMap()
-    if (!earthElement.value) return
-    map = new BMapGL.Map(earthElement.value, { enableIconClick: false })
-    const center = toPoint([(props.start.longitude + props.end.longitude) / 2, (props.start.latitude + props.end.latitude) / 2])
-    map.centerAndZoom(center, 17)
-    const mapType = props.viewMode === '3d' ? (window as any).BMAP_EARTH_MAP : (window as any).BMAP_SATELLITE_MAP
-    if (!mapType) throw new Error('当前百度地图脚本不支持所选地图模式。')
-    map.setMapType(mapType)
-    fitRoute()
-    map.enableScrollWheelZoom()
-    for (const eventName of ['moving', 'moveend', 'zooming', 'zoomend', 'heading_changed', 'tilt_changed', 'tilesloaded']) {
-      map.addEventListener(eventName, scheduleOverlay)
-    }
-    map.addEventListener('click', onMapClick)
-    resizeObserver = new ResizeObserver(scheduleOverlay)
-    resizeObserver.observe(earthElement.value)
-    ready.value = true
+    const nextScene = await createBaiduScene(earthElement.value!, coordinates()[0])
+    if (unmounted) { nextScene.dispose(); return }
+    scene = nextScene
+    scene.onFrame(renderOverlay)
+    applyViewMode()
+    scene.setActive(props.active)
+    resizeObserver = new ResizeObserver(() => scene?.resize())
+    resizeObserver.observe(earthElement.value!)
     status.value = ''
-    await nextTick()
-    map.resize?.()
-    scheduleOverlay()
   } catch (error) {
-    ready.value = false
-    failed.value = true
-    status.value = error instanceof Error ? error.message : '地球模式加载失败。'
-    resizeObserver?.disconnect()
-    resizeObserver = null
-    map?.destroy?.()
-    map = null
+    scene?.dispose(); scene = null; resizeObserver?.disconnect(); resizeObserver = null
+    status.value = error instanceof Error ? error.message : '地球模式加载失败。'; failed.value = true
   }
 }
-
 onMounted(() => {
-  window.addEventListener('pointerup', stopOverlayTracking)
-  window.addEventListener('pointercancel', stopOverlayTracking)
-  return initializeEarthMap()
+  window.addEventListener('pointerup', finishDrag); window.addEventListener('pointercancel', finishDrag); window.addEventListener('blur', finishDrag)
+  void initialize()
 })
-
-watch(() => props.active, async (active) => {
-  if (!active) { keepRendering = false; return }
-  await nextTick()
-  map?.resize?.()
-  scheduleOverlay()
-})
-watch(() => props.viewMode, applyViewMode)
-watch(() => props.route, () => { fitRoute(); scheduleOverlay() }, { deep: true })
-watch(() => [props.start.longitude, props.start.latitude, props.end.longitude, props.end.latitude], () => {
-  if (!map) return
-  map.setCenter(toPoint([(props.start.longitude + props.end.longitude) / 2, (props.start.latitude + props.end.latitude) / 2]))
-  scheduleOverlay()
-})
-watch(props, scheduleOverlay, { deep: true })
-
+watch(() => props.active, async active => { finishDrag(); await nextTick(); scene?.setActive(active); if (active) { scene?.resize(); renderOverlay() } })
+watch(() => props.viewMode, () => { finishDrag(); applyViewMode() })
+watch(() => [props.route, props.start, props.end, props.weatherSegments, props.showStartRange, props.showEndRange, props.rangeMeters], refreshRoute, { deep: true })
+watch(() => [props.footprint, props.selectedIndex, props.editMode], () => { refreshFootprint(); renderOverlay() }, { deep: true, flush: 'sync' })
 onBeforeUnmount(() => {
-  window.removeEventListener('pointerup', stopOverlayTracking)
-  window.removeEventListener('pointercancel', stopOverlayTracking)
-  keepRendering = false
-  if (renderFrame !== null) cancelAnimationFrame(renderFrame)
-  if (pointClickFrame !== null) cancelAnimationFrame(pointClickFrame)
-  pendingPointClick = null
-  resizeObserver?.disconnect()
-  map?.destroy?.()
-  map = null
+  unmounted = true; finishDrag(); resizeObserver?.disconnect()
+  window.removeEventListener('pointerup', finishDrag); window.removeEventListener('pointercancel', finishDrag); window.removeEventListener('blur', finishDrag)
+  scene?.dispose(); scene = null
 })
 </script>
 
 <template>
-  <div class="earth-map" :class="{ active }" aria-label="百度地图地球模式">
-    <div ref="earthElement" class="earth-map-canvas" @pointerdown="onMapPointerDown" @pointermove="onMapPointerMove" @pointerup="onMapPointerUp" @pointercancel="onMapPointerUp" @click="onMapDomClick"></div>
-    <svg v-if="ready" class="earth-map-overlay" :viewBox="`0 0 ${overlay.width} ${overlay.height}`" preserveAspectRatio="none" aria-hidden="true">
-      <path v-if="overlay.startRange" :d="overlay.startRange" class="earth-range earth-range-start" />
-      <path v-if="overlay.endRange" :d="overlay.endRange" class="earth-range earth-range-end" />
-      <path v-for="(routePath, index) in overlay.route" :key="`route-${index}`" :d="routePath" class="earth-route-shadow" />
-      <path v-for="(routePath, index) in overlay.route" :key="`route-core-${index}`" :d="routePath" class="earth-route" />
-      <path v-for="(segment, index) in overlay.weather" :key="index" :d="segment.path" :stroke="segment.color" class="earth-weather" />
-      <path v-if="overlay.footprint" :d="overlay.footprint" class="earth-footprint" />
-      <path v-if="overlay.rays" :d="overlay.rays" class="earth-rays" />
-      <g v-if="overlay.start" :transform="`translate(${overlay.start.x} ${overlay.start.y})`" class="earth-endpoint"><circle r="9" fill="#0f6cbd" /><text y="-16">A</text></g>
-      <g v-if="overlay.end" :transform="`translate(${overlay.end.x} ${overlay.end.y})`" class="earth-endpoint"><circle r="9" fill="#5b5fc7" /><text y="-16">B</text></g>
-      <circle v-for="node in overlay.nodes" :key="node.index" :cx="node.x" :cy="node.y" :r="node.index === selectedIndex ? 9 : 6" class="earth-node" :class="{ selected: node.index === selectedIndex }" @pointerdown="onNodeDown($event, node.index)" @pointermove="onNodeMove" @pointerup="onNodeUp" @pointercancel="onNodeUp" />
-    </svg>
-    <div v-if="status" class="earth-map-status" role="status"><span>{{ status }}</span><button v-if="failed" type="button" @click="initializeEarthMap">重试</button></div>
+  <div class="earth-map" :class="{ active }" aria-label="百度地图地球模式" :data-view-mode="viewMode">
+    <div ref="earthElement" class="earth-map-canvas" @pointerdown="onMapPointerDown" @pointermove="onMapPointerMove" @click="onMapClick"></div>
+    <div class="earth-map-overlay">
+      <span v-if="overlay.start" class="earth-endpoint start" :style="{ left: `${overlay.start.x}px`, top: `${overlay.start.y}px` }">A</span>
+      <span v-if="overlay.end" class="earth-endpoint end" :style="{ left: `${overlay.end.x}px`, top: `${overlay.end.y}px` }">B</span>
+      <span v-for="node in overlay.groundNodes" :key="`ground-${node.index}`" class="earth-ground-node" aria-hidden="true" :style="{ left: `${node.x}px`, top: `${node.y}px` }"><span></span></span>
+      <button v-for="node in overlay.nodes" :key="node.index" type="button" class="earth-node" :class="{ selected: node.index === selectedIndex }" :aria-label="`选择航点 ${node.index + 1}`" :aria-pressed="node.index === selectedIndex" :data-waypoint-index="node.index" :style="{ left: `${node.x}px`, top: `${node.y}px` }" @pointerdown="onNodeDown($event, node.index)" @pointermove="onNodeMove" @pointerup="onNodeUp" @pointercancel="onNodeUp" @lostpointercapture="onNodeUp" @click.stop="emit('select-waypoint', node.index)"><span></span></button>
+    </div>
+    <label v-if="viewMode === '3d' && !status" class="earth-tilt-control">观察角度 <input aria-label="地球 3D 观察角度" type="range" min="0" max="75" :value="tilt" @input="changeTilt" /><span>{{ tilt }}°</span></label>
+    <div v-if="status" class="earth-map-status" role="status"><span>{{ status }}</span><button v-if="failed" type="button" @click="initialize">重试</button></div>
+    <span class="earth-attribution">© 百度地图</span>
   </div>
 </template>
 
@@ -359,20 +160,22 @@ onBeforeUnmount(() => {
 .earth-map { position: absolute; inset: 0; z-index: 1; visibility: hidden; background: #e8edf1; }
 .earth-map.active { visibility: visible; }
 .earth-map-canvas, .earth-map-overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
-.earth-map-overlay { pointer-events: none; overflow: hidden; }
-.earth-route-shadow, .earth-route, .earth-weather, .earth-footprint, .earth-rays, .earth-range { fill: none; stroke-linecap: round; stroke-linejoin: round; }
-.earth-route-shadow { stroke: #082b2a; stroke-opacity: .75; stroke-width: 10; }
-.earth-route { stroke: #00e5a8; stroke-width: 4; }
-.earth-weather { stroke-width: 5; stroke-opacity: .8; }
-.earth-footprint { fill: #72e6c2; fill-opacity: .28; stroke: #26e7b6; stroke-width: 2; }
-.earth-rays { stroke: #ffb547; stroke-width: 2; stroke-dasharray: 5 5; }
-.earth-range { stroke-width: 1; }
-.earth-range-start { fill: #0f6cbd; fill-opacity: .12; stroke: #0f6cbd; }
-.earth-range-end { fill: #5b5fc7; fill-opacity: .12; stroke: #5b5fc7; }
-.earth-endpoint circle { stroke: #fff; stroke-width: 3; }
-.earth-endpoint text { fill: #fff; stroke: #12343b; stroke-width: 3; paint-order: stroke; text-anchor: middle; font-size: 14px; font-weight: 700; }
-.earth-node { fill: #00e5a8; stroke: #fff; stroke-width: 2; pointer-events: all; cursor: pointer; touch-action: none; }
-.earth-node.selected { fill: #ffb547; stroke-width: 3; cursor: crosshair; }
-.earth-map-status { position: absolute; top: 50%; left: 50%; display: grid; justify-items: center; gap: 9px; max-width: min(320px, 80%); transform: translate(-50%, -50%); padding: 12px 16px; background: #fff; border: 1px solid #d8dde3; color: #424242; text-align: center; font-size: 13px; }
+.earth-map-canvas { z-index: 0; }
+.earth-map-overlay { z-index: 1; pointer-events: none; overflow: hidden; }
+.earth-node { position: absolute; width: 32px; height: 32px; transform: translate(-50%, -50%); display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: transparent; pointer-events: auto; cursor: pointer; touch-action: none; }
+.earth-node:hover:not(:disabled), .earth-node:active:not(:disabled) { transform: translate(-50%, -50%); box-shadow: none; }
+.earth-node span { width: 12px; height: 12px; border: 2px solid #fff; border-radius: 50%; background: #00e5a8; box-shadow: 0 1px 5px #12343b; }
+.earth-node.selected span { width: 18px; height: 18px; background: #ffb547; }
+.earth-node:focus-visible { outline: 2px solid #ffb547; }
+.earth-ground-node { position: absolute; width: 14px; height: 14px; transform: translate(-50%, -50%); display: grid; place-items: center; pointer-events: none; }
+.earth-ground-node span { width: 8px; height: 8px; border: 2px solid #fff; border-radius: 50%; background: #36dfba; box-shadow: 0 1px 4px #12343b; }
+.earth-endpoint { position: absolute; transform: translate(-50%, -100%); padding: 3px 6px; border-radius: 4px; color: #fff; font-size: 12px; font-weight: 700; }
+.earth-endpoint.start { background: #0f6cbd; }
+.earth-endpoint.end { background: #5b5fc7; }
+.earth-tilt-control { position: absolute; z-index: 2; right: 16px; top: 80px; display: flex; align-items: center; gap: 6px; padding: 7px 10px; background: #fff; border: 1px solid #d8dde3; border-radius: 6px; font-size: 12px; }
+.earth-tilt-control input { width: 90px; }
+.earth-map-status { position: absolute; z-index: 2; top: 50%; left: 50%; display: grid; justify-items: center; gap: 9px; max-width: min(320px, 80%); transform: translate(-50%, -50%); padding: 12px 16px; background: #fff; border: 1px solid #d8dde3; color: #424242; text-align: center; font-size: 13px; }
 .earth-map-status button { padding: 5px 12px; border: 1px solid #0f6cbd; border-radius: 4px; background: #fff; color: #0f6cbd; cursor: pointer; }
+.earth-attribution { position: absolute; bottom: 4px; right: 6px; color: #fff; text-shadow: 0 1px 2px #000; font-size: 11px; }
+@media (max-width: 900px) { .earth-tilt-control { top: 150px; right: 10px; } }
 </style>
