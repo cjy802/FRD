@@ -177,6 +177,16 @@ export class BaiduScene {
 
   setTilt(degrees: number) { this.engine.map.setPitch(degrees); this.engine.requestRender() }
 
+  getViewAngles(): { heading: number; pitch: number } {
+    return { heading: this.engine.map.getHeading(), pitch: this.engine.map.getPitch() }
+  }
+
+  setViewAngles(heading: number, pitch: number) {
+    this.engine.map.setHeading(heading)
+    this.engine.map.setPitch(pitch)
+    this.engine.requestRender()
+  }
+
   setPose(pose: CameraPose) {
     // JSAPI Three 1.7.2 exposes the eye-based setView on its Earth map. Keep
     // that version-specific access here: orbiting with lookAt(range: 0) produces

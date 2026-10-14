@@ -1090,6 +1090,14 @@ function initMap() {
       infoBox: false,
       selectionIndicator: false,
     })
+    // Cesium uses Ctrl+left drag for tilt by default; keep the same rotation shortcut as the visible MapV map.
+    const cameraController = viewer.scene.screenSpaceCameraController
+    const ctrlLeftDrag = { eventType: Cesium.CameraEventType.LEFT_DRAG, modifier: Cesium.KeyboardEventModifier.CTRL }
+    const rotateTypes = cameraController.rotateEventTypes
+    cameraController.rotateEventTypes = [...(Array.isArray(rotateTypes) ? rotateTypes : [rotateTypes]), ctrlLeftDrag]
+    const tiltTypes = cameraController.tiltEventTypes
+    cameraController.tiltEventTypes = (Array.isArray(tiltTypes) ? tiltTypes : [tiltTypes]).filter((gesture: any) =>
+      gesture?.eventType !== ctrlLeftDrag.eventType || gesture?.modifier !== ctrlLeftDrag.modifier)
     viewer.resolutionScale = 1
     viewer.imageryLayers.addImageryProvider(new Cesium.OpenStreetMapImageryProvider({
       url: 'https://tile.openstreetmap.org/',

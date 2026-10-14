@@ -24,6 +24,7 @@ let scene: BaiduScene | null = null
 let resizeObserver: ResizeObserver | null = null
 let unmounted = false
 let drag: { index: number; pointerId: number; x: number; y: number; element: HTMLElement; moved: boolean } | null = null
+let ctrlRotate: { pointerId: number; x: number; y: number; heading: number; pitch: number } | null = null
 let mapPointerStart: { x: number; y: number } | null = null
 let mapPointerMoved = false
 let routeSignature = ''
@@ -76,6 +77,49 @@ defineExpose({ focusWaypoint })
 
 function onMapPointerDown(event: PointerEvent) { mapPointerStart = { x: event.clientX, y: event.clientY }; mapPointerMoved = false }
 function onMapPointerMove(event: PointerEvent) { if (mapPointerStart && Math.hypot(event.clientX - mapPointerStart.x, event.clientY - mapPointerStart.y) > 5) mapPointerMoved = true }
+function onCtrlRotateDown(event: PointerEvent) {
+  if (!scene || !props.active || props.viewMode !== '3d' || ctrlRotate || event.button !== 0 || !event.isPrimary || !event.ctrlKey ||
+      !earthElement.value?.contains(event.target as Node)) return
+  event.preventDefault()
+  event.stopImmediatePropagation()
+  finishDrag()
+  const { heading, pitch } = scene.getViewAngles()
+  ctrlRotate = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, heading, pitch }
+  mapPointerStart = null
+  mapPointerMoved = true
+  scene.setInputs(false)
+  window.addEventListener('pointermove', onCtrlRotateMove, true)
+  window.addEventListener('pointerup', onCtrlRotateEnd, true)
+  window.addEventListener('pointercancel', onCtrlRotateEnd, true)
+  window.addEventListener('blur', finishCtrlRotate)
+}
+function onCtrlMouseDown(event: MouseEvent) {
+  if (!ctrlRotate || event.button !== 0) return
+  event.preventDefault()
+  event.stopImmediatePropagation()
+}
+function onCtrlRotateMove(event: PointerEvent) {
+  const rotation = ctrlRotate
+  if (!rotation || event.pointerId !== rotation.pointerId || !scene) return
+  // Engine headings increase counterclockwise; invert the deltas so the view follows the drag.
+  const heading = rotation.heading - (event.clientX - rotation.x) * 0.4
+  const pitch = Math.max(0, Math.min(75, rotation.pitch - (event.clientY - rotation.y) * 0.3))
+  scene.setViewAngles(heading, pitch)
+  tilt.value = Math.round(pitch)
+  event.preventDefault()
+}
+function onCtrlRotateEnd(event: PointerEvent) {
+  if (event.pointerId === ctrlRotate?.pointerId) finishCtrlRotate()
+}
+function finishCtrlRotate() {
+  if (!ctrlRotate) return
+  ctrlRotate = null
+  window.removeEventListener('pointermove', onCtrlRotateMove, true)
+  window.removeEventListener('pointerup', onCtrlRotateEnd, true)
+  window.removeEventListener('pointercancel', onCtrlRotateEnd, true)
+  window.removeEventListener('blur', finishCtrlRotate)
+  scene?.setInputs(props.active)
+}
 function onMapClick(event: MouseEvent) {
   if (!scene || !props.active || props.editMode !== 'route' || mapPointerMoved || !earthElement.value) return
   const bounds = earthElement.value.getBoundingClientRect()
@@ -130,19 +174,19 @@ onMounted(() => {
   window.addEventListener('pointerup', finishDrag); window.addEventListener('pointercancel', finishDrag); window.addEventListener('blur', finishDrag)
   void initialize()
 })
-watch(() => props.active, async active => { finishDrag(); await nextTick(); scene?.setActive(active); if (active) { scene?.resize(); renderOverlay() } })
-watch(() => props.viewMode, () => { finishDrag(); applyViewMode() })
+watch(() => props.active, async active => { finishDrag(); finishCtrlRotate(); await nextTick(); scene?.setActive(active); if (active) { scene?.resize(); renderOverlay() } })
+watch(() => props.viewMode, () => { finishDrag(); finishCtrlRotate(); applyViewMode() })
 watch(() => [props.route, props.start, props.end, props.weatherSegments, props.showStartRange, props.showEndRange, props.rangeMeters], refreshRoute, { deep: true })
 watch(() => [props.footprint, props.selectedIndex, props.editMode], () => { refreshFootprint(); renderOverlay() }, { deep: true, flush: 'sync' })
 onBeforeUnmount(() => {
-  unmounted = true; finishDrag(); resizeObserver?.disconnect()
+  unmounted = true; finishDrag(); finishCtrlRotate(); resizeObserver?.disconnect()
   window.removeEventListener('pointerup', finishDrag); window.removeEventListener('pointercancel', finishDrag); window.removeEventListener('blur', finishDrag)
   scene?.dispose(); scene = null
 })
 </script>
 
 <template>
-  <div class="earth-map" :class="{ active }" aria-label="百度地图地球模式" :data-view-mode="viewMode">
+  <div class="earth-map" :class="{ active }" aria-label="百度地图地球模式" :data-view-mode="viewMode" @pointerdown.capture="onCtrlRotateDown" @mousedown.capture="onCtrlMouseDown">
     <div ref="earthElement" class="earth-map-canvas" @pointerdown="onMapPointerDown" @pointermove="onMapPointerMove" @click="onMapClick"></div>
     <div class="earth-map-overlay">
       <span v-if="overlay.start" class="earth-endpoint start" :style="{ left: `${overlay.start.x}px`, top: `${overlay.start.y}px` }">A</span>
