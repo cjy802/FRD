@@ -5,6 +5,7 @@ import RouteWeatherPanel from './RouteWeatherPanel.vue'
 import WeatherWindowsPanel from './WeatherWindowsPanel.vue'
 import RoadWeatherComparison from './RoadWeatherComparison.vue'
 import EarthMap from './EarthMap.vue'
+import PlaceSearch from './PlaceSearch.vue'
 import BaiduCameraPreview from './BaiduCameraPreview.vue'
 import type { CameraPose } from './baiduScene'
 import type { RouteAssessment, WeatherLimits } from './weatherTypes'
@@ -1177,7 +1178,7 @@ onBeforeUnmount(() => {
 
     <main class="layout" :style="layoutStyle">
       <aside id="mission-sidebar" class="sidebar" :class="{ 'panel-active': workspacePanel === 'settings' }" aria-label="航线设置">
-        <div class="section-heading"><span class="eyebrow"><span class="svg-icon icon-route" aria-hidden="true"></span>航线设置</span><h1>规划一次飞行</h1><p>默认点位位于常州信息职业技术大学。沿校园道路计算参考路线。</p></div>
+        <div class="section-heading"><span class="eyebrow"><span class="svg-icon icon-route" aria-hidden="true"></span>航线设置</span><h1>规划一次飞行</h1><PlaceSearch :disabled="loading || checkingPoint" /></div>
 
         <form class="route-form" @submit.prevent="calculate" @invalid.capture="revealInvalidSetting">
           <nav class="settings-pages" aria-label="航线设置分组"><button type="button" :aria-pressed="settingsPage === 'points'" @click="settingsPage = 'points'">起点与终点</button><button type="button" :aria-pressed="settingsPage === 'mission'" @click="settingsPage = 'mission'">飞行参数</button></nav>

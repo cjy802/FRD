@@ -13,7 +13,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -25,6 +25,7 @@ from live_weather import forecast_jobs
 from route_candidates import local_road_candidates
 from weather_routes import compare_road_weather
 from dji_kmz import KmzExportError, build_dji_kmz
+from place_search import PlaceSearchError, search_places
 
 
 app = FastAPI(title="低空飞行决策工作台", version="0.1.0")
@@ -118,6 +119,14 @@ def distance_km(a: Point, b: Point) -> float:
 @app.get("/api/health")
 def health():
     return {"status": "ok", "road_data": "jiangsu_pbf_index" if LOCAL_INDEX_FILE.is_file() else "campus_osm"}
+
+
+@app.get("/api/places/search")
+def lookup_places(query: str = Query(min_length=1, max_length=128), region: str = Query(default="常州市", max_length=50)):
+    try:
+        return search_places(query, region)
+    except PlaceSearchError as error:
+        raise HTTPException(status_code=error.status_code, detail=str(error)) from None
 
 
 @app.get("/api/weather/status")
