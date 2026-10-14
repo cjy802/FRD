@@ -5,7 +5,7 @@ import requests
 from fastapi.testclient import TestClient
 
 from main import app
-from place_search import PlaceSearchError, search_places
+from place_search import PlaceSearchError, reverse_geocode, search_nearby_places, search_places
 
 
 def response(payload):
@@ -81,6 +81,90 @@ class PlaceSearchTests(unittest.TestCase):
             self.assertEqual(client.get('/api/places/search', params={'query': '测试学校'}).status_code, 502)
         with self.assertRaises(PlaceSearchError):
             search_places('测试路' * 50)
+
+    def test_nearby_search_uses_wgs84_and_preserves_bd09_results(self):
+        with patch('place_search.requests.get', return_value=response({'status': 0, 'results': [
+            {'name': '测试咖啡馆', 'address': '测试路1号', 'uid': 'coffee',
+             'location': {'lat': 31.68, 'lng': 119.96}, 'detail_info': {'distance': 325}},
+            {'name': '无效地点', 'location': {'lat': 999, 'lng': 119.96}},
+        ]})) as get:
+            results = search_nearby_places(' 咖啡馆 ', 31.6792, 119.9515)['results']
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['location'], {'lat': 31.68, 'lng': 119.96})
+        self.assertEqual(results[0]['coordinate_system'], 'bd09')
+        self.assertEqual(results[0]['distance_m'], 325)
+        self.assertEqual(results[0]['address'], '测试路1号')
+        self.assertNotIn('test-server-key', str(results))
+        self.assertTrue(get.call_args.args[0].endswith('place/v3/around'))
+        params = get.call_args.kwargs['params']
+        self.assertEqual(params['query'], '咖啡馆')
+        self.assertEqual(params['location'], '31.6792,119.9515')
+        self.assertEqual(params['coord_type'], 1)
+        self.assertEqual(params['radius'], 1000)
+        self.assertEqual(params['radius_limit'], 'true')
+        self.assertEqual(params['scope'], 2)
+        self.assertEqual(params['page_size'], 10)
+
+    def test_reverse_geocode_prefers_poi_address_and_falls_back_to_street_address(self):
+        with patch('place_search.requests.get', side_effect=[
+            response({'status': 0, 'result': {'formatted_address_poi': '江苏省常州市测试咖啡馆',
+                                              'formatted_address': '江苏省常州市测试路'}}),
+            response({'status': 0, 'result': {'formatted_address': '江苏省常州市测试路'}}),
+        ]) as get:
+            self.assertEqual(reverse_geocode(31.6792, 119.9515), {'address': '江苏省常州市测试咖啡馆'})
+            self.assertEqual(reverse_geocode(31.6792, 119.9515), {'address': '江苏省常州市测试路'})
+        self.assertTrue(get.call_args.args[0].endswith('reverse_geocoding/v3/'))
+        params = get.call_args.kwargs['params']
+        self.assertEqual(params['location'], '31.6792,119.9515')
+        self.assertEqual(params['coordtype'], 'wgs84ll')
+        self.assertEqual(params['extensions_poi'], 1)
+
+    def test_nearby_and_reverse_reject_invalid_inputs_without_upstream_requests(self):
+        with patch('place_search.requests.get') as get:
+            for query, latitude, longitude in (
+                (' ', 31.68, 119.96), ('a' * 129, 31.68, 119.96),
+                ('咖啡馆', float('nan'), 119.96), ('咖啡馆', 31.68, float('inf')),
+                ('咖啡馆', True, 119.96), ('咖啡馆', 91, 119.96),
+                ('咖啡馆', 31.68, 181),
+            ):
+                with self.subTest(query=query, latitude=latitude, longitude=longitude):
+                    with self.assertRaises(PlaceSearchError) as error:
+                        search_nearby_places(query, latitude, longitude)
+                    self.assertEqual(error.exception.status_code, 422)
+            with self.assertRaises(PlaceSearchError) as error:
+                reverse_geocode(-91, 119.96)
+            self.assertEqual(error.exception.status_code, 422)
+            get.assert_not_called()
+
+    def test_nearby_and_reverse_reject_malformed_upstream_results(self):
+        with patch('place_search.requests.get', return_value=response({'status': 0, 'results': 'invalid'})):
+            with self.assertRaises(PlaceSearchError) as error:
+                search_nearby_places('咖啡馆', 31.68, 119.96)
+            self.assertEqual(error.exception.status_code, 502)
+        with patch('place_search.requests.get', return_value=response({'status': 0, 'result': {}})):
+            with self.assertRaises(PlaceSearchError) as error:
+                reverse_geocode(31.68, 119.96)
+            self.assertEqual(error.exception.status_code, 502)
+
+    def test_nearby_and_reverse_http_routes(self):
+        client = TestClient(app)
+        with patch('place_search.requests.get', side_effect=[
+            response({'status': 0, 'results': [{'name': '测试公园', 'location': {'lat': 31.68, 'lng': 119.96}}]}),
+            response({'status': 0, 'result': {'formatted_address': '江苏省常州市测试路'}}),
+        ]):
+            nearby = client.get('/api/places/around', params={
+                'query': '公园', 'latitude': 31.6792, 'longitude': 119.9515,
+            })
+            address = client.get('/api/places/reverse', params={
+                'latitude': 31.6792, 'longitude': 119.9515,
+            })
+        self.assertEqual(nearby.status_code, 200)
+        self.assertEqual(nearby.json()['results'][0]['name'], '测试公园')
+        self.assertEqual(address.status_code, 200)
+        self.assertEqual(address.json(), {'address': '江苏省常州市测试路'})
+        self.assertEqual(client.get('/api/places/around', params={
+            'query': '公园', 'latitude': 91, 'longitude': 119.9515,
+        }).status_code, 422)
 
 
 if __name__ == '__main__':

@@ -25,7 +25,7 @@ from live_weather import forecast_jobs
 from route_candidates import local_road_candidates
 from weather_routes import compare_road_weather
 from dji_kmz import KmzExportError, build_dji_kmz
-from place_search import PlaceSearchError, search_places
+from place_search import PlaceSearchError, reverse_geocode, search_nearby_places, search_places
 
 
 app = FastAPI(title="低空飞行决策工作台", version="0.1.0")
@@ -125,6 +125,29 @@ def health():
 def lookup_places(query: str = Query(min_length=1, max_length=128), region: str = Query(default="常州市", max_length=50)):
     try:
         return search_places(query, region)
+    except PlaceSearchError as error:
+        raise HTTPException(status_code=error.status_code, detail=str(error)) from None
+
+
+@app.get("/api/places/around")
+def lookup_nearby_places(
+    query: str = Query(min_length=1, max_length=128),
+    latitude: float = Query(ge=-90, le=90),
+    longitude: float = Query(ge=-180, le=180),
+):
+    try:
+        return search_nearby_places(query, latitude, longitude)
+    except PlaceSearchError as error:
+        raise HTTPException(status_code=error.status_code, detail=str(error)) from None
+
+
+@app.get("/api/places/reverse")
+def lookup_location_address(
+    latitude: float = Query(ge=-90, le=90),
+    longitude: float = Query(ge=-180, le=180),
+):
+    try:
+        return reverse_geocode(latitude, longitude)
     except PlaceSearchError as error:
         raise HTTPException(status_code=error.status_code, detail=str(error)) from None
 

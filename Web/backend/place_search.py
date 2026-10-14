@@ -45,7 +45,7 @@ def _request(path: str, params: dict) -> dict:
     if status == 0:
         return payload
     if status == 240:
-        raise PlaceSearchError("百度 AK 未开启此服务（240）。请在控制台开启地点检索和地理编码服务。", 503)
+        raise PlaceSearchError("百度 AK 未开启此服务（240）。请在控制台开启地点检索、地理编码和全球逆地理编码服务。", 503)
     if status in (3, 5, 101, 102, 200, 201, 202, 203, 210, 211):
         raise PlaceSearchError("百度 AK 校验失败，请检查服务端应用类型、IP 白名单或签名配置。", 503)
     if status in (4, 302, 401):
@@ -110,3 +110,65 @@ def search_places(query: str, region: str = "常州市") -> dict:
     if not results:
         results = fallback(query, region)
     return {"results": results}
+
+
+def _wgs84_location(latitude: float, longitude: float) -> str:
+    """Validate browser geolocation coordinates and format Baidu's lat,lng input."""
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        for value in (latitude, longitude)
+    ) or not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        raise PlaceSearchError("当前位置的经纬度无效，请重新定位。", 422)
+    return f"{latitude},{longitude}"
+
+
+def search_nearby_places(query: str, latitude: float, longitude: float) -> dict:
+    """Search POIs within 1 km of a browser WGS84 location."""
+    if not isinstance(query, str) or not query.strip():
+        raise PlaceSearchError("请输入要搜索的附近地点名称或类别。", 422)
+    query = query.strip()
+    if len(query.encode("utf-8")) > 128:
+        raise PlaceSearchError("搜索关键词过长，请缩短到 128 字节以内。", 422)
+    location = _wgs84_location(latitude, longitude)
+    payload = _request("place/v3/around", {
+        "query": query,
+        "location": location,
+        "coord_type": 1,
+        "radius": 1000,
+        "radius_limit": "true",
+        "scope": 2,
+        "page_size": 10,
+    })
+    results = payload.get("results", [])
+    if not isinstance(results, list):
+        raise PlaceSearchError("地点搜索服务返回了无法识别的数据。")
+    candidates = []
+    for item in results[:10]:
+        if not isinstance(item, dict) or not (candidate := _candidate(item)):
+            continue
+        detail_info = item.get("detail_info")
+        distance = detail_info.get("distance") if isinstance(detail_info, dict) else None
+        if isinstance(distance, (int, float)) and not isinstance(distance, bool) and math.isfinite(distance) and distance >= 0:
+            candidate["distance_m"] = distance
+        candidates.append(candidate)
+    return {"results": candidates}
+
+
+def reverse_geocode(latitude: float, longitude: float) -> dict:
+    """Resolve a browser WGS84 location to a readable address."""
+    location = _wgs84_location(latitude, longitude)
+    payload = _request("reverse_geocoding/v3/", {
+        "location": location,
+        "coordtype": "wgs84ll",
+        "extensions_poi": 1,
+    })
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        raise PlaceSearchError("逆地理编码服务返回了无法识别的数据。")
+    for field in ("formatted_address_poi", "formatted_address"):
+        address = result.get(field)
+        if isinstance(address, str) and address.strip():
+            return {"address": address.strip()}
+    raise PlaceSearchError("当前位置没有可用的地址信息，请重新定位。")
