@@ -1,9 +1,14 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { fetchLocationAddress, fetchNearbyPlaces, fetchPlaces, placeToPoint, type PlaceResult } from './placeSearch'
 
-const props = defineProps<{ disabled?: boolean }>()
 type SearchCenter = { latitude: number; longitude: number }
+type PointTarget = 'start' | 'end'
+const props = defineProps<{ disabled?: boolean; selectionFeedback?: { message: string; error: boolean } | null }>()
+const emit = defineEmits<{
+  (event: 'choose-point', selection: { target: PointTarget; point: SearchCenter }): void
+  (event: 'clear-selection-feedback'): void
+}>()
 const query = ref('')
 const region = ref('常州市')
 const center = ref<SearchCenter | null>(null)
@@ -16,12 +21,62 @@ const results = ref<PlaceResult[]>([])
 const pending = ref(false)
 const error = ref('')
 const message = ref('')
+const selectedPlace = ref<PlaceResult | null>(null)
+const assignmentDialog = ref<HTMLDialogElement | null>(null)
 let controller: AbortController | null = null
 let addressController: AbortController | null = null
 let version = 0
 let locationVersion = 0
+let assignmentTrigger: HTMLButtonElement | null = null
+let restoreAssignmentFocus = false
+
+function restoreResultFocus() {
+  if (!restoreAssignmentFocus || !assignmentTrigger?.isConnected || assignmentTrigger.disabled) return
+  assignmentTrigger.focus()
+  restoreAssignmentFocus = false
+}
+
+watch(() => props.disabled, (disabled) => {
+  if (!disabled) void nextTick(restoreResultFocus)
+})
+
+function closeAssignmentDialog() {
+  if (assignmentDialog.value?.open) assignmentDialog.value.close()
+  selectedPlace.value = null
+}
+
+function openAssignmentDialog(place: PlaceResult, event: MouseEvent) {
+  if (props.disabled) return
+  assignmentTrigger = event.currentTarget as HTMLButtonElement
+  selectedPlace.value = place
+  void nextTick(() => {
+    if (selectedPlace.value === place && !assignmentDialog.value?.open) assignmentDialog.value?.showModal()
+  })
+}
+
+function applySelectedPlace(target: PointTarget) {
+  if (!selectedPlace.value || props.disabled) return
+  try {
+    restoreAssignmentFocus = true
+    emit('choose-point', { target, point: placeToPoint(selectedPlace.value) })
+    closeAssignmentDialog()
+    void nextTick(restoreResultFocus)
+  } catch {
+    restoreAssignmentFocus = false
+    closeAssignmentDialog()
+    error.value = '该地点坐标无效，请选择其他地点。'
+  }
+}
+
+function onAssignmentBackdropClick(event: MouseEvent) {
+  if (event.target === assignmentDialog.value) closeAssignmentDialog()
+}
 
 function resetSearch() {
+  closeAssignmentDialog()
+  restoreAssignmentFocus = false
+  assignmentTrigger = null
+  emit('clear-selection-feedback')
   version++
   controller?.abort()
   controller = null
@@ -175,19 +230,36 @@ function coordinates(place: PlaceResult) {
     <small v-if="!error && !message && !center && !locating">搜索地点后查看经纬度。</small>
     <small v-if="message" class="place-search-message" role="status">{{ message }}</small>
     <small v-if="error" class="place-search-error" role="alert">{{ error }}</small>
+    <small v-if="selectionFeedback" class="place-selection-feedback" :class="{ 'is-error': selectionFeedback.error }" :role="selectionFeedback.error ? 'alert' : 'status'">{{ selectionFeedback.message }}</small>
     <div v-if="results.length" class="place-results">
       <div class="place-results-heading"><strong>{{ center ? '附近结果' : '搜索结果' }}（{{ results.length }}）</strong><button type="button" aria-label="关闭地点搜索结果" @click="resetSearch">×</button></div>
       <ul>
         <li v-for="(place, index) in results" :key="place.uid || index">
-          <strong>{{ place.name }}</strong><span v-if="place.address">{{ place.address }}</span>
-          <span v-if="typeof place.distance_m === 'number'">距当前位置约 {{ place.distance_m }} 米</span>
-          <span class="place-coordinates">{{ coordinates(place) }}</span>
-          <span v-if="place.precision?.precise === 0" class="place-match-note">模糊匹配，请在地图上核对位置。</span>
+          <div class="place-result-copy">
+            <strong>{{ place.name }}</strong><span v-if="place.address">{{ place.address }}</span>
+            <span v-if="typeof place.distance_m === 'number'">距当前位置约 {{ place.distance_m }} 米</span>
+            <span class="place-coordinates">{{ coordinates(place) }}</span>
+            <span v-if="place.precision?.precise === 0" class="place-match-note">模糊匹配，请在地图上核对位置。</span>
+          </div>
+          <button type="button" class="place-result-apply" :disabled="disabled" :aria-label="`选择 ${place.name} 作为起点或终点`" :title="`选择 ${place.name} 作为起点或终点`" @click="openAssignmentDialog(place, $event)"><span class="svg-icon place-result-action-icon" aria-hidden="true"></span></button>
         </li>
       </ul>
       <small class="place-attribution">地点数据 © 百度地图</small>
     </div>
   </section>
+  <Teleport to="body">
+    <dialog ref="assignmentDialog" class="place-assignment-dialog" aria-labelledby="place-assignment-title" aria-describedby="place-assignment-description" @click="onAssignmentBackdropClick" @close="selectedPlace = null">
+      <div v-if="selectedPlace" class="place-assignment-content">
+        <div class="place-assignment-top"><span>应用搜索地点</span><button type="button" class="place-assignment-close" aria-label="关闭点位选择" @click="closeAssignmentDialog">×</button></div>
+        <h2 id="place-assignment-title">将此地点设为哪个点位？</h2>
+        <p id="place-assignment-description">选择起点 A 或终点 B 后，系统会检查该点位并更新航线。</p>
+        <div class="place-assignment-place"><strong>{{ selectedPlace.name }}</strong><span v-if="selectedPlace.address">{{ selectedPlace.address }}</span><small>{{ coordinates(selectedPlace) }}</small></div>
+        <p v-if="selectedPlace.precision?.precise === 0" class="place-assignment-warning">该地点为模糊匹配，请在地图上核对位置。</p>
+        <div class="place-assignment-actions"><button type="button" autofocus :disabled="disabled" @click="applySelectedPlace('start')"><b>A</b><span>设为起点 A</span></button><button type="button" :disabled="disabled" @click="applySelectedPlace('end')"><b>B</b><span>设为终点 B</span></button></div>
+        <button type="button" class="place-assignment-cancel" @click="closeAssignmentDialog">取消</button>
+      </div>
+    </dialog>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -215,14 +287,42 @@ function coordinates(place: PlaceResult) {
 .place-location-status button { flex: none; padding: 0; border: 0; background: transparent; color: var(--ui-accent); font-size: inherit; }
 .place-search > .place-search-error { color: #a4262c; }
 .place-search > .place-search-message { color: var(--ui-accent); }
+.place-search > .place-selection-feedback { color: var(--ui-accent); }
+.place-search > .place-selection-feedback.is-error { color: #a4262c; }
 .place-results { position: absolute; z-index: 21; top: calc(100% + 6px); left: 0; right: 0; max-height: min(320px, calc(100dvh - 230px)); overflow-y: auto; overscroll-behavior: contain; border: 1px solid #d1d5db; border-radius: var(--ui-radius); background: #fff; box-shadow: 0 6px 20px #172b4d24; }
 .place-results-heading { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; padding: 7px 10px; border-bottom: 1px solid var(--ui-line); background: #fff; font-size: var(--font-caption); }
 .place-results-heading button { width: 28px; height: 28px; padding: 0; border: 0; background: transparent; color: var(--ui-muted); font-size: 20px; }
 .place-results ul { list-style: none; margin: 0; padding: 0; }
-.place-results li { padding: 10px; border-bottom: 1px solid var(--ui-line); }
-.place-results li > strong { display: block; font-size: var(--font-caption); color: #242424; }
-.place-results li > span { display: block; margin-top: 4px; color: var(--ui-muted); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+.place-results li { display: grid; grid-template-columns: minmax(0, 1fr) 38px; align-items: center; gap: 8px; padding: 10px; border-bottom: 1px solid var(--ui-line); }
+.place-result-copy { min-width: 0; }
+.place-result-copy > strong { display: block; font-size: var(--font-caption); color: #242424; overflow-wrap: anywhere; }
+.place-result-copy > span { display: block; margin-top: 4px; color: var(--ui-muted); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
 .place-coordinates { font-variant-numeric: tabular-nums; }
-.place-results li > .place-match-note { color: #875100; }
+.place-result-copy > .place-match-note { color: #875100; }
+.place-result-apply { display: grid; place-items: center; width: 38px; height: 38px; padding: 0; border: 1px solid #c9def3; border-radius: 8px; background: #f0f7ff; color: #0f6cbd; cursor: pointer; }
+.place-result-apply:hover:not(:disabled) { border-color: #0f6cbd; background: #0f6cbd; color: #fff; }
+.place-result-apply:focus-visible { outline: 2px solid #0f6cbd; outline-offset: 2px; }
+.place-result-action-icon { width: 21px; height: 21px; -webkit-mask-image: url('/svg/expand_circle_right.svg'); mask-image: url('/svg/expand_circle_right.svg'); }
 .place-attribution { display: block; padding: 6px 10px; color: var(--ui-muted); font-size: 10px; }
+.place-assignment-dialog { width: min(430px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); margin: auto; padding: 0; overflow: auto; border: 1px solid #d6e0ea; border-radius: 14px; background: #fff; color: #243447; box-shadow: 0 24px 70px rgb(14 35 57 / .25); }
+.place-assignment-dialog::backdrop { background: rgb(14 30 49 / .3); -webkit-backdrop-filter: blur(9px) saturate(.8); backdrop-filter: blur(9px) saturate(.8); }
+.place-assignment-content { padding: 22px; }
+.place-assignment-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #0f6cbd; font-size: 12px; font-weight: 700; }
+.place-assignment-close { width: 30px; height: 30px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #6b7b8d; font-size: 24px; line-height: 1; cursor: pointer; }
+.place-assignment-close:hover { background: #f0f4f8; }
+.place-assignment-dialog h2 { margin: 12px 0 6px; font-size: 21px; line-height: 1.35; }
+.place-assignment-dialog p { margin: 0; color: #617186; font-size: 13px; line-height: 1.55; }
+.place-assignment-place { display: grid; gap: 5px; margin-top: 18px; padding: 13px 14px; border: 1px solid #e0e7ef; border-radius: 9px; background: #f8fafc; }
+.place-assignment-place strong { font-size: 14px; overflow-wrap: anywhere; }
+.place-assignment-place span, .place-assignment-place small { color: #617186; font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
+.place-assignment-dialog .place-assignment-warning { margin-top: 10px; color: #875100; }
+.place-assignment-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 18px; }
+.place-assignment-actions button { display: flex; align-items: center; gap: 9px; min-height: 48px; padding: 8px 11px; border: 1px solid #d3e0ec; border-radius: 9px; background: #fff; color: #243447; font-size: 13px; font-weight: 600; cursor: pointer; }
+.place-assignment-actions button:hover:not(:disabled) { border-color: #0f6cbd; background: #f1f7fd; }
+.place-assignment-actions button b { display: grid; place-items: center; flex: none; width: 27px; height: 27px; border-radius: 7px; background: #e6f1fb; color: #0f6cbd; }
+.place-assignment-actions button:nth-child(2) b { background: #eeeeff; color: #5b5fc7; }
+.place-assignment-dialog button:focus-visible { outline: 2px solid #0f6cbd; outline-offset: 2px; }
+.place-assignment-cancel { display: block; margin: 15px auto 0; padding: 5px 10px; border: 0; border-radius: 6px; background: transparent; color: #617186; font-size: 12px; cursor: pointer; }
+.place-assignment-cancel:hover { background: #f0f4f8; }
+@media (max-width: 420px) { .place-assignment-actions { grid-template-columns: 1fr; } }
 </style>

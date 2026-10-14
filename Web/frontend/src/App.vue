@@ -72,6 +72,7 @@ const locatingPoint = ref<PointTarget | null>(null)
 const locationFeedback = ref<LocationFeedback | null>(null)
 let locationRequestVersion = 0
 const error = ref('')
+const placeSelectionFeedback = ref<{ message: string; error: boolean } | null>(null)
 const mapMode = ref<'start' | 'end'>('start')
 const baseMap = ref<'current' | 'earth'>('current')
 const earthMapMounted = ref(false)
@@ -786,9 +787,19 @@ function toggleRange(point: 'start' | 'end') {
   drawCesiumRoute(false)
 }
 
-async function chooseMapPoint(point: Point) {
-  if (loading.value || checkingPoint.value || locatingPoint.value) return
-  const mode = mapMode.value
+function chooseSearchedPoint(selection: { target: PointTarget; point: Point }) {
+  placeSelectionFeedback.value = { message: '正在检查点位…', error: false }
+  void chooseMapPoint(selection.point, selection.target, true)
+}
+
+async function chooseMapPoint(point: Point, target: PointTarget = mapMode.value, fromPlaceSearch = false) {
+  if (loading.value || checkingPoint.value || locatingPoint.value) {
+    if (fromPlaceSearch) placeSelectionFeedback.value = { message: '正在处理其他点位，请稍后重试。', error: true }
+    return
+  }
+  if (!fromPlaceSearch) placeSelectionFeedback.value = null
+  const mode = target
+  const label = mode === 'end' ? '终点 B' : '起点 A'
   checkingPoint.value = true
   error.value = ''
   try {
@@ -804,6 +815,7 @@ async function chooseMapPoint(point: Point) {
     const inspection: LandingCheck = await response.json()
     if (inspection.state === 'mapped_building') {
       error.value = `${mode === 'end' ? '终点 B' : '起点 A'} 位于已收录建筑或建筑缓冲区，不能作为候选起降点。`
+      if (fromPlaceSearch) placeSelectionFeedback.value = { message: error.value, error: true }
       return
     }
 
@@ -811,19 +823,23 @@ async function chooseMapPoint(point: Point) {
     selected.latitude = point.latitude
     selected.longitude = point.longitude
     clearLocationFeedback(mode)
+    routeAssessment.value = null
     landingSearchRadiusM.value = inspection.search_radius_m
     if (inspection.state === 'no_road' && roadSource.value === 'local') {
       preview.value = null
       drawCesiumRoute()
       error.value = `${mode === 'end' ? '终点 B' : '起点 A'} 周围 ${inspection.search_radius_m} 米内没有可连接道路。该点仍需现场核验。`
+      if (fromPlaceSearch) placeSelectionFeedback.value = { message: `已设置${label}，但周围 ${inspection.search_radius_m} 米内没有可连接道路。该点仍需现场核验。`, error: true }
       return
     }
 
     // A map click changes the route, but should not reset the camera the user
     // is currently inspecting.
+    if (fromPlaceSearch) placeSelectionFeedback.value = { message: `已设置${label}。`, error: false }
     void calculate(false)
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '暂时无法检查该点位。'
+    if (fromPlaceSearch) placeSelectionFeedback.value = { message: error.value, error: true }
   } finally {
     checkingPoint.value = false
   }
@@ -1228,7 +1244,7 @@ onBeforeUnmount(() => {
 
     <main class="layout" :style="layoutStyle">
       <aside id="mission-sidebar" class="sidebar" :class="{ 'panel-active': workspacePanel === 'settings' }" aria-label="航线设置">
-        <div class="section-heading"><span class="eyebrow"><span class="svg-icon icon-route" aria-hidden="true"></span>航线设置</span><h1>规划一次飞行</h1><PlaceSearch :disabled="loading || checkingPoint" /></div>
+        <div class="section-heading"><span class="eyebrow"><span class="svg-icon icon-route" aria-hidden="true"></span>航线设置</span><h1>规划一次飞行</h1><PlaceSearch :disabled="loading || checkingPoint" :selection-feedback="placeSelectionFeedback" @choose-point="chooseSearchedPoint" @clear-selection-feedback="placeSelectionFeedback = null" /></div>
 
         <form class="route-form" @submit.prevent="calculate" @invalid.capture="revealInvalidSetting">
           <nav class="settings-pages" aria-label="航线设置分组"><button type="button" :aria-pressed="settingsPage === 'points'" @click="settingsPage = 'points'">起点与终点</button><button type="button" :aria-pressed="settingsPage === 'mission'" @click="settingsPage = 'mission'">飞行参数</button></nav>
