@@ -336,8 +336,8 @@ def score_split(archive: zipfile.ZipFile, members: dict[str, str], pairs: list[P
                       "water_iou": metrics})
         if examples_dir is not None and saved < 3 and (truth == 1).any():
             path = examples_dir / PurePosixPath(pair.mask).stem
-            save_png(path / "rgb.png", cv2.cvtColor(scene.rgb, cv2.COLOR_RGB2BGR))
-            save_png(path / "thermal.png", _thermal_preview(scene))
+            save_png(path / "input_rgb.png", cv2.cvtColor(scene.rgb, cv2.COLOR_RGB2BGR))
+            save_png(path / "input_thermal.png", _thermal_preview(scene))
             ground_truth = scene.mask.copy()
             ground_truth[~support] = 255
             save_png(path / "truth.png", ground_truth)

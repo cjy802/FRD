@@ -42,41 +42,89 @@ def _session() -> requests.Session:
     return _THREAD_LOCAL.session
 
 
-def _download_chunk(index: int, offset: int, size: int, retries: int) -> tuple[int, bytes, str]:
+def _reset_session() -> None:
+    session = getattr(_THREAD_LOCAL, "session", None)
+    if session is not None:
+        session.close()
+        del _THREAD_LOCAL.session
+
+
+def _fetch_range(index: int, offset: int, size: int) -> bytes:
+    started = time.monotonic()
+    deadline_seconds = 90 if size <= 2 * 1024 * 1024 else 180
     end = offset + size - 1
     expected_range = f"bytes {offset}-{end}/{EXPECTED_SIZE}"
-    for attempt in range(retries + 1):
-        try:
-            # A new API call gives each retry a fresh presigned S3 URL.
-            response = _session().get(
-                SOURCE,
-                headers={"Range": f"bytes={offset}-{end}", "Cache-Control": "no-cache"},
-                timeout=(20, 120),
-                stream=True,
-                allow_redirects=True,
+    # The API endpoint is intentional: it issues a fresh signed redirect for each
+    # individual request, including fallback subranges.
+    response = _session().get(
+        SOURCE,
+        headers={"Range": f"bytes={offset}-{end}", "Cache-Control": "no-cache"},
+        timeout=(20, 45),
+        stream=True,
+        allow_redirects=True,
+    )
+    with response:
+        if time.monotonic() - started > deadline_seconds:
+            raise requests.Timeout(f"chunk {index}: range exceeded {deadline_seconds}s")
+        if response.status_code != 206:
+            raise RuntimeError(f"chunk {index}: HTTP {response.status_code}")
+        if response.headers.get("Content-Range") != expected_range:
+            raise RuntimeError(
+                f"chunk {index}: unexpected Content-Range "
+                f"{response.headers.get('Content-Range')!r}"
             )
-            with response:
-                if response.status_code != 206:
-                    raise RuntimeError(f"chunk {index}: HTTP {response.status_code}")
-                if response.headers.get("Content-Range") != expected_range:
+        data = bytearray()
+        for piece in response.iter_content(1024 * 1024):
+            data.extend(piece)
+            if time.monotonic() - started > deadline_seconds:
+                raise requests.Timeout(f"chunk {index}: range exceeded {deadline_seconds}s")
+            if len(data) > size:
+                raise RuntimeError(f"chunk {index}: response longer than expected")
+        if len(data) != size:
+            raise RuntimeError(f"chunk {index}: short response {len(data)} != {size}")
+        return bytes(data)
+
+
+def _download_chunk(index: int, offset: int, size: int, retries: int) -> tuple[int, bytes, str]:
+    try:
+        result = _fetch_range(index, offset, size)
+        return index, result, hashlib.sha256(result).hexdigest()
+    except (requests.RequestException, OSError, RuntimeError) as exc:
+        if isinstance(exc, requests.RequestException):
+            _reset_session()
+        print(
+            f"[retry] chunk {index} 8 MiB range: {type(exc).__name__}; "
+            "switching to 2 MiB subranges",
+            flush=True,
+        )
+
+    # Keep successful 2 MiB pieces in memory while retrying only the piece that
+    # failed. This matters when the remote server drops some long responses.
+    pieces: list[bytes] = []
+    for piece_number, sub_offset in enumerate(range(offset, offset + size, 2 * 1024 * 1024), 1):
+        sub_size = min(2 * 1024 * 1024, offset + size - sub_offset)
+        for attempt in range(retries + 1):
+            try:
+                pieces.append(_fetch_range(index, sub_offset, sub_size))
+                break
+            except (requests.RequestException, OSError, RuntimeError) as exc:
+                if isinstance(exc, requests.RequestException):
+                    _reset_session()
+                print(
+                    f"[retry] chunk {index} part {piece_number} "
+                    f"attempt {attempt + 1}/{retries + 1}: {type(exc).__name__}",
+                    flush=True,
+                )
+                if attempt == retries:
                     raise RuntimeError(
-                        f"chunk {index}: unexpected Content-Range "
-                        f"{response.headers.get('Content-Range')!r}"
-                    )
-                data = bytearray()
-                for piece in response.iter_content(1024 * 1024):
-                    data.extend(piece)
-                    if len(data) > size:
-                        raise RuntimeError(f"chunk {index}: response longer than expected")
-                if len(data) != size:
-                    raise RuntimeError(f"chunk {index}: short response {len(data)} != {size}")
-                result = bytes(data)
-                return index, result, hashlib.sha256(result).hexdigest()
-        except (requests.RequestException, OSError, RuntimeError) as exc:
-            if attempt == retries:
-                raise RuntimeError(f"chunk {index} failed after {retries + 1} attempts: {exc}") from exc
-            time.sleep(min(2 ** attempt, 15))
-    raise AssertionError("unreachable")
+                        f"chunk {index} part {piece_number} failed after "
+                        f"{retries + 1} attempts: {type(exc).__name__}"
+                    ) from exc
+                time.sleep(min(2 ** attempt, 15))
+    result = b"".join(pieces)
+    if len(result) != size:
+        raise RuntimeError(f"chunk {index}: assembled {len(result)} bytes, expected {size}")
+    return index, result, hashlib.sha256(result).hexdigest()
 
 
 def _atomic_json(path: Path, payload: dict) -> None:
@@ -162,6 +210,10 @@ def download(output: Path, workers: int, chunk_size: int, retries: int) -> None:
         f"{workers} workers, {chunk_size / 1024**2:g} MiB/chunk",
         flush=True,
     )
+    initial_bytes = sum(
+        min(chunk_size, EXPECTED_SIZE - int(key) * chunk_size)
+        for key in state["completed"]
+    )
     started = time.monotonic()
     last_log = started
     error = None
@@ -191,11 +243,11 @@ def download(output: Path, workers: int, chunk_size: int, retries: int) -> None:
                         min(chunk_size, EXPECTED_SIZE - int(key) * chunk_size)
                         for key in state["completed"]
                     )
-                    speed = completed_bytes / max(now - started, 1) / 1024**2
+                    speed = (completed_bytes - initial_bytes) / max(now - started, 1) / 1024**2
                     print(
                         f"{done}/{total} chunks, {completed_bytes / 1024**3:.2f}/"
                         f"{EXPECTED_SIZE / 1024**3:.2f} GiB, "
-                        f"mean {speed:.2f} MiB/s",
+                        f"session mean {speed:.2f} MiB/s",
                         flush=True,
                     )
                     last_log = now
@@ -312,8 +364,8 @@ def main() -> None:
     parser.add_argument("--retries", type=int, default=5)
     parser.add_argument("--splits-dir", type=Path, default=None)
     args = parser.parse_args()
-    if not 1 <= args.workers <= 16:
-        parser.error("workers must be between 1 and 16")
+    if not 1 <= args.workers <= 32:
+        parser.error("workers must be between 1 and 32")
     if not 1 <= args.chunk_mib <= 64:
         parser.error("chunk-mib must be between 1 and 64")
     if not 0 <= args.retries <= 20:

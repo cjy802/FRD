@@ -1,6 +1,6 @@
-# 公开数据基线复现记录（2026-10-14）
+# 公开数据基线复现记录（2026-10-14 至 15）
 
-本项目有两个独立问题：**河湖／洪水可见水面分割**和**地面积水与湿表面区分**。这次下载两套公开 RGB 数据，运行两个不同级别的基线。结果来自本机的真实数据运行；它们不等于原论文网络结构或原论文数字的精确复现，也不构成热成像融合精度证明。
+本项目有两个独立问题：**河湖／洪水可见水面分割**和**地面积水与湿表面区分**。已在本机真实数据上运行三套公开数据基线：Floodwater RGB 水面分割、Mendeley RGB 水面／湿表面框分类、Caltech 成对 RGB＋热像水面分割。后者可以比较三种输入在公开自然水面上的效果；这些随机森林实验均不是原论文网络或数字的精确复现。
 
 ## 数据放置位置与运行命令
 
@@ -12,6 +12,9 @@ python -m waterwatch.download_floodwater
 python -m waterwatch.reproduce_floodwater
 python -m waterwatch.download_wet_water
 python -m waterwatch.reproduce_wet_water_boxes
+python -m waterwatch.download_caltech --output data/external/labeled_rgbt_pairs.zip --workers 16
+python -m waterwatch.reproduce_caltech_rgbt --split-strategy official --train-count 0 --val-count 0 --test-count 0 --pixels-per-class 60 --trees 32 --jobs 2 --max-edge 256 --output output/reproduction_caltech_rgbt
+python -m waterwatch.reproduce_caltech_rgbt --split-strategy trajectory --train-count 0 --val-count 0 --test-count 0 --pixels-per-class 60 --trees 32 --jobs 2 --max-edge 256 --output output/reproduction_caltech_trajectory
 python -m pytest -q
 ```
 
@@ -19,6 +22,7 @@ python -m pytest -q
 | --- | --- | --- |
 | [Floodwater 作者数据](https://github.com/decide-ugent/floodwater-dataset) | `data/external/floodwater_manual.zip` | `artifacts/floodwater_shoreline_rgb.joblib`、`output/reproduction_floodwater/report.json`、`output/reproduction_floodwater/examples/` |
 | [Mendeley 水面／湿表面数据](https://data.mendeley.com/datasets/y6zyrnxbfm/4) | `data/external/stagnant_water_wet_surface_34mb.zip` | `output/reproduction_wet_water_boxes/model.joblib`、`output/reproduction_wet_water_boxes/report.json` |
+| [Caltech RGB＋热像配对数据](https://data.caltech.edu/records/cks6g-ps927) | `data/external/labeled_rgbt_pairs.zip`；官方划分在 `data/external/caltech_splits/` | `output/reproduction_caltech_rgbt/`、`output/reproduction_caltech_trajectory/` 中的报告、三份模型及样例 |
 
 `data/`、`artifacts/`、`output/` 均被 `.gitignore` 排除。**原始数据、模型权重和生成的图像／报告不提交到 Git**。若路径改动，两个复现命令都支持 `--archive` 与 `--output`；Floodwater 另支持 `--model`。完整参数可运行 `python -m waterwatch.reproduce_floodwater --help` 或 `python -m waterwatch.reproduce_wet_water_boxes --help` 查看。
 
@@ -45,10 +49,29 @@ python -m pytest -q
 
 模型对**人工标注给出的框位置**截取图像块，再使用 RGB／HSV／纹理特征和随机森林区分水面与湿表面。测试集共 4,447 个框，混淆矩阵按 `[water, wet_surface]` 排列为 `[[2536, 228], [287, 1396]]`；macro-F1 为 **0.8760**，水面 F1 为 0.9078，湿表面 F1 为 0.8443；验证 macro-F1 为 0.8651。数据缺少拍摄地点、雨次和场景 ID，近重复图仍可能跨集。因此这个分数仅代表**给定真实框后的两类裁剪分类**，没有验证自动发现积水位置、像素级边界或无人机视角性能。
 
-## 热成像与论文精确复现的边界
+## 3. RGB／热像／融合水面分割：Caltech
 
-- 两套**已下载**的数据都没有成对热红外图。它们不能用于计算 RGB 与热像融合的增益，也不能直接训练项目定义的 `dry / wet_without_standing_water / suspected_ponding` 三类逐像素模型。
-- [Caltech Aerial RGB-Thermal Dataset](https://data.caltech.edu/records/cks6g-ps927)公开同步无人机 RGB、热像与水体等语义标注；成对标注包约 **4.3 GB**。本机对该文件的试传速度约 **0.59 MiB/s**，本次未下载该大包，也没有报告任何热像或融合指标。它主要覆盖自然水面，不能代替雨后小积水数据。若后续使用，按[作者类别定义](https://github.com/aerorobotics/caltech-aerial-rgbt-dataset)可将 `9=water` 转为本项目水类，并分别在同一批成对样本上比较 RGB、热像、融合；16 位热图不能直接解释为摄氏温度。
+[CaltechDATA 官方记录](https://data.caltech.edu/records/cks6g-ps927)提供成对 RGB、热红外及语义标注；`labeled_rgbt_pairs.zip` 已下载到 D 盘，大小 **4,287,170,398 字节**，MD5 `22f42923694e724d4b7e354bace12389` 与官方值一致，ZIP 中央目录有 11,416 项。下载脚本会断点续传、逐段核验，并获取固定在[作者仓库提交 `dc1adec`](https://github.com/aerorobotics/caltech-aerial-rgbt-dataset/tree/dc1adecf72f58f0191e337321c20ede2ace0e49f/splits/rgbt_splits)的 9 份划分文件；`data/external/caltech_splits/source.json` 保存文件 SHA-256。数据及输出均不提交到 Git。作者仓库 [LICENSE](https://github.com/aerorobotics/caltech-aerial-rgbt-dataset/blob/main/LICENSE) 为 CC BY-NC-SA 4.0；商业用途须按许可处理。
+
+官方 RGB／热图配对划分为训练 **1,731**、验证 **272**、测试 **279** 对。每对原始图、热图和掩膜均已按标注键核对；将源标签 `9=水` 映射为项目 `1=水`，`0/1=未知或背景` 映射为项目 `255=忽略`，其余有效类别映射为 `0=非水`。读取真正的单通道 `thermal16` TIFF；作者论文指出热像仪**不具辐射测温能力**，所以这些 16 位值只是相对热信号，不是摄氏温度。热图零值填充与忽略标签不参与评估，三组模型只在同一批有效像素上训练和计分。
+
+两轮实验均将最长边缩至 256 像素、每张训练图每类最多采样 60 像素，使用 32 棵树、2 个并行线程；这是本项目的手工特征＋随机森林二分类基线，不是[原论文](https://www.ecva.net/papers/eccv_2024/papers_ECCV/papers/08026.pdf)的 DeepLabV3+／CMNeXt，也不能把本表与论文的十类指标直接比较。
+
+| 留出测试方式 | 测试图 | RGB 水面 IoU | 热像水面 IoU | 融合水面 IoU | 融合相对 RGB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 作者官方随机帧划分 | 279 | 0.7164 | 0.5101 | **0.7971** | +0.0807 |
+| 按完整采集轨迹留出 | 279 | 0.7136 | 0.4785 | **0.7894** | +0.0758 |
+
+官方测试在 11,426,854 个共同有效像素上计算，融合模型的水面精确率 **0.8832**、召回率 **0.8910**；两类混淆矩阵（行真值、列预测，`[非水, 水]`）为 `[[6875693, 479744], [443684, 3627733]]`。在 206 张含水测试图中，融合对 177 张的逐图水面 IoU 优于 RGB，对 28 张较差。完整报告与三个可由 `waterwatch.learning.load_model` 加载的模型见 `output/reproduction_caltech_rgbt/`。
+
+作者官方划分中，测试的 24 条轨迹有 **23 条也出现在训练集**。因此另将全部 2,282 对图按轨迹重新分组；训练 23 条、验证 4 条、测试 4 条，组间无交叉。这一轮测试在 11,427,385 个共同有效像素上计算，融合水面精确率 **0.8783**、召回率 **0.8863**；在 218 张含水测试图中，融合逐图 IoU 优于 RGB 的有 157 张，较差的有 61 张。该轮的测试影像与官方轮不同，**不能把两行分数直接视为同一测试集上的变化**；其报告和独立模型见 `output/reproduction_caltech_trajectory/`。
+
+已检查两轮的 RGB 输入、热图、真值与叠图。官方样例 `output/reproduction_caltech_rgbt/examples/2022-05-15_ColoradoRiver_flight1_mask-06660/` 中，热像单独预测散点误报明显，融合叠图更连贯；轨迹留出样例 `output/reproduction_caltech_trajectory/examples/big_bear_ONR_2022-05-08-11-34-00_mask-00180/` 中，融合减少了 RGB 对天空的误报，但岸边仍有错分。也抽查了**融合变差**的反例：`output/reproduction_caltech_rgbt/failure_examples/2022-12-20_Castaic_Lake_flight3_mask-38612/` 的水面 IoU 从 RGB 0.801 降到融合 0.594；`output/reproduction_caltech_trajectory/failure_examples/caltech_duck_ONR_2023-03-22-14-41-46_mask-27061/` 从 0.643 降到 0.274，叠图可见陆地误报增多。融合并非每张图都受益。`input_rgb.png`、`input_thermal.png` 是输入预览；`rgb.png`、`thermal.png`、`fusion.png` 是预测掩膜。
+
+### 能支持的结论与数据缺口
+
+- 在 **Caltech 的自然水面数据与本随机森林基线**上，融合优于单独 RGB；单独热像低于 RGB。数据同时含无人机与地面视角，且轨迹留出仍有相同地理区域，因此这些分数不代表项目自有无人机或热传感器的现场精度。
+- Caltech 没有雨后地面 `干地／湿而无明水／可见积水` 三类标注。前述 Mendeley 数据也只有 RGB 框。**本次仍无法训练或验证项目最终的三类逐像素 RGB＋热像积水模型**。
 - [GAM4water](https://github.com/monviso/GAM4water)公开 R 方法，但本次未取得其论文原始 RGB／热像影像及水陆标注，因此没有声称复现其论文表格数值。
 
-要验证本项目最终的雨后地面积水方案，仍需自己拍摄**同场景配准的 RGB＋二维热图**，标注干地、湿而无明水、可见积水三类，并按地点／雨次留出测试集。河湖防汛还需要同一岸段前后两期配准影像，才能验证水面变化，而不能仅靠单张图推断真实水位或堤防风险。
+要验证雨后地面积水方案，仍需自己拍摄**同场景配准的 RGB＋二维热图**，标注干地、湿而无明水、可见积水三类，并按地点／雨次留出测试集。河湖防汛还需要同一岸段前后两期配准影像，才能验证水面变化，而不能仅靠单张图推断真实水位或堤防风险。

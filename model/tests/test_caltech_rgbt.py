@@ -95,11 +95,23 @@ def test_official_mask_key_pairing_and_three_mode_common_support(tmp_path: Path)
         assert counts["class_counts"]["0"] > 0
         assert counts["class_counts"]["1"] > 0
         assert all(bundle["classifier"].n_jobs == 1 for bundle in models.values())
-        report = score_split(archive, members, splits["test"], models, 80)
+        report = score_split(archive, members, splits["test"], models, 80,
+                             examples_dir=tmp_path / "examples")
         assert report["common_evaluated_pixels"] == 56 * 75
         assert set(report["per_mode"]) == {"rgb", "thermal", "fusion"}
         for mode in ("rgb", "thermal", "fusion"):
             assert sum(sum(row) for row in report["per_mode"][mode]["metrics"]["confusion_rows_true_columns_predicted"]) == 56 * 75
+        example = tmp_path / "examples" / "d_mask-00001"
+        # imdecode/fromfile also works when the Windows temporary path has Chinese characters.
+        def decoded(name: str) -> np.ndarray:
+            raw = np.fromfile(str(example / name), dtype=np.uint8)
+            image = cv2.imdecode(raw, cv2.IMREAD_UNCHANGED)
+            assert image is not None
+            return image
+
+        assert decoded("input_rgb.png").shape == (64, 80, 3)
+        assert decoded("input_thermal.png").shape == (64, 80)
+        assert decoded("rgb.png").shape == (64, 80)
 
 
 def test_official_splits_reject_overlap(tmp_path: Path) -> None:
