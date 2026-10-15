@@ -213,7 +213,6 @@ let locationRequestVersion = 0
 const error = ref('')
 const placeSelectionFeedback = ref<{ message: string; error: boolean } | null>(null)
 const baseMap = ref<'current' | 'earth'>('current')
-const earthMapMounted = ref(true)
 const earthMapRef = ref<InstanceType<typeof EarthMap> | null>(null)
 const mapViewMode = ref<'2d' | '3d'>('3d')
 const mapEditMode = ref<'route' | 'node'>('route')
@@ -226,7 +225,6 @@ const draggingCameraIndex = ref<number | null>(null)
 let mapCameraInputsBeforeDrag: boolean | null = null
 const suppressNextMapClick = ref(false)
 const roadSource = ref<'local' | 'online'>('local')
-const mapReady = ref(false)
 const mapElement = ref<HTMLElement | null>(null)
 const cameraPreviewElement = ref<HTMLElement | null>(null)
 const cesiumCameraElement = ref<HTMLElement | null>(null)
@@ -2008,10 +2006,8 @@ function initMap() {
         longitude: Number(Cesium.Math.toDegrees(point.longitude).toFixed(5)),
       })
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK)
-    mapReady.value = true
     drawCesiumRoute()
   } catch {
-    mapReady.value = false
     viewer?.destroy()
     viewer = null
   }
@@ -2206,7 +2202,7 @@ onBeforeUnmount(() => {
 
       <section id="route-map" class="map-panel" :class="{ 'panel-active': workspacePanel === 'map' }" aria-label="航线地图">
         <div ref="mapElement" class="cesium-map" aria-hidden="true"></div>
-        <EarthMap v-if="earthMapMounted" ref="earthMapRef" :active="true" :provider="baseMap === 'earth' ? 'baidu' : 'osm'" :view-mode="mapViewMode" :start="form.start" :end="form.end" :anchors="mapAnchors" :route="earthRoute" :selected-index="selectedWaypointIndex" :edit-mode="mapEditMode" :footprint="earthFootprint" :flight-pose="mapFlightPose" :flight-footprint="flightFootprint" :weather-segments="routeAssessment?.weather_risk.segments ?? []" :show-start-range="showStartRange" :show-end-range="showEndRange" :range-meters="landingSearchRadiusM" @select-waypoint="selectWaypoint" @choose-point="chooseMapPoint" @rotate-waypoint="setSelectedWaypointOrientation($event, undefined, true)" />
+        <EarthMap ref="earthMapRef" :active="true" :provider="baseMap === 'earth' ? 'baidu' : 'osm'" :view-mode="mapViewMode" :start="form.start" :end="form.end" :anchors="mapAnchors" :route="earthRoute" :selected-index="selectedWaypointIndex" :edit-mode="mapEditMode" :footprint="earthFootprint" :flight-pose="mapFlightPose" :flight-footprint="flightFootprint" :weather-segments="routeAssessment?.weather_risk.segments ?? []" :show-start-range="showStartRange" :show-end-range="showEndRange" :range-meters="landingSearchRadiusM" @select-waypoint="selectWaypoint" @choose-point="chooseMapPoint" @rotate-waypoint="setSelectedWaypointOrientation($event, undefined, true)" />
         <div class="map-top">
           <div v-if="!flightActive" class="map-title-group"><span class="map-badge"><span class="svg-icon icon-layers" aria-hidden="true"></span>{{ (baseMap === 'earth' ? '地球模式' : '当前底图') + (mapViewMode === '3d' ? ' · 3D 航线' : ' · 2D 平面') }}</span><span class="map-mode-chip">{{ form.altitude_m }} m AGL</span><div class="map-source-switch base-map-switch" aria-label="底图"><button type="button" :class="{ active: baseMap === 'current' }" :aria-pressed="baseMap === 'current'" @click="chooseBaseMap('current')">当前底图</button><button type="button" :class="{ active: baseMap === 'earth' }" :aria-pressed="baseMap === 'earth'" @click="chooseBaseMap('earth')">地球模式</button></div><div class="map-edit-switch" aria-label="编辑对象"><button type="button" :class="{ active: mapEditMode === 'route' }" :aria-pressed="mapEditMode === 'route'" @click="mapEditMode = 'route'">路径 / 主点</button><button type="button" :class="{ active: mapEditMode === 'node' }" :aria-pressed="mapEditMode === 'node'" @click="mapEditMode = 'node'">节点 / 视角</button></div></div>
           <button v-if="!flightActive" class="flight-entry" type="button" :disabled="!flightTimeline" aria-label="开始模拟飞行" title="模拟飞行" @click="toggleFlight"><span class="svg-icon icon-drone" aria-hidden="true"></span></button>

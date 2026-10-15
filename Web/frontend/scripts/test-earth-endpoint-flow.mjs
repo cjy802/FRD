@@ -29,7 +29,7 @@ const context = vm.createContext({
   },
 })
 const compiled = ts.transpileModule(`${descriptor.scriptSetup.content}\nglobalThis.app = {
-  form, baseMap, earthMapMounted, preview, loading, error,
+  form, baseMap, preview, loading, error,
   chooseMapPoint, chooseBaseMap,
 }`, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText
 new vm.Script(compiled, { filename: 'App.vue' }).runInContext(context)
@@ -37,7 +37,6 @@ const app = context.app
 
 await app.chooseBaseMap('earth')
 assert.equal(app.baseMap.value, 'earth')
-assert.equal(app.earthMapMounted.value, true)
 assert.equal(requests.length, 0, 'Switching base maps must not request a new route')
 
 const start = { longitude: 119.9505, latitude: 31.6798 }
