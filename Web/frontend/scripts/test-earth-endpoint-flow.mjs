@@ -19,17 +19,17 @@ const context = vm.createContext({
   fetch: async (url, options) => {
     requests.push({ url, body: JSON.parse(options.body) })
     if (url === '/api/landing/check') return reply({ state: 'road_nearby', search_radius_m: 35, road_distance_m: 4 })
-    if (url === '/api/routes/plan') {
-      const { start, end } = JSON.parse(options.body)
+    if (url === '/api/routes/plan-mission') {
+      const { anchors } = JSON.parse(options.body)
       return reply({ geometry: { coordinates: [
-        [start.longitude, start.latitude], [end.longitude, end.latitude],
+        [anchors[0].longitude, anchors[0].latitude], [anchors[1].longitude, anchors[1].latitude],
       ] }, distance_km: 0.3, straight_distance_km: 0.25 })
     }
     throw new Error(`Unexpected request ${url}`)
   },
 })
 const compiled = ts.transpileModule(`${descriptor.scriptSetup.content}\nglobalThis.app = {
-  form, mapMode, baseMap, earthMapMounted, preview, loading, error,
+  form, baseMap, earthMapMounted, preview, loading, error,
   chooseMapPoint, chooseBaseMap,
 }`, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText
 new vm.Script(compiled, { filename: 'App.vue' }).runInContext(context)
@@ -47,18 +47,17 @@ assert.equal(app.form.start.longitude, start.longitude)
 assert.equal(app.form.start.latitude, start.latitude)
 assert.equal(requests[0].url, '/api/landing/check')
 assert.deepEqual(requests[0].body.point, start)
-assert.equal(requests[1].url, '/api/routes/plan')
-assert.deepEqual(requests[1].body.start, start)
+assert.equal(requests[1].url, '/api/routes/plan-mission')
+assert.deepEqual(requests[1].body.anchors[0], { id: 'anchor-1', ...start })
 assert.ok(app.preview.value)
 
-app.mapMode.value = 'end'
 const end = { longitude: 119.9496, latitude: 31.6801 }
-await app.chooseMapPoint(end)
+await app.chooseMapPoint(end, 'anchor-2')
 while (app.loading.value) await new Promise(resolve => setTimeout(resolve, 0))
 assert.equal(app.form.end.longitude, end.longitude)
 assert.equal(app.form.end.latitude, end.latitude)
 assert.deepEqual(requests[2].body.point, end)
-assert.deepEqual(requests[3].body.end, end)
+assert.deepEqual(requests[3].body.anchors[1], { id: 'anchor-2', ...end })
 assert.equal(app.error.value, '')
 
 const plannedRoute = app.preview.value

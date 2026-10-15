@@ -38,7 +38,7 @@ const componentSource = await readFile(new URL('../src/PlaceSearch.vue', import.
 let searchResponse = new Promise(resolve => { resolveOld = resolve })
 const componentContext = vm.createContext({ exports: {}, require: name => name === 'vue' ? vue : {
   fetchPlaces: () => searchResponse, placeToPoint: placeContext.exports.placeToPoint,
-}, defineProps: () => ({ disabled: false }), AbortController,
+}, defineProps: () => ({ disabled: false }), defineEmits: () => () => {}, AbortController,
 })
 new vm.Script(transpile(`${parse(componentSource).descriptor.scriptSetup.content}\nglobalThis.search = { query, region, results, pending, message, search, coordinates };`)).runInContext(componentContext)
 const component = componentContext.search
