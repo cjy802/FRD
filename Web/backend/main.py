@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException, Query, Request, status
-from fastapi.responses import Response
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, model_validator
 
@@ -28,6 +28,7 @@ from weather_routes import compare_road_weather
 from dji_kmz import KmzExportError, build_dji_kmz
 from dji_rc2 import Rc2Error, rc2_imports
 from place_search import PlaceSearchError, reverse_geocode, search_nearby_places, search_places
+from photo_analysis import PhotoAnalysisError, photo_analysis
 from mission_routes import MAX_MISSION_ANCHORS, MissionRouteError, MissionRouteLimitError, combine_mission_segments
 from route_templates import (
     RouteTemplateStore, TemplateConflict, TemplateNotFound, TemplateTooLarge,
@@ -455,25 +456,30 @@ _RC2_ALLOWED_ORIGINS = {
 _RC2_LOOPBACK_NAMES = {"localhost", "127.0.0.1", "::1"}
 
 
-def require_local_rc2_request(request: Request, *, mutation: bool = False) -> None:
-    """Keep MTP actions on the local UI and outside cross-site requests."""
+def require_local_request(request: Request, *, mutation: bool = False, label: str = "本机功能") -> None:
+    """Keep local-device actions on the local UI and outside cross-site requests."""
     client_host = request.client.host if request.client else None
     try:
         host_name = urlsplit(f"http://{request.headers.get('host', '')}").hostname
     except ValueError:
         host_name = None
     if client_host not in {"127.0.0.1", "::1"} or host_name not in _RC2_LOOPBACK_NAMES:
-        raise HTTPException(status_code=403, detail="RC 2 导入只允许从本机回环地址访问。")
+        raise HTTPException(status_code=403, detail=f"{label}只允许从本机回环地址访问。")
     origin = request.headers.get("origin")
     if (origin and origin not in _RC2_ALLOWED_ORIGINS) or (mutation and not origin):
-        raise HTTPException(status_code=403, detail="RC 2 导入请求必须来自本机页面。")
+        raise HTTPException(status_code=403, detail=f"{label}请求必须来自本机页面。")
     if request.headers.get("sec-fetch-site") not in {None, "same-origin", "none"}:
-        raise HTTPException(status_code=403, detail="RC 2 导入不接受跨站页面请求。")
+        raise HTTPException(status_code=403, detail=f"{label}不接受跨站页面请求。")
     referer = request.headers.get("referer")
     if referer:
         parsed = urlsplit(referer)
         if f"{parsed.scheme}://{parsed.netloc}" not in _RC2_ALLOWED_ORIGINS:
-            raise HTTPException(status_code=403, detail="RC 2 导入只接受本机页面引用。")
+            raise HTTPException(status_code=403, detail=f"{label}只接受本机页面引用。")
+
+
+def require_local_rc2_request(request: Request, *, mutation: bool = False) -> None:
+    """Keep MTP actions on the local UI and outside cross-site requests."""
+    require_local_request(request, mutation=mutation, label="RC 2 导入")
 
 
 def rc2_http_error(error: Rc2Error) -> HTTPException:
@@ -518,6 +524,54 @@ def rc2_job(request: Request, job_id: str):
         return rc2_imports.job(job_id)
     except Rc2Error as error:
         raise rc2_http_error(error) from error
+
+
+@app.get("/api/photo-analysis/health")
+def photo_analysis_health(request: Request):
+    require_local_request(request, label="照片分析")
+    return photo_analysis.health()
+
+
+@app.post("/api/photo-analysis/jobs", status_code=status.HTTP_202_ACCEPTED)
+async def photo_analysis_submit(
+    request: Request,
+    photos: list[UploadFile] = File(...),
+    site_name: str = Form(default=""),
+    note: str = Form(default=""),
+):
+    require_local_request(request, mutation=True, label="照片分析")
+    if not photos:
+        raise HTTPException(status_code=422, detail="没有收到照片文件。")
+    collected = []
+    for upload in photos:
+        collected.append((upload.filename or "photo", await upload.read()))
+    try:
+        job_id = photo_analysis.submit(collected, context={"site_name": site_name, "note": note})
+    except PhotoAnalysisError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+    return {"job_id": job_id, "job_url": f"/api/photo-analysis/jobs/{job_id}"}
+
+
+@app.get("/api/photo-analysis/jobs/{job_id}")
+def photo_analysis_job(request: Request, job_id: str):
+    require_local_request(request, label="照片分析")
+    try:
+        return photo_analysis.job(job_id)
+    except PhotoAnalysisError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+
+
+_PHOTO_MEDIA_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".bmp": "image/bmp", ".webp": "image/webp"}
+
+
+@app.get("/api/photo-analysis/jobs/{job_id}/files/{file_name:path}")
+def photo_analysis_file(request: Request, job_id: str, file_name: str):
+    require_local_request(request, label="照片分析")
+    try:
+        target = photo_analysis.output_file(job_id, file_name)
+    except PhotoAnalysisError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+    return FileResponse(target, media_type=_PHOTO_MEDIA_TYPES.get(target.suffix.lower(), "application/octet-stream"))
 
 
 def route_response(route, result):
