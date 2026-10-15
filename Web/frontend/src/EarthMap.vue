@@ -5,6 +5,7 @@ import { createMapScene, type BaiduScene, type CameraPose, type MapProvider, typ
 type Point = { longitude: number; latitude: number }
 type AnchorRole = 'start' | 'middle' | 'end'
 type Anchor = Point & { id: string; label?: string; role?: AnchorRole }
+type OverlayPoint = { x: number; y: number; index?: number; id?: string; label?: string; role?: AnchorRole }
 const props = defineProps<{
   active: boolean; provider: MapProvider; viewMode: '2d' | '3d'; start: Point; end: Point; route: number[][] | null
   anchors?: Anchor[]
@@ -36,6 +37,20 @@ let mapPointerMoved = false
 let routeSignature = ''
 let footprintTimer: ReturnType<typeof setTimeout> | null = null
 let lastFlightFootprintAt = 0
+
+function sameOverlayPoints(first: OverlayPoint[], second: OverlayPoint[]) {
+  if (first.length !== second.length) return false
+  return first.every((point, index) => {
+    const previous = second[index]
+    return point.x === previous.x && point.y === previous.y
+      && point.index === previous.index && point.id === previous.id
+      && point.label === previous.label && point.role === previous.role
+  })
+}
+
+function sameDrone(first: { x: number; y: number; angle: number } | null, second: { x: number; y: number; angle: number } | null) {
+  return first === second || (!!first && !!second && first.x === second.x && first.y === second.y && first.angle === second.angle)
+}
 
 function anchorPoints(): Anchor[] {
   const valid = props.anchors?.filter(point => Number.isFinite(point.longitude) && Number.isFinite(point.latitude) && Math.abs(point.longitude) <= 180 && Math.abs(point.latitude) <= 90)
@@ -102,12 +117,12 @@ function renderOverlay() {
     const pixel = scene!.project([point[0], point[1], 1])
     return pixel ? [{ ...pixel, index }] : []
   }) : []
-  if (JSON.stringify(nodes) !== JSON.stringify(overlay.nodes)) overlay.nodes = nodes
-  if (JSON.stringify(groundNodes) !== JSON.stringify(overlay.groundNodes)) overlay.groundNodes = groundNodes
-  if (JSON.stringify(anchors) !== JSON.stringify(overlay.anchors)) overlay.anchors = anchors
-  if (JSON.stringify(autoNodes) !== JSON.stringify(overlay.autoNodes)) overlay.autoNodes = autoNodes
+  if (!sameOverlayPoints(nodes, overlay.nodes)) overlay.nodes = nodes
+  if (!sameOverlayPoints(groundNodes, overlay.groundNodes)) overlay.groundNodes = groundNodes
+  if (!sameOverlayPoints(anchors, overlay.anchors)) overlay.anchors = anchors
+  if (!sameOverlayPoints(autoNodes, overlay.autoNodes)) overlay.autoNodes = autoNodes
   const drone = projectedDrone()
-  if (JSON.stringify(drone) !== JSON.stringify(overlay.drone)) overlay.drone = drone
+  if (!sameDrone(drone, overlay.drone)) overlay.drone = drone
 }
 function refreshRoute() {
   if (!scene) return
