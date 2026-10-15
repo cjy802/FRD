@@ -106,14 +106,18 @@ def main() -> int:
             prediction = np.argmax(logits[0], axis=0).astype(np.uint8)
             confidence = (probabilities[water_class] * 255).round().astype(np.uint8)
             suspected = (prediction == water_class)
+            # Model outputs are model-input sized; scale back to the photo size for display.
+            prediction_full = cv2.resize(prediction, (width, height), interpolation=cv2.INTER_NEAREST)
+            confidence_full = cv2.resize(confidence, (width, height), interpolation=cv2.INTER_NEAREST)
+            suspected_full = prediction_full == water_class
             suspected_pixels = int(suspected.sum())
             count, _ = cv2.connectedComponents((suspected * 255).astype(np.uint8), connectivity=8)
             stem = path.stem
-            cv2.imwrite(str(args.output_dir / f"{stem}__classes.png"), prediction)
-            cv2.imwrite(str(args.output_dir / f"{stem}__suspected.png"), np.where(suspected, 255, 0).astype(np.uint8))
-            cv2.imwrite(str(args.output_dir / f"{stem}__confidence.png"), confidence)
+            cv2.imwrite(str(args.output_dir / f"{stem}__classes.png"), prediction_full)
+            cv2.imwrite(str(args.output_dir / f"{stem}__suspected.png"), np.where(suspected_full, 255, 0).astype(np.uint8))
+            cv2.imwrite(str(args.output_dir / f"{stem}__confidence.png"), confidence_full)
             overlay = rgb.copy()
-            overlay[suspected] = (30, 110, 255)
+            overlay[suspected_full] = (30, 110, 255)
             blended = cv2.addWeighted(rgb, 0.6, overlay, 0.4, 0)
             cv2.imwrite(str(args.output_dir / f"{stem}__overlay.png"), cv2.cvtColor(blended, cv2.COLOR_RGB2BGR))
             results.append({
@@ -125,7 +129,7 @@ def main() -> int:
                 "suspected_pixels": suspected_pixels,
                 "suspected_fraction": suspected_pixels / float(suspected.size),
                 "suspected_patch_count": max(count - 1, 0),
-                "mean_confidence_on_suspected": float(confidence[suspected].mean()) if suspected_pixels else 0.0,
+                "mean_confidence_on_suspected": float(confidence[suspected].mean()) / 255.0 if suspected_pixels else 0.0,
                 "overlay": f"{stem}__overlay.png",
                 "suspected_mask": f"{stem}__suspected.png",
                 "confidence_map": f"{stem}__confidence.png",

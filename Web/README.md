@@ -60,6 +60,8 @@ npm run dev
 
 - `GET /api/dji/rc2/status`、`GET /api/dji/rc2/targets`：仅本机 Windows 会话可用，分别检查导入组件和读取 RC 2 上现有的 `.kmz` 占位航线。
 - `POST /api/dji/rc2/import`、`GET /api/dji/rc2/jobs/{job_id}`：生成 DJI Fly KMZ 并异步写入所选占位航线，轮询返回生成文件、备份路径、传输和回读校验状态；单次只允许一个写入任务。
+- `GET /api/photo-analysis/health`：仅本机可用，检查照片分析组件（推理 Python、ONNX 模型 registry、runner 脚本）是否就绪。
+- `POST /api/photo-analysis/jobs`（multipart）、`GET /api/photo-analysis/jobs/{job_id}`、`GET /api/photo-analysis/jobs/{job_id}/files/{name}`：上传无人机照片，后台运行 ONNX 积水分割，轮询状态并取回叠图/疑似掩膜/置信度图与逐图统计；单次最多 200 张，同时只跑一个任务。
 - `POST /api/landing/check`：用本地索引对候选点做快速初筛，返回 `mapped_building`、`road_nearby` 或 `no_road`，以及 35 米接路半径和最近道路点。`landing_verified` 始终为 `false`。
 - `POST /api/routes/preview`：保留原有的两点直线基线接口
 
@@ -70,6 +72,10 @@ npm run dev
 后端必须以当前登录用户的交互式 Windows 会话运行，不能在远程服务器或 Windows 服务会话中操作本机 MTP 设备；导入时应使用不带 `--reload` 的后端进程，避免任务中途因代码变更重启。生成文件保存在 `%LOCALAPPDATA%\LowAltitudeWorkbench\DJI\imports\<任务 ID>\<占位文件名>.kmz`；页面导入的原文件备份保存在 `%LOCALAPPDATA%\LowAltitudeWorkbench\DJI\backups\<任务 ID>\`。单独运行 `tools/rc2_mtp_upload.ps1` 时使用它自己的默认备份目录。新环境需用 `tools/build_silent_mtp_helper.ps1` 构建本机助手（需要 `clang-cl` 和 Windows SDK）；`tools/bin/silent_mtp_replace.exe` 是生成产物，不提交到 Git。导入只接受列表中的现有占位文件；回读 SHA-256 一致才显示写入成功，随后仍需在 DJI Fly 中核对航线是否被识别。当前没有 RC 2 真机测试结果；DJI Fly 的这种文件替换方式不是官方公开的第三方导入接口。
 
 未连接遥控器时可运行 `powershell -NoProfile -ExecutionPolicy Bypass -File tools/tests/test_rc2_mtp_upload.ps1`，用临时目录模拟列表、替换和失败恢复；该测试不会访问 MTP 设备。
+
+### 飞行后照片分析（本机）
+
+航线设置里的"飞行后照片"页可把无人机拍摄的照片上传给本机训练的积水分割模型：后端保存原图后，用 `WATER_ANALYSIS_PYTHON`（默认 `D:/anaconda/envs/waterseg/python.exe`）运行 `backend/scripts/run_water_onnx.py`，对 `WATER_ANALYSIS_MODEL_DIR`（默认 `../../model/artifacts/onnx`，读取其中 `registry.json` 指定的 ONNX 模型）做推理，输出叠图、疑似掩膜、逐图疑似占比/斑块数/置信度。模型由 `model/waterwatch` 的复现流程训练导出（见 `model/REPRODUCTION.md` 第 4-6 节）；没有导出模型时接口返回"未就绪"而不是假装分析。结果文件保存在 `backend/user_data/photo_analysis/<任务 ID>/`，接口只允许下载任务清单内的文件。**疑似积水像素只是待人工核查的线索**，占比不是面积，更不是水深、水位或堤防安全结论。上传与分析只在本机回环地址开放，与其他本机设备接口同一套来源校验。
 
 上线模型默认读取 `Web/mode/output_production/corrector_ridge.npz`，它由两份表去重后的全部可用样本拟合（目前 3893 条，包含 2024、2025、2026 年），使用已验证方案的公共 8 特征。在训练点及训练覆盖的原生提前量上，温度、U 风、6 小时降水采用订正结果，V 风和海平面气压严格保留 FuXi 原值；其他坐标/高度/时次遵循下述适用范围限制。派生风速、风向以及单点提示均使用最终值。全量拟合不再留测试集，也不产生新的独立测试指标；此前 `output_year_transfer_2026` 验证结果保留不变。
 
