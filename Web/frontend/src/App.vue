@@ -1907,9 +1907,13 @@ function drawCesiumRoute(flyToRoute = true) {
 
 function initMap() {
   Cesium = (window as any).Cesium
-  if (!Cesium || !mapElement.value) return
+  const element = mapElement.value
+  // The route map is rendered by EarthMap. Keep the legacy Cesium viewer
+  // available as a fallback, but do not allocate a second renderer while its
+  // host is intentionally hidden.
+  if (!Cesium || !element || !element.classList.contains('visible')) return
   try {
-    viewer = new Cesium.Viewer(mapElement.value, {
+    viewer = new Cesium.Viewer(element, {
       baseLayer: false,
       terrainProvider: new Cesium.EllipsoidTerrainProvider(),
       requestRenderMode: true,
