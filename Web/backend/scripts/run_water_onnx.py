@@ -28,10 +28,24 @@ def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def softmax(logits: np.ndarray) -> np.ndarray:
-    shifted = logits - logits.max(axis=1, keepdims=True)
+def softmax(logits: np.ndarray, axis: int = 1) -> np.ndarray:
+    shifted = logits - logits.max(axis=axis, keepdims=True)
     exponent = np.exp(shifted)
-    return exponent / exponent.sum(axis=1, keepdims=True)
+    return exponent / exponent.sum(axis=axis, keepdims=True)
+
+
+def class_probabilities(logits: np.ndarray) -> np.ndarray:
+    """Return per-class probabilities from ONNX segmentation logits.
+
+    The exported model contract is one batched tensor with shape
+    ``[1, classes, height, width]``.  Keeping the batch dimension until after
+    softmax makes the class axis explicit; applying softmax to ``logits[0]``
+    would normalize each image row instead of the classes.
+    """
+    logits = np.asarray(logits)
+    if logits.ndim != 4 or logits.shape[0] != 1 or any(size < 1 for size in logits.shape[1:]):
+        raise ValueError("Expected segmentation logits with shape [1, classes, height, width]")
+    return softmax(logits, axis=1)[0]
 
 
 def load_registry(model_dir: Path) -> dict:
@@ -88,7 +102,7 @@ def main() -> int:
             rgb = cv2.cvtColor(decoded, cv2.COLOR_BGR2RGB)
             height, width = rgb.shape[:2]
             logits = session.run(["logits"], {input_name: prepare(rgb, size, registry["normalize"])})[0]
-            probabilities = softmax(logits[0])
+            probabilities = class_probabilities(logits)
             prediction = np.argmax(logits[0], axis=0).astype(np.uint8)
             confidence = (probabilities[water_class] * 255).round().astype(np.uint8)
             suspected = (prediction == water_class)
