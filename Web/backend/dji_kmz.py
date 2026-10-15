@@ -118,7 +118,8 @@ def _simplify_coordinate_indices(coordinates: list[tuple[float, float]], protect
 
     tolerance = SIMPLIFY_TOLERANCE_M
     indices = _rdp_indices(filtered, tolerance)
-    protected_filtered = {filtered_indices.index(index) for index in protected_indices if index in filtered_indices}
+    filtered_position = {original: position for position, original in enumerate(filtered_indices)}
+    protected_filtered = {filtered_position[index] for index in protected_indices if index in filtered_position}
     if len(protected_filtered | {0, len(filtered) - 1}) > MAX_EXPORT_WAYPOINTS:
         raise KmzExportError(f"已编辑航点超过 {MAX_EXPORT_WAYPOINTS} 个，无法在保留全部设置的同时导出。")
     indices = sorted(set(indices) | protected_filtered)
