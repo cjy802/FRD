@@ -1,36 +1,48 @@
+import { fromBaiduSceneCoordinate, toBaiduSceneCoordinate } from './baiduCoordinates'
 import { BufferGeometry, DoubleSide, Float32BufferAttribute, Mesh, MeshBasicMaterial, Vector3 } from 'three'
 
 export type Coordinate = number[]
 export type CameraPose = { longitude: number; latitude: number; altitude: number; heading: number; pitch: number }
 export type SceneView = '2d' | '3d'
+export type MapProvider = 'baidu' | 'osm'
 
 let sdkPromise: Promise<any> | null = null
-async function loadSdk() {
+async function loadSdk(requireAk = true) {
   const ak = import.meta.env.VITE_BAIDU_MAP_AK?.trim()
-  if (!ak) throw new Error('尚未配置百度地图 AK。')
+  if (requireAk && !ak) throw new Error('尚未配置百度地图 AK。')
   ;(window as any).MAPV_BASE_URL = `${import.meta.env.BASE_URL}mapvthree/`
   sdkPromise ??= import('@baidumap/mapv-three').catch(error => { sdkPromise = null; throw error })
   const sdk = await sdkPromise
-  sdk.BaiduMapConfig.ak = ak
+  if (ak) sdk.BaiduMapConfig.ak = ak
   return { sdk, ak }
 }
 
-// Geographic coordinates are WGS84. The provider reprojects Baidu imagery;
-// applying a second BD09 offset would misalign routes and camera positions.
-export async function createBaiduScene(element: HTMLElement, center: Coordinate, preview = false) {
-  const { sdk, ak } = await loadSdk()
+// All public inputs/outputs are WGS84. Reprojecting the Baidu tiles changes
+// their projection, but does not convert their BD-09 geographic datum. Convert
+// once at each renderer boundary; keep mission data in WGS84.
+export async function createMapScene(element: HTMLElement, center: Coordinate, provider: MapProvider = 'baidu', preview = false) {
+  const { sdk, ak } = await loadSdk(provider === 'baidu')
+  const geoDatum = provider === 'baidu' ? 'bd09' : 'wgs84'
+  const toScene = (coordinate: Coordinate) => geoDatum === 'bd09' ? toBaiduSceneCoordinate(coordinate) : [...coordinate]
   const engine: any = new sdk.Engine(element, {
     map: {
-      // The raster surface reprojects the satellite tiles onto the globe.
-      provider: new sdk.Baidu09ImageryTileProvider({ ak, type: 'satellite' }),
-      projection: 'ecef', center, heading: 0, pitch: 52, range: 900,
+      provider: provider === 'baidu'
+        ? new sdk.Baidu09ImageryTileProvider({ ak, type: 'satellite' })
+        : new sdk.OSMImageryTileProvider(),
+      projection: provider === 'baidu' ? 'ecef' : 'EPSG:3857', center: toScene(center), heading: 0, pitch: 52, range: 900,
     },
     controller: { enabled: !preview, enableRotate: !preview, enableZoom: !preview, enablePan: !preview, enableTilt: !preview,
       inertiaTranslate: 0, inertiaZoom: 0, enableTerrainCollision: false },
     rendering: { enableAnimationLoop: true },
   } as any)
   if (preview) engine.map.fov = 58
-  return new BaiduScene(engine, sdk, element, !preview)
+  const scene = new BaiduScene(engine, sdk, element, !preview, geoDatum)
+  scene.setInputs(!preview)
+  return scene
+}
+
+export async function createBaiduScene(element: HTMLElement, center: Coordinate, preview = false) {
+  return createMapScene(element, center, 'baidu', preview)
 }
 
 export class BaiduScene {
@@ -41,7 +53,7 @@ export class BaiduScene {
   private disposed = false
   private beforeRender = () => { for (const callback of this.frameListeners) callback() }
 
-  constructor(readonly engine: any, private sdk: any, private element: HTMLElement, private interactive = true) {
+  constructor(readonly engine: any, private sdk: any, private element: HTMLElement, private interactive = true, private geoDatum: 'bd09' | 'wgs84' = 'bd09') {
     engine.addBeforeRenderListener(this.beforeRender)
   }
 
@@ -51,8 +63,12 @@ export class BaiduScene {
   }
 
   private geometry(type: string, coordinates: any) {
+    const toScene = (value: Coordinate) => this.geoDatum === 'bd09' ? toBaiduSceneCoordinate(value) : [...value]
+    const convert = (value: any): any => typeof value[0] === 'number'
+      ? toScene(value)
+      : value.map(convert)
     return this.sdk.GeoJSONDataSource.fromGeoJSON({ type: 'FeatureCollection', features: [
-      { type: 'Feature', properties: {}, geometry: { type, coordinates } },
+      { type: 'Feature', properties: {}, geometry: { type, coordinates: convert(coordinates) } },
     ] })
   }
 
@@ -85,7 +101,8 @@ export class BaiduScene {
   private viewFace(coordinates: Coordinate[], opacity: number) {
     const projected = coordinates.map(coordinate => {
       const position: number[] = []
-      this.engine.map.projectArrayCoordinate(coordinate, position)
+      const sceneCoordinate = this.geoDatum === 'bd09' ? toBaiduSceneCoordinate(coordinate) : coordinate
+      this.engine.map.projectArrayCoordinate(sceneCoordinate, position)
       return new Vector3().fromArray(position)
     })
     // Store small local coordinates to retain precision on the ECEF globe.
@@ -148,7 +165,8 @@ export class BaiduScene {
   }
 
   setView(view: SceneView, coordinates: Coordinate[]) {
-    this.engine.map.setProjection(view === '3d' ? 'ecef' : 'EPSG:3857')
+    const projection = this.geoDatum === 'wgs84' ? 'EPSG:3857' : view === '3d' ? 'ecef' : 'EPSG:3857'
+    this.engine.map.setProjection(projection)
     this.engine.controller.enableTilt = view === '3d'
     this.engine.controller.enableRotate = view === '3d'
     this.fit(coordinates, view)
@@ -162,12 +180,14 @@ export class BaiduScene {
     const height = view === '3d' ? Math.max(...coordinates.map(point => point[2] || 0)) : 0
     const bounds = this.element.getBoundingClientRect()
     const aspectFactor = Math.max(1, bounds.height / Math.max(1, bounds.width))
-    this.engine.map.lookAt(center, { heading: 0, pitch: view === '2d' ? 0 : 52, range: Math.max(650, span * 2.5 * aspectFactor, height * 6) })
+    const sceneCenter = this.geoDatum === 'bd09' ? toBaiduSceneCoordinate(center) : center
+    this.engine.map.lookAt(sceneCenter, { heading: 0, pitch: view === '2d' ? 0 : 52, range: Math.max(650, span * 2.5 * aspectFactor, height * 6) })
     this.engine.requestRender()
   }
 
   focus(coordinate: Coordinate, view: SceneView) {
-    this.engine.map.lookAt([coordinate[0], coordinate[1], 0], {
+    const sceneCoordinate = this.geoDatum === 'bd09' ? toBaiduSceneCoordinate([coordinate[0], coordinate[1], 0]) : [coordinate[0], coordinate[1], 0]
+    this.engine.map.lookAt(sceneCoordinate, {
       heading: view === '2d' ? 0 : this.engine.map.getHeading(),
       pitch: view === '2d' ? 0 : this.engine.map.getPitch(),
       range: Math.max(550, (coordinate[2] || 0) * 5),
@@ -176,15 +196,22 @@ export class BaiduScene {
   }
 
   followAt(pose: CameraPose, view: SceneView) {
-    const sceneCoordinate = [pose.longitude, pose.latitude, pose.altitude]
+    const sceneCoordinate = this.geoDatum === 'bd09'
+      ? toBaiduSceneCoordinate([pose.longitude, pose.latitude, pose.altitude])
+      : [pose.longitude, pose.latitude, pose.altitude]
     const currentRange = this.engine.map.getRange()
     const currentPitch = this.engine.map.getPitch()
+    const pitch = view === '2d' ? 0 : Number.isFinite(currentPitch) ? currentPitch : 52
+    // getRange() reaches the ground under the view center while lookAt measures
+    // to the elevated target; re-feeding the longer ground distance grows the
+    // range every frame and the camera climbs away from the drone.
+    const altitudeLeg = pose.altitude / Math.max(.05, Math.cos(pitch * Math.PI / 180))
     // Map headings turn counterclockwise; mission headings turn clockwise.
     // Keep the observer's distance and tilt while the target tracks the drone.
     this.engine.map.lookAt(sceneCoordinate, {
       heading: ((360 - pose.heading) % 360 + 360) % 360,
-      pitch: view === '2d' ? 0 : Number.isFinite(currentPitch) ? currentPitch : 52,
-      range: Number.isFinite(currentRange) && currentRange > 0 ? currentRange : 900,
+      pitch,
+      range: Number.isFinite(currentRange) && currentRange > 0 ? Math.max(50, currentRange - altitudeLeg) : 900,
     })
     this.engine.requestRender()
   }
@@ -207,16 +234,20 @@ export class BaiduScene {
     // an undefined direction, and a positive range would move the camera.
     const earth = this.engine.map._map
     if (typeof earth?.setView !== 'function') throw new Error('当前百度引擎不支持固定位置的相机视角。')
-    earth.setView([pose.longitude, pose.latitude, pose.altitude], {
+    const sceneCoordinate = this.geoDatum === 'bd09' ? toBaiduSceneCoordinate([pose.longitude, pose.latitude, pose.altitude]) : [pose.longitude, pose.latitude, pose.altitude]
+    earth.setView(sceneCoordinate, {
       heading: ((360 - pose.heading) % 360 + 360) % 360, pitch: 90 + pose.pitch, roll: 0,
     })
     this.engine.requestRender()
   }
 
   project(coordinate: Coordinate) {
-    const camera = this.engine.camera
+    // Before-render callbacks run after the SDK temporarily shifts the scene
+    // origin for precision. Use its absolute camera for geographic positions.
+    const camera = this.engine.rendering.rawCamera ?? this.engine.camera
     const projected: number[] = []
-    this.engine.map.projectArrayCoordinate(coordinate, projected)
+    const sceneCoordinate = this.geoDatum === 'bd09' ? toBaiduSceneCoordinate(coordinate) : coordinate
+    this.engine.map.projectArrayCoordinate(sceneCoordinate, projected)
     const world = camera.position.clone().fromArray(projected)
     if (this.engine.map.isGlobe) {
       // Hide back-side nodes even when their imagery has not loaded yet.
@@ -241,13 +272,16 @@ export class BaiduScene {
     const point = this.engine.map.pickSeaLevelWorldPosition({ x, y })
     if (!point || ![point.x, point.y, point.z].every(Number.isFinite) || point.lengthSq() === 0) return null
     const geographic = this.engine.map.unprojectArrayCoordinate(point.toArray())
-    return geographic && Math.abs(geographic[0]) <= 180 && Math.abs(geographic[1]) <= 90 ? geographic : null
+    const restored = this.geoDatum === 'bd09' ? fromBaiduSceneCoordinate(geographic) : geographic
+    return geographic && Math.abs(restored[0]) <= 180 && Math.abs(restored[1]) <= 90 ? restored : null
   }
 
   onFrame(callback: () => void) { this.frameListeners.add(callback); return () => this.frameListeners.delete(callback) }
   setInputs(enabled: boolean) {
     this.engine.controller.enabled = enabled && this.interactive
-    const controller = this.engine.map._map?.controller
+    // Earth uses Cesium-style enableInputs; the planar controller uses enabled.
+    // EngineController.enabled alone does not disable Earth's default inputs.
+    const controller = this.engine.map._map.controller
     if (controller && 'enableInputs' in controller) controller.enableInputs = enabled && this.interactive
   }
   setActive(active: boolean) {
