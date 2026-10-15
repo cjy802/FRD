@@ -10,6 +10,7 @@
     "prebuild": "npm run copy:mapv-assets",
     "build": "vue-tsc -b && vite build",
     "test:weather-presentation": "node scripts/test-weather-presentation.mjs",
+    "test:interaction-performance": "node scripts/test-interaction-performance.mjs",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {

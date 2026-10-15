@@ -43,6 +43,8 @@ let activeController: AbortController | null = null
 let sampleController: AbortController | null = null
 let pollTimer: ReturnType<typeof setTimeout> | null = null
 let expiryTimer: ReturnType<typeof setInterval> | null = null
+let pollStartedAt = 0
+const pollTimeoutMs = 30 * 60 * 1000
 const metrics: { field: Field; label: string }[] = [
   { field: 't2m_K', label: '温度 · °C' },
   { field: 'u10_m_s', label: 'U 风 · m/s' },
@@ -131,11 +133,12 @@ function finishError(controller: AbortController, cause: unknown) {
   loading.value = false
   activeController = null
 }
-function applyJob(job: Job, controller: AbortController, attempts: number) {
+function applyJob(job: Job, controller: AbortController) {
   if (controller.signal.aborted || controller !== activeController) return
+  const changed = jobStatus.value !== job.status || message.value !== job.message
   jobStatus.value = job.status
   message.value = job.message
-  emit('stateChanged', { status: job.status, message: job.message })
+  if (changed) emit('stateChanged', { status: job.status, message: job.message })
   if (job.status === 'succeeded') {
     if (!job.forecast || job.forecast.historical || new Date(job.forecast.valid_time_utc).getTime() <= Date.now()) {
       throw new Error('预报时刻已过期或接口返回历史数据，需要最新起报场。')
@@ -152,15 +155,22 @@ function applyJob(job: Job, controller: AbortController, attempts: number) {
     activeController = null
     return
   }
-  if (attempts >= 1800) throw new Error('天气推理等待超时，请稍后重新预测。')
-  pollTimer = setTimeout(() => { void pollJob(job.job_id, controller, attempts + 1) }, 1000)
+  const elapsed = Date.now() - pollStartedAt
+  if (elapsed >= pollTimeoutMs) throw new Error('天气推理等待超时，请稍后重新预测。')
+  const delay = elapsed < 10_000 ? 2000 : elapsed < 60_000 ? 5000 : 10_000
+  pollTimer = setTimeout(() => {
+    pollTimer = null
+    void pollJob(job.job_id, controller)
+  }, Math.min(delay, pollTimeoutMs - elapsed))
 }
-async function pollJob(jobId: string, controller: AbortController, attempts: number) {
+async function pollJob(jobId: string, controller: AbortController) {
+  if (controller.signal.aborted || controller !== activeController) return
   try {
+    if (Date.now() - pollStartedAt >= pollTimeoutMs) throw new Error('天气推理等待超时，请稍后重新预测。')
     const job = await readJob(await fetch(`/api/weather/predictions/${encodeURIComponent(jobId)}`, {
       signal: controller.signal, cache: 'no-store',
     }))
-    applyJob(job, controller, attempts)
+    applyJob(job, controller)
   } catch (cause) { finishError(controller, cause) }
 }
 async function predictWeather() {
@@ -173,8 +183,10 @@ async function predictWeather() {
   seriesLoading.value = false
   emit('jobReady', null)
   if (pollTimer) clearTimeout(pollTimer)
+  pollTimer = null
   const controller = new AbortController()
   activeController = controller
+  pollStartedAt = Date.now()
   loading.value = true
   error.value = ''
   forecast.value = null
@@ -185,7 +197,7 @@ async function predictWeather() {
     const job = await readJob(await fetch('/api/weather/predict', {
       method: 'POST', signal: controller.signal, cache: 'no-store',
     }))
-    applyJob(job, controller, 0)
+    applyJob(job, controller)
   } catch (cause) { finishError(controller, cause) }
 }
 

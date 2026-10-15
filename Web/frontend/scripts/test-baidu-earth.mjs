@@ -7,7 +7,7 @@ import * as Vue from 'vue'
 
 const source = await readFile(new URL('../src/EarthMap.vue', import.meta.url), 'utf8')
 const { descriptor } = parse(source)
-const props = Vue.reactive({ active: true, viewMode: '3d', start: { longitude: 119.95, latitude: 31.68 },
+const props = Vue.reactive({ active: true, provider: 'baidu', viewMode: '3d', start: { longitude: 119.95, latitude: 31.68 },
   end: { longitude: 119.951, latitude: 31.681 }, route: [[119.95, 31.68, 100], [119.951, 31.681, 120]],
   selectedIndex: null, editMode: 'node', footprint: [], weatherSegments: [], showStartRange: false, showEndRange: false, rangeMeters: 35 })
 const calls = { view: [], routes: [], focus: [], footprints: [], events: [] }
@@ -25,7 +25,7 @@ const scene = { engine: { controller: { enabled: true } },
 }
 const context = vm.createContext({ exports: {},
   require: name => name === 'vue' ? { ...Vue, onMounted: cb => { mounted = cb }, onBeforeUnmount: cb => { cleanup = cb } }
-    : { createBaiduScene: async () => scene },
+    : { createMapScene: async () => scene },
   defineProps: () => props, defineEmits: () => (...args) => calls.events.push(args), defineExpose() {},
   ResizeObserver: class { observe() {} disconnect() {} },
   window: { addEventListener: (name, cb) => listeners.set(name, cb), removeEventListener: name => listeners.delete(name) },

@@ -18,7 +18,7 @@ new vm.Script(ts.transpileModule(`${descriptor.scriptSetup.content}\nglobalThis.
   selectWaypoint, chooseBaseMap, chooseMapViewMode, updateCameraPreview, focusSelectedWaypoint,
   initialize() {
     Cesium = cesium; viewer = globalThis.viewer;
-    earthMapRef.value = { focusWaypoint: index => calls.focus.push(index) };
+    earthMapRef.value = { focusWaypoint: index => calls.focus.push(index), setView: view => calls.mode.push(view) };
     drawCesiumRoute = fit => calls.redraw.push(fit);
     initCameraPreview = () => calls.preview++;
   },
@@ -38,12 +38,11 @@ assert.equal(app.selectedCameraPose.value.altitude, 180); assert.equal(app.selec
 app.waypointSettings.value[1].gimbal_pitch_angle = -20
 assert.equal(app.selectedCameraPose.value.pitch, -20, 'Both preview renderers consume the same reactive camera pose')
 app.chooseMapViewMode('2d')
-assert.equal(calls.mode.length, 0, 'Earth mode switches must not morph the hidden Cesium view')
+assert.equal(calls.mode.at(-1), '2d', 'MapV mode switches must reach the active renderer')
 await app.chooseBaseMap('current')
-assert.equal(calls.mode.at(-1), '2d'); assert.equal(app.preview.value, route)
+assert.equal(app.preview.value, route)
 app.focusSelectedWaypoint()
-assert.equal(calls.camera.at(-1).orientation.heading, 0)
-assert.equal(calls.camera.at(-1).orientation.pitch, -Math.PI / 2, 'Selecting a node in 2D must keep a north-up overhead view')
+assert.deepEqual(calls.focus, [1, 1])
 app.chooseMapViewMode('3d'); assert.equal(calls.mode.at(-1), '3d')
 assert.equal(app.waypointSettings.value[1].altitude_m, 180)
 assert.equal(app.selectedWaypointIndex.value, 1)

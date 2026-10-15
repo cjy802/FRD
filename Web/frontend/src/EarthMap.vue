@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { createBaiduScene, type BaiduScene, type CameraPose } from './baiduScene'
+import { createMapScene, type BaiduScene, type CameraPose, type MapProvider, type SceneView } from './baiduScene'
 
 type Point = { longitude: number; latitude: number }
 type AnchorRole = 'start' | 'middle' | 'end'
 type Anchor = Point & { id: string; label?: string; role?: AnchorRole }
 const props = defineProps<{
-  active: boolean; viewMode: '2d' | '3d'; start: Point; end: Point; route: number[][] | null
+  active: boolean; provider: MapProvider; viewMode: '2d' | '3d'; start: Point; end: Point; route: number[][] | null
   anchors?: Anchor[]
   selectedIndex: number | null; editMode: 'route' | 'node'; footprint: number[][]
   weatherSegments: { start: number[]; end: number[]; level: string }[]
@@ -149,7 +149,8 @@ function applyViewMode() {
 }
 function changeTilt(event: Event) { tilt.value = Number((event.target as HTMLInputElement).value); scene?.setTilt(tilt.value) }
 function focusWaypoint(index: number) { const point = props.route?.[index]; if (point) scene?.focus(point, props.viewMode) }
-defineExpose({ focusWaypoint })
+function setView(view: SceneView) { scene?.setView(view, coordinates()) }
+defineExpose({ focusWaypoint, setView })
 
 function onMapPointerDown(event: PointerEvent) { mapPointerStart = { x: event.clientX, y: event.clientY }; mapPointerMoved = false }
 function onMapPointerMove(event: PointerEvent) { if (mapPointerStart && Math.hypot(event.clientX - mapPointerStart.x, event.clientY - mapPointerStart.y) > 5) mapPointerMoved = true }
@@ -231,10 +232,10 @@ function finishDrag() {
 function onNodeUp(event: PointerEvent) { if (event.pointerId === drag?.pointerId) finishDrag() }
 function onNodeClick(index: number) { if (!props.flightPose?.playing) emit('select-waypoint', index) }
 async function initialize() {
-  status.value = '正在加载地球模式…'; failed.value = false
+  status.value = props.provider === 'baidu' ? '正在加载地球模式…' : '正在加载地图模式…'; failed.value = false
   try {
     // The engine needs a center on startup, even when all user anchors are blank.
-    const nextScene = await createBaiduScene(earthElement.value!, coordinates()[0] ?? [props.start.longitude, props.start.latitude, 0])
+    const nextScene = await createMapScene(earthElement.value!, coordinates()[0] ?? [props.start.longitude, props.start.latitude, 0], props.provider)
     if (unmounted) { nextScene.dispose(); return }
     scene = nextScene
     scene.onFrame(renderOverlay)
@@ -255,12 +256,21 @@ onMounted(() => {
 })
 watch(() => props.active, async active => { finishDrag(); finishCtrlRotate(); await nextTick(); scene?.setActive(active); scene?.setInputs(active && !props.flightPose?.playing); if (active) { scene?.resize(); renderOverlay() } })
 watch(() => props.viewMode, () => { finishDrag(); finishCtrlRotate(); applyViewMode() })
+watch(() => props.provider, async () => {
+  finishDrag()
+  finishCtrlRotate()
+  scene?.dispose(); scene = null
+  await nextTick()
+  if (!unmounted) void initialize()
+})
 watch(() => [props.route, props.start, props.end, props.anchors, props.weatherSegments, props.showStartRange, props.showEndRange, props.rangeMeters], refreshRoute, { deep: true })
 watch(() => [props.footprint, props.selectedIndex, props.editMode], () => { refreshFootprint(); renderOverlay() }, { deep: true, flush: 'sync' })
-watch(() => props.flightPose, pose => {
+watch(() => props.flightPose, (pose, previous) => {
   if (pose?.playing) { finishDrag(); finishCtrlRotate() }
   scene?.setInputs(props.active && !pose?.playing)
   if (pose?.follow && scene && props.active) scene.followAt(pose, props.viewMode)
+  // Leaving the simulation returns the camera to the whole-route overview.
+  if (!pose && previous && scene) scene.fit(coordinates(), props.viewMode)
   refreshFootprint()
   renderOverlay()
 }, { deep: true, flush: 'sync' })
@@ -274,7 +284,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="earth-map" :class="{ active }" aria-label="百度地图地球模式" :data-view-mode="viewMode" @pointerdown.capture="onCtrlRotateDown" @mousedown.capture="onCtrlMouseDown">
+  <div class="earth-map" :class="{ active }" :aria-label="provider === 'baidu' ? '百度地图地球模式' : 'OpenStreetMap 地图模式'" :data-view-mode="viewMode" @pointerdown.capture="onCtrlRotateDown" @mousedown.capture="onCtrlMouseDown">
     <div ref="earthElement" class="earth-map-canvas" @pointerdown="onMapPointerDown" @pointermove="onMapPointerMove" @click="onMapClick"></div>
     <div class="earth-map-overlay">
       <span v-for="anchor in overlay.anchors" :key="anchor.id" class="earth-endpoint" :class="anchor.role" :style="{ left: `${anchor.x}px`, top: `${anchor.y}px` }">{{ anchor.label }}</span>
@@ -285,7 +295,7 @@ onBeforeUnmount(() => {
     </div>
     <label v-if="viewMode === '3d' && !status" class="earth-tilt-control">观察角度 <input aria-label="地球 3D 观察角度" type="range" min="0" max="75" :value="tilt" @input="changeTilt" /><span>{{ tilt }}°</span></label>
     <div v-if="status" class="earth-map-status" role="status"><span>{{ status }}</span><button v-if="failed" type="button" @click="initialize">重试</button></div>
-    <span class="earth-attribution">© 百度地图</span>
+    <span class="earth-attribution">{{ provider === 'baidu' ? '© 百度地图' : '© OpenStreetMap contributors' }}</span>
   </div>
 </template>
 
@@ -309,10 +319,10 @@ onBeforeUnmount(() => {
 .earth-auto-node { position: absolute; width: 6px; height: 6px; transform: translate(-50%, -50%); border: 1px solid #fff; border-radius: 50%; background: #00aa83; box-shadow: 0 1px 3px rgb(18 52 59 / .5); pointer-events: none; }
 .earth-flight-drone { position: absolute; z-index: 3; width: 40px; height: 40px; display: grid; place-items: center; border: 2px solid #fff; border-radius: 50%; background: #126cb7; box-shadow: 0 0 0 5px rgb(18 108 183 / .19), 0 4px 14px rgb(9 42 74 / .45); pointer-events: none; will-change: left, top, transform; }
 .earth-flight-drone img { width: 28px; height: 28px; display: block; }
-.earth-tilt-control { position: absolute; z-index: 2; right: 16px; top: 80px; display: flex; align-items: center; gap: 6px; padding: 7px 10px; background: #fff; border: 1px solid #d8dde3; border-radius: 6px; font-size: 12px; }
+.earth-tilt-control { position: absolute; z-index: 2; right: 16px; top: 80px; display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 0 12px; background: #fff; border: 1px solid #d8e0e7; border-radius: 8px; box-shadow: 0 4px 14px rgb(23 50 77 / .14); color: #344455; font-size: 12px; }
 .earth-tilt-control input { width: 90px; }
 .earth-map-status { position: absolute; z-index: 2; top: 50%; left: 50%; display: grid; justify-items: center; gap: 9px; max-width: min(320px, 80%); transform: translate(-50%, -50%); padding: 12px 16px; background: #fff; border: 1px solid #d8dde3; color: #424242; text-align: center; font-size: 13px; }
 .earth-map-status button { padding: 5px 12px; border: 1px solid #0f6cbd; border-radius: 4px; background: #fff; color: #0f6cbd; cursor: pointer; }
 .earth-attribution { position: absolute; bottom: 4px; right: 6px; color: #fff; text-shadow: 0 1px 2px #000; font-size: 11px; }
-@media (max-width: 900px) { .earth-tilt-control { top: 150px; right: 10px; } }
+@media (max-width: 900px) { .earth-tilt-control { top: 164px; right: 10px; } }
 </style>

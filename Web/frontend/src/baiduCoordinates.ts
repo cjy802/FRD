@@ -56,3 +56,13 @@ export function bd09ToWgs84([longitude, latitude]: LngLat): LngLat {
   }
   return candidate
 }
+
+// The app stores WGS84 coordinates. The satellite scene uses BD-09 longitude
+// and latitude, including in its ECEF projection. Preserve height/other values.
+export function toBaiduSceneCoordinate(coordinate: number[]): number[] {
+  return [...wgs84ToBd09([coordinate[0], coordinate[1]]), ...coordinate.slice(2)]
+}
+
+export function fromBaiduSceneCoordinate(coordinate: number[]): number[] {
+  return [...bd09ToWgs84([coordinate[0], coordinate[1]]), ...coordinate.slice(2)]
+}
