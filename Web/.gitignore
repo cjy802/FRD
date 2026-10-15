@@ -1,0 +1,11 @@
+# Local browser captures, agent plans, and generated inspection artifacts
+/.playwright-cli/
+/.zcode/
+/output/
+/mode/output/
+/mode/output_features/
+/tools/bin/
+
+# Local test caches and generated lockfiles without a package manifest
+**/pytest-cache-files-*/
+/backend/package-lock.json
