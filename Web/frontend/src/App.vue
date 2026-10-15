@@ -2059,8 +2059,9 @@ function initCameraPreview() {
     })
   } catch {
     cameraPreviewReady.value = false
-    cameraPreviewViewer?.destroy()
+    const failedViewer = cameraPreviewViewer
     cameraPreviewViewer = null
+    if (typeof failedViewer?.destroy === 'function') failedViewer.destroy()
   }
 }
 

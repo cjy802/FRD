@@ -9,7 +9,8 @@ const source = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8'
 const { descriptor } = parse(source)
 const calls = { camera: [], focus: [], mode: [], redraw: [], preview: 0 }
 const viewer = { camera: { setView: pose => calls.camera.push(pose), flyTo: pose => calls.camera.push(pose) },
-  scene: { morphTo2D: () => calls.mode.push('2d'), morphTo3D: () => calls.mode.push('3d'), requestRender() {} }, resize() {} }
+  scene: { morphTo2D: () => calls.mode.push('2d'), morphTo3D: () => calls.mode.push('3d'), requestRender() {}, screenSpaceCameraController: { enableInputs: true } },
+  entities: { getById: () => undefined, add() {}, remove() {} }, resize() {} }
 const cesium = { Math: { toRadians: degrees => degrees * Math.PI / 180 }, Cartesian3: { fromDegrees: (...p) => p } }
 const context = vm.createContext({ exports: {}, require: name => name === 'vue' ? { ...Vue, onMounted() {}, onBeforeUnmount() {} } : {},
   window: { removeEventListener() {} }, AbortController, URLSearchParams, setTimeout, clearTimeout, viewer, cesium, calls })

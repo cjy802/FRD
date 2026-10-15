@@ -35,11 +35,12 @@ const previewElement = {
   releasePointerCapture: id => captures.delete(id),
 }
 const mainController = { enableInputs: true }
-const mainViewer = { scene: { screenSpaceCameraController: mainController }, isDestroyed: () => true }
+const mainViewer = { scene: { screenSpaceCameraController: mainController, requestRender() {} }, entities: { getById: () => undefined, add() {}, remove() {} }, isDestroyed: () => true }
 const cesium = {
   Math: { toRadians: degrees => degrees * Math.PI / 180 },
   Cartesian3: { fromDegrees: (longitude, latitude, height) => ({ x: longitude, y: latitude, z: height }) },
   ScreenSpaceEventType: { LEFT_DOUBLE_CLICK: 'double-click' },
+  Credit: class {},
   EllipsoidTerrainProvider: class {},
   OpenStreetMapImageryProvider: class {},
   Viewer: class {
@@ -48,6 +49,7 @@ const cesium = {
     imageryLayers = { addImageryProvider() {} }
     cesiumWidget = { screenSpaceEventHandler: { removeInputAction: action => removedActions.push(action) } }
     resize() {}
+    destroy() {}
     isDestroyed() { return true }
   },
 }

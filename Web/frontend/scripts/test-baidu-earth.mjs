@@ -28,6 +28,7 @@ const context = vm.createContext({ exports: {},
     : { createMapScene: async () => scene },
   defineProps: () => props, defineEmits: () => (...args) => calls.events.push(args), defineExpose() {},
   ResizeObserver: class { observe() {} disconnect() {} },
+  performance: { now: () => 0 },
   window: { addEventListener: (name, cb) => listeners.set(name, cb), removeEventListener: name => listeners.delete(name) },
 })
 const compiled = ts.transpileModule(`${descriptor.scriptSetup.content}\nglobalThis.earth = {
