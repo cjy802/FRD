@@ -57,6 +57,8 @@ def main() -> None:
     parser.add_argument("--eval-start", type=int, default=100)
     parser.add_argument("--eval-interval", type=int, default=5)
     parser.add_argument("--amp", action="store_true", default=True)
+    parser.add_argument("--workers", type=int, default=4, help="DataLoader workers; Windows spawn hangs grow with this number")
+    parser.add_argument("--resume", type=Path, default=None, help="*_checkpoint.pth from a previous run to resume from")
     parser.add_argument("--log", type=Path, default=Path("output/cmnext_caltech_train.log"))
     args = parser.parse_args()
 
@@ -79,6 +81,12 @@ def main() -> None:
     })
     cfg["EVAL"]["BATCH_SIZE"] = args.eval_batch_size
     cfg["EVAL"]["IMAGE_SIZE"] = list(args.image_size)
+    cfg["TRAIN"]["WORKERS"] = max(0, args.workers)
+    if args.resume is not None:
+        resume_path = args.resume.resolve()
+        if not resume_path.is_file():
+            raise FileNotFoundError(f"resume checkpoint missing: {resume_path}")
+        cfg["MODEL"]["RESUME"] = str(resume_path)
     runtime_config = deliver_root / "configs/_runtime_caltech_rgbt.yaml"
     runtime_config.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
 

@@ -268,3 +268,16 @@ index cce921d..665e81d 100644
  
  class DWConv(nn.Module):
      def __init__(self, dim=768):
+diff --git a/tools/train_mm.py b/tools/train_mm.py
+index 2cc5136..ad9c9f3 100644
+--- a/tools/train_mm.py
++++ b/tools/train_mm.py
+@@ -27,7 +27,7 @@ def main(cfg, gpu, save_dir):
+     start = time.time()
+     best_mIoU = 0.0
+     best_epoch = 0
+-    num_workers = 8
++    num_workers = int(cfg['TRAIN'].get('WORKERS', 8))
+     device = torch.device(cfg['DEVICE'])
+     train_cfg, eval_cfg = cfg['TRAIN'], cfg['EVAL']
+     dataset_cfg, model_cfg = cfg['DATASET'], cfg['MODEL']

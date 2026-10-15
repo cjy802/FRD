@@ -20,7 +20,7 @@ import torch
 from PIL import Image
 
 IMAGE_SIZE = 256
-MASK_VALUES = (0, 255)
+WATER_VALUES = (1, 255)  # Puddle-1000 masks are 0/1; Carvana-style masks are 0/255
 
 
 def load_model(repo: Path, checkpoint: Path) -> torch.nn.Module:
@@ -42,10 +42,7 @@ def load_image(path: Path, is_mask: bool) -> np.ndarray:
     image = image.resize((IMAGE_SIZE, IMAGE_SIZE), resample=Image.NEAREST if is_mask else Image.BICUBIC)
     array = np.asarray(image)
     if is_mask:
-        index = np.zeros(array.shape, dtype=np.int64)
-        for position, value in enumerate(MASK_VALUES):
-            index[array == value] = position
-        return index
+        return np.isin(array, WATER_VALUES).astype(np.int64)
     tensor = array.transpose((2, 0, 1)).astype(np.float32) / 255.0
     return tensor
 
