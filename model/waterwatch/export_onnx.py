@@ -27,8 +27,21 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _export(bundle_path: Path, onnx_path: Path, dummy_inputs: list[torch.Tensor], model: torch.nn.Module) -> None:
+def _export(bundle_path: Path, onnx_path: Path, dummy_inputs: list[torch.Tensor], model: torch.nn.Module, *, dynamo: bool = False) -> None:
     onnx_path.parent.mkdir(parents=True, exist_ok=True)
+    if dynamo:
+        # timm CondConv2d computes conv weights dynamically; the legacy tracer
+        # cannot export that, the torch 2.7 dynamo exporter can.
+        torch.onnx.export(
+            model,
+            dummy_inputs[0],
+            str(onnx_path),
+            input_names=[f"input_{index}" for index in range(len(dummy_inputs))],
+            output_names=["logits"],
+            opset_version=18,
+            dynamo=True,
+        )
+        return
     torch.onnx.export(
         model,
         tuple(dummy_inputs) if len(dummy_inputs) > 1 else dummy_inputs[0],
@@ -64,7 +77,7 @@ def export_abcdwavenet(third_party: Path, checkpoint: Path, output: Path) -> dic
     model.load_state_dict(state)
     model.eval()
     dummy = torch.randn(1, 3, 256, 256)
-    _export(checkpoint, output, [dummy], model)
+    _export(checkpoint, output, [dummy], model, dynamo=True)
     verification = _verify(output, model, [dummy])
     return {
         "model": "abcdwavenet",
