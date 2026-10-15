@@ -28,6 +28,7 @@ def _sha256(path: Path) -> str:
 
 
 def _export(bundle_path: Path, onnx_path: Path, dummy_inputs: list[torch.Tensor], model: torch.nn.Module) -> None:
+    onnx_path.parent.mkdir(parents=True, exist_ok=True)
     torch.onnx.export(
         model,
         tuple(dummy_inputs) if len(dummy_inputs) > 1 else dummy_inputs[0],
@@ -44,7 +45,7 @@ def _verify(onnx_path: Path, model: torch.nn.Module, inputs: list[torch.Tensor])
     feed = {f"input_{index}": value.numpy() for index, value in enumerate(inputs)}
     onnx_logits = session.run(["logits"], feed)[0]
     with torch.inference_mode():
-        torch_logits = model(inputs if len(inputs) > 1 else inputs[0]).numpy()
+        torch_logits = (model(*inputs) if len(inputs) > 1 else model(inputs[0])).numpy()
     return {
         "max_abs_logit_deviation": float(np.max(np.abs(onnx_logits - torch_logits))),
         "mean_abs_logit_deviation": float(np.mean(np.abs(onnx_logits - torch_logits))),
@@ -82,15 +83,28 @@ def export_cmnext(third_party: Path, checkpoint: Path, output: Path, image_size:
     if str(deliver) not in sys.path:
         sys.path.insert(0, str(deliver))
     from semseg.models import CMNeXt
+
     model = CMNeXt("CMNeXt-B2", 10, ["img", "thermal"])
     state = torch.load(checkpoint, map_location="cpu")
     if isinstance(state, dict) and "model_state_dict" in state:
         state = state["model_state_dict"]
     model.load_state_dict({key.removeprefix("module."): value for key, value in state.items()})
     model.eval()
+
+    class TwoInputWrapper(torch.nn.Module):
+        """CMNeXt.forward expects one list argument; expose two tensor inputs for ONNX."""
+
+        def __init__(self, inner: torch.nn.Module) -> None:
+            super().__init__()
+            self.inner = inner
+
+        def forward(self, img: torch.Tensor, thermal: torch.Tensor) -> torch.Tensor:
+            return self.inner([img, thermal])
+
+    wrapper = TwoInputWrapper(model).eval()
     dummy = [torch.randn(1, 3, *image_size), torch.randn(1, 3, *image_size)]
-    _export(checkpoint, output, dummy, model)
-    verification = _verify(output, model, dummy)
+    _export(checkpoint, output, dummy, wrapper)
+    verification = _verify(output, wrapper, dummy)
     return {
         "model": "cmnext_b2_rgbt",
         "checkpoint": str(checkpoint),

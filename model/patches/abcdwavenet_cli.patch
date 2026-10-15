@@ -1,3 +1,15 @@
+diff --git a/model/net_model.py b/model/net_model.py
+index 313a2c9..32385ac 100644
+--- a/model/net_model.py
++++ b/model/net_model.py
+@@ -411,7 +411,6 @@ class UNet(nn.Module):
+         x3 = self.down2(x2_dehaze)  # Downsample x2_dehaze to get x3
+         x3_freq = self.wavebottleneck3(x3)  # Dehaze x3 to get x3_dehaze
+         x3_dehaze = self.bnm3(x3_freq)
+-        print("目标层输出形状：", x3_dehaze.shape)
+ 
+         x4 = self.down3(x3_dehaze)  # Downsample x3_dehaze to get x4
+         x4_freq = self.wavebottleneck4(x4)  # Dehaze x4 to get x4_dehaze
 diff --git a/train.py b/train.py
 index df042ea..55653c3 100644
 --- a/train.py

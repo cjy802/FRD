@@ -47,10 +47,11 @@ def load_model(deliver_root: Path, checkpoint: Path, modals: list[str]) -> torch
 
 @torch.inference_mode()
 def predict(model: torch.nn.Module, sample: list[Tensor]) -> np.ndarray:
-    height, width = sample[0].shape[2:]
+    batched = [x.unsqueeze(0) if x.ndim == 3 else x for x in sample]
+    height, width = batched[0].shape[-2:]
     pad_h = (32 - height % 32) % 32
     pad_w = (32 - width % 32) % 32
-    padded = [F.pad(x, (0, pad_w, 0, pad_h)) for x in sample]
+    padded = [F.pad(x, (0, pad_w, 0, pad_h)) for x in batched]
     logits = model(padded)
     logits = logits[:, :, :height, :width]
     return logits.argmax(dim=1)[0].cpu().numpy().astype(np.uint8)
@@ -164,8 +165,8 @@ def main() -> None:
     for entry, rgb_np, thermal_np, label, prediction in chosen:
         folder = args.output / "examples" / entry["stem"]
         folder.mkdir(parents=True, exist_ok=True)
-        io.write_png(rgb_np.permute(2, 0, 1), str(folder / "input_rgb.png"))
-        io.write_png(thermal_np.permute(2, 0, 1), str(folder / "input_thermal.png"))
+        io.write_png(torch.from_numpy(rgb_np).permute(2, 0, 1), str(folder / "input_rgb.png"))
+        io.write_png(torch.from_numpy(thermal_np).permute(2, 0, 1), str(folder / "input_thermal.png"))
         truth_vis = np.full(label.shape, IGNORE, dtype=np.uint8)
         truth_vis[...] = label
         io.write_png(torch.from_numpy(truth_vis).unsqueeze(0), str(folder / "truth.png"))

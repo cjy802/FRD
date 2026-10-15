@@ -45,7 +45,8 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--amp", action="store_true", default=True)
+    parser.add_argument("--amp", action="store_true", default=False,
+                        help="off by default: fp16 wavelet ops produced NaN losses on torch 2.7 in smoke tests")
     parser.add_argument("--checkpoint-dir", type=Path, default=Path("output/abcdwavenet_checkpoints"))
     parser.add_argument("--log", type=Path, default=Path("output/abcdwavenet_train.log"))
     args = parser.parse_args()
@@ -72,12 +73,13 @@ def main() -> None:
         "--output-dir", str(checkpoint_dir.parent / "abcdwavenet_output"),
         "--epochs", str(args.epochs),
         "--batch-size", str(args.batch_size),
-        "--lr", str(args.lr),
+        "--learning-rate", str(args.lr),
         "--classes", "2",
     ]
     if args.amp:
         command.append("--amp")
-    environment = dict(os.environ, PYTHONUNBUFFERED="1")
+    environment = dict(os.environ, PYTHONUNBUFFERED="1",
+                       PYTORCH_CUDA_ALLOC_CONF=os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"))
     args.log.parent.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
     print(json.dumps({"repo_commit": head, "train": train_info, "val": val_info, "command": command}, ensure_ascii=False, indent=2), flush=True)
