@@ -74,6 +74,8 @@ class Snap:
 
 
 class CampusRoadNetwork:
+    _ALLOWED_CACHE_LIMIT = 8
+
     def __init__(self, path: Path = DATA_FILE):
         if not path.is_file():
             raise RouteUnavailable("缺少本地校园道路数据，请先运行 scripts/fetch_campus_osm.py。")
@@ -88,6 +90,7 @@ class CampusRoadNetwork:
         }
         self.segments: list[Segment] = []
         self.buildings: list[Polygon] = []
+        self._allowed_cache: dict[float, tuple[tuple[Segment, ...], object]] = {}
         for way in root.findall("way"):
             tags = {tag.attrib["k"]: tag.attrib["v"] for tag in way.findall("tag")}
             refs = [node.attrib["ref"] for node in way.findall("nd")]
@@ -121,6 +124,7 @@ class CampusRoadNetwork:
         network.positions = {}
         network.segments = []
         network.buildings = []
+        network._allowed_cache = {}
         for _, a, b, a_lon, a_lat, b_lon, b_lat, way_id, name, _ in roads:
             a_id, b_id = str(a), str(b)
             network.positions[a_id] = network._to_xy(a_lat, a_lon)
@@ -143,13 +147,20 @@ class CampusRoadNetwork:
     def _to_lon_lat(self, x: float, y: float) -> list[float]:
         return [self.origin_lon + x / self.metres_per_degree_lon, self.origin_lat + y / METRES_PER_DEGREE_LAT]
 
-    def _allowed_segments(self, clearance_m: float) -> tuple[list[Segment], object]:
+    def _allowed_segments(self, clearance_m: float) -> tuple[tuple[Segment, ...], object]:
+        cached = self._allowed_cache.get(clearance_m)
+        if cached is not None:
+            return cached
         obstacles = unary_union([building.buffer(clearance_m) for building in self.buildings])
-        allowed = [
+        allowed = tuple(
             segment for segment in self.segments
             if not LineString((self.positions[segment.a], self.positions[segment.b])).intersects(obstacles)
-        ]
-        return allowed, obstacles
+        )
+        if len(self._allowed_cache) >= self._ALLOWED_CACHE_LIMIT:
+            self._allowed_cache.pop(next(iter(self._allowed_cache)))
+        result = (allowed, obstacles)
+        self._allowed_cache[clearance_m] = result
+        return result
 
     def _snap_candidates(
         self, xy: tuple[float, float], segments: list[Segment], obstacles: object, endpoint_name: str

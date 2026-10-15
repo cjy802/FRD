@@ -98,6 +98,18 @@ class CampusRouteTests(unittest.TestCase):
         self.assertAlmostEqual(result["start_snap_m"], 20, delta=0.2)
         self.assertEqual(result["road_names"], ["可达道路"])
 
+    def test_allowed_segments_cache_reuses_building_buffer_for_same_clearance(self):
+        latitude, longitude = 31.6798, 119.9505
+        roads = [
+            (1, 1, 2, longitude, latitude, longitude + 0.0001, latitude, 1, "测试道路", "service"),
+        ]
+        network = CampusRoadNetwork.from_index_rows(roads, [], latitude, longitude, "test")
+        with patch("road_planner.unary_union", wraps=unary_union) as merge:
+            first = network._allowed_segments(2)
+            second = network._allowed_segments(2)
+        self.assertIs(first, second)
+        self.assertEqual(merge.call_count, 1)
+
     def test_online_source_uses_online_geometry_and_labels_unchecked_clearance(self):
         self.request["road_source"] = "online"
         payload = {
