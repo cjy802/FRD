@@ -1,0 +1,106 @@
+diff --git a/train.py b/train.py
+index df042ea..55653c3 100644
+--- a/train.py
++++ b/train.py
+@@ -22,6 +22,15 @@ val_root_dir = Path(r'')
+ dir_checkpoint = Path('./checkpoints/')
+ output_dir = Path('./output/')
+ 
++
++def apply_runtime_options(args):
++    """Override module-level paths from CLI arguments (waterwatch patch)."""
++    global train_root_dir, val_root_dir, dir_checkpoint, output_dir
++    train_root_dir = Path(args.train_dir)
++    val_root_dir = Path(args.val_dir)
++    dir_checkpoint = Path(args.checkpoint_dir)
++    output_dir = Path(args.output_dir)
++
+ def setup_logging():
+     """Set up the logging format and level."""
+     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+@@ -31,7 +40,7 @@ def create_dataloaders(img_scale, batch_size):
+     train_dataset = BasicDataset(train_root_dir / 'images', train_root_dir / 'masks', img_scale)
+     val_dataset = BasicDataset(val_root_dir / 'images', val_root_dir / 'masks', img_scale)
+     
+-    loader_args = dict(batch_size=batch_size, num_workers=os.cpu_count(), pin_memory=True)
++    loader_args = dict(batch_size=batch_size, num_workers=min(4, os.cpu_count() or 1), pin_memory=True)
+     train_loader = DataLoader(train_dataset, shuffle=True, **loader_args)
+     val_loader = DataLoader(val_dataset, shuffle=False, drop_last=True, **loader_args)
+     
+@@ -41,16 +50,18 @@ def get_optimizer(model, learning_rate, weight_decay, momentum):
+     """Configure the optimizer."""
+     return optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+ 
+-def save_checkpoint_and_masks(model, dir_checkpoint, dataset_name, best_val_score, val_loader, device, amp):
+-    """Save the best model checkpoint and corresponding predicted masks."""
++def save_checkpoint_and_masks(model, dir_checkpoint, dataset_name, best_val_score, val_loader, device, amp, save_masks=True):
++    """Save the best model checkpoint and (optionally) corresponding predicted masks."""
+     Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
+-    checkpoint_filename = f'{model.__class__.__name__}_{dataset_name}_best_[22222]_1217.pth'
++    checkpoint_filename = f'{model.__class__.__name__}_{dataset_name}_best_{best_val_score:.4f}.pth'
+     checkpoint_path = dir_checkpoint / checkpoint_filename
+     torch.save(model.state_dict(), checkpoint_path)
+     logging.info(f'Best model checkpoint saved as: {checkpoint_path}')
+-    
++    if not save_masks:
++        return best_val_score
++
+     # Save predicted masks
+-    output_subdir = output_dir / f'{model.__class__.__name__}_{dataset_name}_best_[22222]_1217'
++    output_subdir = output_dir / f'{model.__class__.__name__}_{dataset_name}_best_{best_val_score:.4f}'
+     output_subdir.mkdir(parents=True, exist_ok=True)
+     
+     model.eval()    
+@@ -125,6 +136,7 @@ def train_model(
+         weight_decay: float = 1e-4,
+         momentum: float = 0.99,
+         gradient_clipping: float = 1.0,
++    save_val_masks: bool = False,
+ ):
+     setup_logging()
+     train_loader, val_loader = create_dataloaders(img_scale, batch_size)
+@@ -177,7 +189,7 @@ def train_model(
+         logging.info(f'Validation Dice score: {val_score:.4f}')
+ 
+         if save_checkpoint and val_score > best_val_score:
+-            best_val_score = save_checkpoint_and_masks(model, dir_checkpoint, dataset_name, val_score, val_loader, device, amp)
++            best_val_score = save_checkpoint_and_masks(model, dir_checkpoint, dataset_name, val_score, val_loader, device, amp, save_masks=save_val_masks)
+ 
+ def get_args():
+     parser = argparse.ArgumentParser(description='Train the UNet on images and target masks')
+@@ -189,11 +201,17 @@ def get_args():
+     parser.add_argument('--amp', action='store_true', default=False, help='Use mixed precision')
+     parser.add_argument('--bilinear', action='store_true', default=True, help='Use bilinear upsampling')
+     parser.add_argument('--classes', '-c', type=int, default=2, help='Number of classes')
++    parser.add_argument('--train-dir', type=str, required=True, help='Training data root (contains images/ and masks/)')
++    parser.add_argument('--val-dir', type=str, required=True, help='Validation data root (contains images/ and masks/)')
++    parser.add_argument('--checkpoint-dir', type=str, default='./checkpoints/', help='Where checkpoints are written')
++    parser.add_argument('--output-dir', type=str, default='./output/', help='Where predicted validation masks are written')
++    parser.add_argument('--save-val-masks', action='store_true', default=False, help='Also dump predicted masks for the validation set')
+ 
+     return parser.parse_args()
+ 
+ if __name__ == '__main__':
+     args = get_args()
++    apply_runtime_options(args)
+ 
+     setup_logging()
+     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+@@ -223,7 +241,8 @@ if __name__ == '__main__':
+             learning_rate=args.lr,
+             device=device,
+             img_scale=args.scale,
+-            amp=args.amp
++            amp=args.amp,
++            save_val_masks=args.save_val_masks
+         )
+     except torch.cuda.OutOfMemoryError:
+         logging.error('Detected OutOfMemoryError! Enabling checkpointing to reduce memory usage, but this slows down training. Consider enabling AMP (--amp) for fast and memory efficient training')
+@@ -237,5 +256,6 @@ if __name__ == '__main__':
+             learning_rate=args.lr,
+             device=device,
+             img_scale=args.scale,
+-            amp=args.amp
++            amp=args.amp,
++            save_val_masks=args.save_val_masks
+         )

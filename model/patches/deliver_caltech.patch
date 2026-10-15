@@ -1,0 +1,270 @@
+diff --git a/configs/caltech_rgbt_b2.yaml b/configs/caltech_rgbt_b2.yaml
+new file mode 100644
+index 0000000..aa66bc1
+--- /dev/null
++++ b/configs/caltech_rgbt_b2.yaml
+@@ -0,0 +1,47 @@
++DEVICE          : cuda
++SAVE_DIR        : 'output'
++
++MODEL:
++  NAME          : CMNeXt
++  BACKBONE      : CMNeXt-B2
++  PRETRAINED    : 'checkpoints/pretrained/segformer/mit_b2.pth'
++  RESUME        : ''
++
++DATASET:
++  NAME          : CaltechRGBT
++  ROOT          : '../data/deliver/CaltechRGBT'
++  IGNORE_LABEL  : 255
++  MODALS        : ['img', 'thermal']
++
++TRAIN:
++  IMAGE_SIZE    : [480, 640]
++  BATCH_SIZE    : 4
++  EPOCHS        : 300
++  EVAL_START    : 100
++  EVAL_INTERVAL : 5
++  AMP           : true
++  DDP           : false
++
++LOSS:
++  NAME          : CrossEntropy
++  CLS_WEIGHTS   : false
++
++OPTIMIZER:
++  NAME          : adamw
++  LR            : 0.00006
++  WEIGHT_DECAY  : 0.01
++
++SCHEDULER:
++  NAME          : warmuppolylr
++  POWER         : 0.9
++  WARMUP        : 10
++  WARMUP_RATIO  : 0.1
++
++EVAL:
++  MODEL_PATH    : 'output/CaltechRGBT/CMNeXt_CMNeXt-B2_CaltechRGBT_it/best.pth'
++  IMAGE_SIZE    : [480, 640]
++  BATCH_SIZE    : 2
++  MSF:
++    ENABLE      : false
++    FLIP        : true
++    SCALES      : [0.5, 0.75, 1.0, 1.25, 1.5, 1.75]
+diff --git a/semseg/datasets/__init__.py b/semseg/datasets/__init__.py
+index be95a54..f1cb348 100644
+--- a/semseg/datasets/__init__.py
++++ b/semseg/datasets/__init__.py
+@@ -2,6 +2,7 @@ from .deliver import DELIVER
+ from .kitti360 import KITTI360
+ from .nyu import NYU
+ from .mfnet import MFNet
++from .caltech_rgbt import CaltechRGBT
+ from .urbanlf import UrbanLF
+ from .mcubes import MCubeS
+ 
+@@ -10,6 +11,7 @@ __all__ = [
+     'KITTI360',
+     'NYU',
+     'MFNet',
++    'CaltechRGBT',
+     'UrbanLF',
+     'MCubeS'
+ ]
+\ No newline at end of file
+diff --git a/semseg/datasets/caltech_rgbt.py b/semseg/datasets/caltech_rgbt.py
+new file mode 100644
+index 0000000..9a51474
+--- /dev/null
++++ b/semseg/datasets/caltech_rgbt.py
+@@ -0,0 +1,83 @@
++import os
++import torch
++from torch import Tensor
++from torch.utils.data import Dataset
++from torchvision import io
++from typing import Tuple
++from semseg.augmentations_mm import get_train_augmentation
++
++
++class CaltechRGBT(Dataset):
++    """
++    Caltech aerial RGB-T pairs exported by waterwatch.export_caltech_deliver.
++
++    10 classes: source labels 2..11 remapped to 0..9 (water is source 9 -> index 7).
++    Source labels 0/1 (unknown/background) and thermal zero-padding are ignored (255),
++    already baked into the exported label PNGs by the exporter.
++    """
++    CLASSES = ['bare ground', 'boulders', 'human-made structures', 'road',
++               'shrubs', 'trees', 'sky', 'water', 'vehicles', 'person']
++    PALETTE = torch.tensor([[242, 216, 196], [89, 70, 54], [166, 166, 166], [82, 89, 90],
++                            [155, 230, 0], [0, 138, 53], [0, 216, 245], [13, 127, 252],
++                            [255, 249, 0], [254, 0, 170]])
++
++    def __init__(self, root: str = 'data/CaltechRGBT', split: str = 'train', transform=None,
++                 modals=['img', 'thermal'], case=None) -> None:
++        super().__init__()
++        assert split in ['train', 'val', 'test']
++        self.root = root
++        self.transform = transform
++        self.n_classes = len(self.CLASSES)
++        self.ignore_label = 255
++        self.modals = modals
++        self.files = self._get_file_names(split)
++        if not self.files:
++            raise Exception(f"No images found for split {split} under {self.root}")
++        print(f"Found {len(self.files)} {split} images.")
++
++    def __len__(self) -> int:
++        return len(self.files)
++
++    def __getitem__(self, index: int) -> Tuple[Tensor, Tensor]:
++        item_name = str(self.files[index])
++        rgb = os.path.join(*[self.root, 'rgb', item_name + '.jpg'])
++        x1 = os.path.join(*[self.root, 'ther', item_name + '.png'])
++        lbl_path = os.path.join(*[self.root, 'labels', item_name + '.png'])
++        sample = {}
++        sample['img'] = io.read_image(rgb)[:3, ...]
++        if 'thermal' in self.modals:
++            sample['thermal'] = self._open_img(x1)
++        label = io.read_image(lbl_path)[0, ...].unsqueeze(0)
++        sample['mask'] = label
++
++        if self.transform:
++            sample = self.transform(sample)
++        label = sample['mask']
++        del sample['mask']
++        label = self.encode(label.squeeze().numpy()).long()
++        sample = [sample[k] for k in self.modals]
++        return sample, label
++
++    def _open_img(self, file):
++        img = io.read_image(file)
++        C, H, W = img.shape
++        if C == 4:
++            img = img[:3, ...]
++        if C == 1:
++            img = img.repeat(3, 1, 1)
++        return img
++
++    def encode(self, label: Tensor) -> Tensor:
++        return torch.from_numpy(label)
++
++    def _get_file_names(self, split_name):
++        source = os.path.join(self.root, f'{split_name}.txt')
++        file_names = []
++        with open(source) as f:
++            files = f.readlines()
++        for item in files:
++            file_name = item.strip()
++            if ' ' in file_name:
++                file_name = file_name.split(' ')[0]
++            file_names.append(file_name)
++        return file_names
+diff --git a/semseg/models/heads/hem.py b/semseg/models/heads/hem.py
+index aea04b5..00a7fd9 100644
+--- a/semseg/models/heads/hem.py
++++ b/semseg/models/heads/hem.py
+@@ -1,7 +1,7 @@
+ import torch
+ import torch.nn as nn
+ import torch.nn.functional as F
+-from mmcv.cnn import ConvModule
++from semseg.models.layers.mmcv_shim import ConvModule
+ from fvcore.nn import flop_count_table, FlopCountAnalysis
+ 
+ class _MatrixDecomposition2DBase(nn.Module):
+diff --git a/semseg/models/layers/mmcv_shim.py b/semseg/models/layers/mmcv_shim.py
+new file mode 100644
+index 0000000..31578bb
+--- /dev/null
++++ b/semseg/models/layers/mmcv_shim.py
+@@ -0,0 +1,75 @@
++"""Minimal pure-PyTorch replacements for the two mmcv.cnn helpers used in this repo.
++
++mmcv has no prebuilt wheels for recent PyTorch on Windows, and CMNeXt itself does
++not need any mmcv CUDA op. Only ConvModule (hem.py) and build_norm_layer (mspa.py)
++are referenced, and only by model heads that CMNeXt does not use; these shims keep
++those imports working so `semseg.models` can be imported without mmcv.
++"""
++
++import torch
++from torch import nn
++
++
++def build_norm_layer(cfg: dict, num_channels: int, postfix: str = "") -> tuple[str, nn.Module]:
++    cfg = dict(cfg)
++    layer_type = cfg.pop("type")
++    requires_grad = cfg.pop("requires_grad", True)
++    cfg.pop("affine", None)
++    if layer_type == "BN":
++        layer: nn.Module = nn.BatchNorm2d(num_channels, **cfg)
++    elif layer_type == "GN":
++        num_groups = cfg.pop("num_groups")
++        layer = nn.GroupNorm(num_groups, num_channels)
++    elif layer_type == "LN":
++        layer = nn.LayerNorm(num_channels)
++    elif layer_type == "IN":
++        layer = nn.InstanceNorm2d(num_channels)
++    else:
++        raise ValueError(f"unsupported norm type: {layer_type}")
++    for parameter in layer.parameters():
++        parameter.requires_grad = requires_grad
++    return layer_type + postfix, layer
++
++
++def _build_activation(act_cfg) -> nn.Module | None:
++    if act_cfg is None:
++        return None
++    if isinstance(act_cfg, str):
++        act_cfg = {"type": act_cfg}
++    act_cfg = dict(act_cfg)
++    act_type = act_cfg.pop("type", "ReLU")
++    inplace = act_cfg.pop("inplace", True)
++    if act_type == "ReLU":
++        return nn.ReLU(inplace=inplace)
++    if act_type == "GELU":
++        return nn.GELU()
++    if act_type in ("SiLU", "Swish"):
++        return nn.SiLU(inplace=inplace)
++    if act_type == "ReLU6":
++        return nn.ReLU6(inplace=inplace)
++    raise ValueError(f"unsupported activation: {act_type}")
++
++
++class ConvModule(nn.Sequential):
++    """Drop-in subset of mmcv.cnn.ConvModule: Conv2d [+ Norm] [+ Activation]."""
++
++    def __init__(self, in_channels: int, out_channels: int, kernel_size: int,
++                 stride: int = 1, padding: int = 0, dilation: int = 1, groups: int = 1,
++                 bias: str | bool = "auto", conv_cfg=None, norm_cfg=None, act_cfg=None,
++                 order: tuple = ("conv", "norm", "act")) -> None:
++        super().__init__()
++        if conv_cfg is not None:
++            raise ValueError("mmcv_shim.ConvModule does not support custom conv_cfg")
++        if order != ("conv", "norm", "act"):
++            raise ValueError("mmcv_shim.ConvModule only supports conv-norm-act order")
++        if bias == "auto":
++            bias = norm_cfg is None
++        self.add_module("conv", nn.Conv2d(
++            in_channels, out_channels, kernel_size, stride=stride, padding=padding,
++            dilation=dilation, groups=groups, bias=bias))
++        if norm_cfg is not None:
++            _, norm = build_norm_layer(norm_cfg, out_channels)
++            self.add_module("norm", norm)
++        activation = _build_activation(act_cfg)
++        if activation is not None:
++            self.add_module("act", activation)
+diff --git a/semseg/models/modules/mspa.py b/semseg/models/modules/mspa.py
+index cce921d..665e81d 100644
+--- a/semseg/models/modules/mspa.py
++++ b/semseg/models/modules/mspa.py
+@@ -4,7 +4,7 @@ import torch.nn.functional as F
+ import torch.autograd
+ from timm.models.layers import DropPath
+ from fvcore.nn import flop_count_table, FlopCountAnalysis
+-from mmcv.cnn import build_norm_layer
++from semseg.models.layers.mmcv_shim import build_norm_layer
+ 
+ class DWConv(nn.Module):
+     def __init__(self, dim=768):

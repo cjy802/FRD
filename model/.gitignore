@@ -1,6 +1,8 @@
 data/
 artifacts/
 output/
+third_party/
+pipcache/
 *.joblib
 *.pt
 *.pth
