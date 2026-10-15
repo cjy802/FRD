@@ -67,6 +67,36 @@ const mapAnchors = computed(() => anchors.value.flatMap((anchor, index) => valid
   ? [{ id: anchor.id, latitude: anchor.latitude, longitude: anchor.longitude, label: majorPointLabel(index),
     role: (index === 0 ? 'start' : index === anchors.value.length - 1 ? 'end' : 'middle') as 'start' | 'middle' | 'end' }] : []))
 const selectedAnchorChoice = computed(() => anchorChoices.value.find((choice) => choice.id === selectedAnchorId.value) ?? anchorChoices.value[0])
+function closeMapAnchorMenu(restoreFocus = false) {
+  if (!mapAnchorMenuOpen.value) return
+  mapAnchorMenuOpen.value = false
+  if (restoreFocus) nextTick(() => mapAnchorPickerButton.value?.focus())
+}
+function toggleMapAnchorMenu() {
+  if (mapAnchorPickerDisabled.value) return
+  mapAnchorMenuOpen.value = !mapAnchorMenuOpen.value
+  if (mapAnchorMenuOpen.value) nextTick(() => mapAnchorPickerButton.value?.focus())
+}
+function chooseMapAnchor(id: string) {
+  if (mapAnchorPickerDisabled.value) return
+  selectedAnchorId.value = id
+  closeMapAnchorMenu(true)
+}
+function onMapAnchorPickerKeydown(event: KeyboardEvent) {
+  if (mapAnchorPickerDisabled.value) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    closeMapAnchorMenu(true)
+    return
+  }
+  if (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault()
+    if (!mapAnchorMenuOpen.value) toggleMapAnchorMenu()
+  }
+}
+function onMapAnchorOutsidePointerDown(event: PointerEvent) {
+  if (mapAnchorMenuOpen.value && !mapAnchorPicker.value?.contains(event.target as Node)) closeMapAnchorMenu()
+}
 watch(anchors, () => {
   const first = anchors.value[0]
   const last = anchors.value[anchors.value.length - 1]
@@ -170,6 +200,10 @@ const earthMapMounted = ref(false)
 const earthMapRef = ref<InstanceType<typeof EarthMap> | null>(null)
 const mapViewMode = ref<'2d' | '3d'>('3d')
 const mapEditMode = ref<'route' | 'node'>('route')
+const mapAnchorPicker = ref<HTMLElement | null>(null)
+const mapAnchorPickerButton = ref<HTMLButtonElement | null>(null)
+const mapAnchorMenuOpen = ref(false)
+const mapAnchorPickerDisabled = computed(() => checkingPoint.value || mapEditMode.value !== 'route')
 const selectedWaypointIndex = ref<number | null>(null)
 const draggingCameraIndex = ref<number | null>(null)
 let mapCameraInputsBeforeDrag: boolean | null = null
@@ -1999,6 +2033,7 @@ onMounted(() => {
   window.addEventListener('pointerup', endFlightSeek)
   window.addEventListener('pointercancel', endFlightSeek)
   window.addEventListener('pointerup', finishMapCameraDrag)
+  window.addEventListener('pointerdown', onMapAnchorOutsidePointerDown)
   scheduleDepartureClock()
   void refreshRouteTemplates(true)
   void calculate()
@@ -2020,6 +2055,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointerup', endFlightSeek)
   window.removeEventListener('pointercancel', endFlightSeek)
   window.removeEventListener('pointerup', finishMapCameraDrag)
+  window.removeEventListener('pointerdown', onMapAnchorOutsidePointerDown)
+  closeMapAnchorMenu()
   cancelCameraPreviewDrag()
   finishMapCameraDrag()
   pauseFlight()
@@ -2106,7 +2143,7 @@ onBeforeUnmount(() => {
           <span v-if="!flightTimeline" class="map-caption">{{ checkingPoint ? '正在检查点位…' : mapEditMode === 'node' ? '点击节点选中，拖动橙色镜头调整朝向' : `地图点击可设置 ${selectedAnchorChoice?.title} ${selectedAnchorChoice?.label}` }}</span></div>
         <div class="map-view-switch map-source-switch view-mode-switch" aria-label="地图视图"><button type="button" :class="{ active: mapViewMode === '2d' }" :aria-pressed="mapViewMode === '2d'" @click="chooseMapViewMode('2d')">2D 平面</button><button type="button" :class="{ active: mapViewMode === '3d' }" :aria-pressed="mapViewMode === '3d'" @click="chooseMapViewMode('3d')">3D 视角</button></div>
         <div v-if="error" class="map-alert" role="alert">{{ error }}</div>
-         <div class="map-bottom"><label class="map-anchor-picker"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>地图选点 <select v-model="selectedAnchorId" :disabled="checkingPoint || mapEditMode !== 'route'"><option v-for="choice in anchorChoices" :key="choice.id" :value="choice.id">{{ choice.label }} · {{ choice.title }}</option></select></label><span class="map-radius"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>接路判定 {{ landingSearchRadiusM }} m</span><span class="map-scale"><span class="svg-icon icon-wind" aria-hidden="true"></span>任务高度 {{ form.altitude_m }} m</span></div>
+         <div class="map-bottom"><div ref="mapAnchorPicker" class="map-anchor-picker" :class="{ 'is-open': mapAnchorMenuOpen }"><span class="svg-icon icon-map-pin" aria-hidden="true"></span><span class="map-anchor-label">地图选点</span><button ref="mapAnchorPickerButton" class="map-anchor-trigger" type="button" :disabled="mapAnchorPickerDisabled" :aria-expanded="mapAnchorMenuOpen" aria-haspopup="listbox" aria-controls="map-anchor-options" @click="toggleMapAnchorMenu" @keydown="onMapAnchorPickerKeydown"><span>{{ selectedAnchorChoice?.label }} · {{ selectedAnchorChoice?.title }}</span><span class="map-anchor-chevron" aria-hidden="true"></span></button><Transition name="map-anchor-menu"><div v-if="mapAnchorMenuOpen" id="map-anchor-options" class="map-anchor-options" role="listbox" aria-label="选择地图选点"><button v-for="choice in anchorChoices" :key="choice.id" class="map-anchor-option" :class="{ selected: choice.id === selectedAnchorId }" type="button" role="option" :aria-selected="choice.id === selectedAnchorId" @click="chooseMapAnchor(choice.id)"><span class="map-anchor-option-key">{{ choice.label }}</span><span>{{ choice.title }}</span><span v-if="choice.id === selectedAnchorId" class="map-anchor-check" aria-hidden="true">✓</span></button></div></Transition></div><span class="map-radius"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>接路判定 {{ landingSearchRadiusM }} m</span><span class="map-scale"><span class="svg-icon icon-wind" aria-hidden="true"></span>任务高度 {{ form.altitude_m }} m</span></div>
         <div v-if="!flightActive && mapEditMode === 'node' && selectedWaypointIndex !== null && selectedWaypointSetting()" class="node-controller" aria-label="航点控制器"><div class="node-controller-head"><strong>节点 {{ selectedWaypointIndex + 1 }} · 视角控制</strong><span>{{ Math.round(waypointHeading(selectedWaypointIndex)) }}° · {{ selectedWaypointSetting()?.altitude_m ?? form.altitude_m }}m</span></div><div class="node-controller-body"><div class="wasd-pad" aria-label="WASD 平面移动控制"><button type="button" @click="moveSelectedWaypoint(0, 1)">W</button><button type="button" @click="moveSelectedWaypoint(-1, 0)">A</button><button type="button" @click="moveSelectedWaypoint(0, -1)">S</button><button type="button" @click="moveSelectedWaypoint(1, 0)">D</button></div><div class="node-dial"><button type="button" aria-label="逆时针旋转" @click="rotateSelectedWaypoint(-15)">↺</button><strong>{{ Math.round(waypointHeading(selectedWaypointIndex)) }}°</strong><button type="button" aria-label="顺时针旋转" @click="rotateSelectedWaypoint(15)">↻</button></div><div class="node-axis"><button type="button" @click="rotateSelectedWaypoint(0, 5)">镜头上</button><button type="button" @click="rotateSelectedWaypoint(0, -5)">镜头下</button><button type="button" @click="adjustSelectedWaypoint({ altitude_m: Math.min(1500, (selectedWaypointSetting()?.altitude_m ?? form.altitude_m) + 5) })">高度 +</button><button type="button" @click="adjustSelectedWaypoint({ altitude_m: Math.max(1, (selectedWaypointSetting()?.altitude_m ?? form.altitude_m) - 5) })">高度 −</button></div></div><small>W/S 平面前后 ±1m，A/D 平面左右 ±1m，Q/E 航向 ±5°，Z/C 俯仰 ±5°可直接调整水平朝向。</small></div>
         <div v-if="routeAssessment" class="weather-map-legend">沿线初筛：蓝 · 未触发，橙 · 关注，红 · 较强，灰 · 缺测<br />基于 0.25° 场，不是街道级风险，也不代表飞行许可。</div>
         <div class="camera-preview" :class="{ visible: (flightActive || (mapEditMode === 'node' && selectedWaypointIndex !== null)) && (baseMap === 'earth' || cameraPreviewReady) }" aria-label="当前节点相机视角预览"><div ref="cameraPreviewElement" class="camera-preview-map" :data-base-map="baseMap" @pointerdown.capture="handleCameraPreviewPointerDown" @pointermove="handleCameraPreviewPointerMove" @pointerup="handleCameraPreviewPointerEnd" @pointercancel="handleCameraPreviewPointerEnd" @lostpointercapture="handleCameraPreviewPointerEnd"><div ref="cesiumCameraElement" :style="{ position: 'absolute', inset: '0', visibility: baseMap === 'current' ? 'visible' : 'hidden' }"></div><BaiduCameraPreview v-if="baseMap === 'earth' && (flightActive || (mapEditMode === 'node' && selectedWaypointIndex !== null))" :active="baseMap === 'earth' && (flightActive || (mapEditMode === 'node' && selectedWaypointIndex !== null))" :pose="currentCameraPose" /></div><div class="camera-preview-head"><strong>当前视角</strong><span v-if="flightActive">{{ flightNodeLabel }} / {{ Math.round(flightSample?.pitch ?? 0) }}&deg;</span><span v-else-if="selectedWaypointIndex !== null">节点 {{ selectedWaypointIndex + 1 }} · {{ Math.round(selectedWaypointSetting()?.gimbal_pitch_angle ?? 0) }}°</span></div><small>地图模拟视角 · 不是实时相机视频</small></div>
@@ -2221,7 +2258,22 @@ onBeforeUnmount(() => {
 }
 .map-anchor-picker { display: inline-flex; align-items: center; gap: 6px; min-height: var(--map-control-height); padding: 3px 8px; border: 1px solid var(--map-control-border); border-radius: var(--map-control-radius); background: #fff; box-shadow: var(--map-control-shadow); color: #344455; font-size: var(--font-caption); white-space: nowrap; pointer-events: auto; }
 .map-anchor-picker .svg-icon { width: 15px; height: 15px; color: var(--ui-accent); }
-.map-anchor-picker select { max-width: 130px; min-height: 28px; border: 0; border-radius: 5px; background: #e6f1fb; color: #1769aa; font: inherit; font-weight: 600; }
+.map-anchor-picker.is-open { border-color: #8bbbe2; box-shadow: 0 0 0 3px #dcecf9, 0 8px 20px #17324d1c; }
+.map-anchor-label { color: #526273; }
+.map-anchor-trigger { display: inline-flex; align-items: center; gap: 8px; max-width: 140px; min-height: 28px; padding: 0 7px 0 8px; border: 0; border-radius: 6px; background: #e6f1fb; color: #1769aa; font: inherit; font-weight: 700; line-height: 1; cursor: pointer; transition: background-color .18s ease, color .18s ease, box-shadow .18s ease; }
+.map-anchor-trigger:hover:not(:disabled) { background: #d9eaf8; color: #0f5a98; }
+.map-anchor-trigger:focus-visible { outline: 2px solid #1769aa; outline-offset: 2px; }
+.map-anchor-trigger:disabled { cursor: wait; opacity: .55; }
+.map-anchor-chevron { width: 7px; height: 7px; flex: none; margin-top: -4px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg); transition: transform .2s cubic-bezier(.2,.8,.2,1); }
+.map-anchor-picker.is-open .map-anchor-chevron { margin-top: 4px; transform: rotate(225deg); }
+.map-anchor-options { position: absolute; left: 8px; bottom: calc(100% + 9px); z-index: 20; display: grid; gap: 3px; min-width: 150px; padding: 5px; border: 1px solid #cfe0ee; border-radius: 10px; background: rgb(255 255 255 / .98); box-shadow: 0 14px 30px #17324d2b, 0 2px 6px #17324d14; pointer-events: auto; transform-origin: bottom left; }
+.map-anchor-menu-enter-active, .map-anchor-menu-leave-active { transition: opacity .18s ease, transform .22s cubic-bezier(.2,.8,.2,1); }
+.map-anchor-menu-enter-from, .map-anchor-menu-leave-to { opacity: 0; transform: translateY(8px) scale(.96); }
+.map-anchor-option { display: grid; grid-template-columns: 28px 1fr 16px; align-items: center; gap: 6px; min-height: 32px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: #344455; font: inherit; font-size: var(--font-caption); text-align: left; cursor: pointer; transition: background-color .15s ease, color .15s ease, transform .15s ease; }
+.map-anchor-option:hover, .map-anchor-option:focus-visible { background: #edf5fb; color: #1769aa; transform: translateX(2px); outline: none; }
+.map-anchor-option.selected { background: #e6f1fb; color: #1769aa; font-weight: 700; }
+.map-anchor-option-key { color: #1769aa; font-weight: 700; }
+.map-anchor-check { color: #087b76; font-size: 15px; font-weight: 800; text-align: center; }
 .multi-route-comparison-note { margin: 12px 0 0; color: var(--ui-muted); font-size: var(--font-caption); }
 .cesium-map { visibility: hidden; pointer-events: none; }
 .cesium-map.visible { visibility: visible; pointer-events: auto; }
