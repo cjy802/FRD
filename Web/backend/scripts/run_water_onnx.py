@@ -48,6 +48,14 @@ def class_probabilities(logits: np.ndarray) -> np.ndarray:
     return softmax(logits, axis=1)[0]
 
 
+
+def imwrite_unicode(path: Path, image: np.ndarray) -> None:
+    """cv2.imwrite cannot handle non-ASCII Windows paths; encode then write bytes."""
+    ok, encoded = cv2.imencode(".png", image)
+    if not ok:
+        raise ValueError(f"无法编码 PNG：{path}")
+    path.write_bytes(encoded.tobytes())
+
 def load_registry(model_dir: Path) -> dict:
     registry_path = model_dir / "registry.json"
     if not registry_path.is_file():
@@ -113,13 +121,13 @@ def main() -> int:
             suspected_pixels = int(suspected.sum())
             count, _ = cv2.connectedComponents((suspected * 255).astype(np.uint8), connectivity=8)
             stem = path.stem
-            cv2.imwrite(str(args.output_dir / f"{stem}__classes.png"), prediction_full)
-            cv2.imwrite(str(args.output_dir / f"{stem}__suspected.png"), np.where(suspected_full, 255, 0).astype(np.uint8))
-            cv2.imwrite(str(args.output_dir / f"{stem}__confidence.png"), confidence_full)
+            imwrite_unicode(args.output_dir / f"{stem}__classes.png", prediction_full)
+            imwrite_unicode(args.output_dir / f"{stem}__suspected.png", np.where(suspected_full, 255, 0).astype(np.uint8))
+            imwrite_unicode(args.output_dir / f"{stem}__confidence.png", confidence_full)
             overlay = rgb.copy()
             overlay[suspected_full] = (30, 110, 255)
             blended = cv2.addWeighted(rgb, 0.6, overlay, 0.4, 0)
-            cv2.imwrite(str(args.output_dir / f"{stem}__overlay.png"), cv2.cvtColor(blended, cv2.COLOR_RGB2BGR))
+            imwrite_unicode(args.output_dir / f"{stem}__overlay.png", cv2.cvtColor(blended, cv2.COLOR_RGB2BGR))
             results.append({
                 "name": path.name,
                 "sha256": sha256_bytes(raw),
