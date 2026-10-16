@@ -126,6 +126,7 @@ def html_report(entries: list[dict], model: dict, started: datetime) -> str:
             <strong title="{entry['name']}">{entry['name']}</strong>
             <span class="badge" style="background:{color}">{label}</span>
             <small>{entry['judgment']}</small>
+            {'<small style="color:#b45309">启发式反光线索: ' + f"{entry['heuristic']['fraction']*100:.1f}% / {entry['heuristic']['patches']} 处 · <a href='" + entry['heuristic']['file'] + "' target='_blank'>线索图</a>（非模型结论）</small>" if entry.get('heuristic') else ''}
             <small><a href="{entry['overlay']}" target="_blank">叠图</a> · <a href="{entry['suspected']}" target="_blank">掩膜</a> · <a href="{entry['confidence']}" target="_blank">置信度</a> · <a href="{entry['original']}">原图</a></small>
           </div>
         </div>""")
@@ -155,6 +156,46 @@ def html_report(entries: list[dict], model: dict, started: datetime) -> str:
 </body></html>"""
 
 
+def heuristic_reflection_mask(rgb: np.ndarray, threshold: float, min_pixels: int) -> tuple[np.ndarray, int]:
+    """Classical bright/low-saturation/smooth reflection cue; a heuristic, not a model.
+
+    Same cue as waterwatch.features reflection_cue. Catches sky-reflecting water
+    but also fires on sky and pale smooth surfaces; always show alongside the
+    model verdict and never call it a detection.
+    """
+    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV).astype(np.float32)
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0
+    mean = cv2.GaussianBlur(gray, (7, 7), 0)
+    square_mean = cv2.GaussianBlur(gray * gray, (7, 7), 0)
+    texture = np.sqrt(np.maximum(square_mean - mean * mean, 0))
+    saturation = hsv[:, :, 1] / 255.0
+    brightness = hsv[:, :, 2] / 255.0
+    cue = brightness * (1.0 - saturation) * np.exp(-10.0 * texture)
+    mask = (cue > threshold).astype(np.uint8)
+    kernel = np.ones((3, 3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    kept = 0
+    for index in range(1, count):
+        if stats[index, cv2.CC_STAT_AREA] >= min_pixels:
+            kept += 1
+        else:
+            mask[labels == index] = 0
+    return mask * 255, kept
+
+
+def draw_heuristic(overlay_path: Path, mask: np.ndarray, target: Path) -> None:
+    """Paint the heuristic mask in orange over the model overlay copy."""
+    overlay = imread_unicode(overlay_path)
+    if overlay is None or overlay.shape[:2] != mask.shape[:2]:
+        raise ValueError(f"cannot align heuristic mask for {overlay_path.name}")
+    tinted = overlay.copy()
+    tinted[mask > 0] = (0.55 * tinted[mask > 0] + 0.45 * np.array([0, 140, 255])).astype(np.uint8)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(tinted, contours, -1, (0, 120, 255), 2)
+    imwrite_unicode(target, tinted)
+
+
 def process_batch(args: argparse.Namespace, inbox: Path, names: list[str]) -> Path | None:
     started = datetime.now()
     batch_dir = args.outbox.resolve() / started.strftime("%Y%m%d_%H%M%S")
@@ -181,6 +222,26 @@ def process_batch(args: argparse.Namespace, inbox: Path, names: list[str]) -> Pa
             "boxes": boxes_name, "overlay": image["overlay"], "suspected": image["suspected_mask"],
             "confidence_map": image["confidence_map"], "original": "inputs/" + image["name"],
         })
+        # Second opinion: classical reflection cue, clearly labelled as heuristic.
+        if args.heuristic:
+            original = imread_unicode(batch_dir / "inputs" / image["name"])
+            if original is None:
+                raise ValueError(f"cannot read archived original for {image['name']}")
+            rgb = cv2.cvtColor(original, cv2.COLOR_BGR2RGB)
+            heuristic, heuristic_patches = heuristic_reflection_mask(
+                rgb, args.heuristic_threshold, args.heuristic_min_pixels)
+            heuristic_name = Path(image["name"]).stem + "__heuristic.png"
+            draw_heuristic(batch_dir / image["overlay"], heuristic, batch_dir / heuristic_name)
+            entry = entries[-1]
+            entry["heuristic"] = {
+                "fraction": float((heuristic > 0).mean()),
+                "patches": heuristic_patches,
+                "file": heuristic_name,
+            }
+            if level == "low" and entry["heuristic"]["fraction"] >= args.heuristic_threshold_hint:
+                entry["judgment"] += (
+                    f"；但启发式反光线索发现 {entry['heuristic']['fraction']*100:.1f}% 高反光区域"
+                    f"（{heuristic_patches} 处），模型未检出——请人工打开照片复核（域差距风险）")
     report = {
         "generated_at": started.isoformat(), "model": payload["model"],
         "thresholds": {"high_fraction": args.high_fraction, "high_patches": args.high_patches, "mid_fraction": args.mid_fraction},
@@ -222,6 +283,11 @@ def main() -> None:
     parser.add_argument("--high-fraction", type=float, default=0.05, help="疑似占比达到该比例判为较多")
     parser.add_argument("--high-patches", type=int, default=3, help="斑块数达到该数量判为较多")
     parser.add_argument("--mid-fraction", type=float, default=0.01, help="疑似占比达到该比例判为少量")
+    parser.add_argument("--heuristic", action="store_true", default=True, help="启用经典反光线索第二意见（启发式，非模型）")
+    parser.add_argument("--no-heuristic", dest="heuristic", action="store_false")
+    parser.add_argument("--heuristic-threshold", type=float, default=0.6, help="反光线索二值化阈值 0-1")
+    parser.add_argument("--heuristic-min-pixels", type=int, default=100, help="启发式斑块最小像素")
+    parser.add_argument("--heuristic-threshold-hint", type=float, default=0.02, help="模型未见时启发式占比达到该值即提示人工复核")
     args = parser.parse_args()
     args.inbox.mkdir(parents=True, exist_ok=True)
     args.outbox.mkdir(parents=True, exist_ok=True)
