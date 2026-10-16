@@ -1,13 +1,16 @@
 """YOLO-seg / detect comparison baseline over the existing ponding splits.
 
-Builds Ultralytics labels straight from the 0/1 mask folders used by the
-ABCDWaveNet experiments (no image copies: splits are referenced via path-list
-txt files), trains a yolov8-seg instance segmentation model or a plain yolov8
-detector, and scores both with the same water-IoU protocol as
-evaluate_abcdwavenet: segmentation predictions merge their instance masks into
-one binary water mask, while detection predictions fill their boxes as pseudo
-masks to quantify how much a rectangle loses on irregular ponding shapes.
-ultralytics is imported lazily so prepare/tests run in the waterseg environment.
+Builds Ultralytics polygon labels straight from the 0/1 mask folders used by
+the ABCDWaveNet experiments (no image copies: splits are referenced via
+path-list txt files, and label txts sit in the sibling labels/ directory
+required by the ultralytics /images/ -> /labels/ lookup), trains a yolov8-seg
+instance segmentation model or a plain yolov8 detector on the same polygon
+labels (ultralytics derives boxes from segments for detection), and scores
+both with the same water-IoU protocol as evaluate_abcdwavenet: segmentation
+predictions merge their instance masks into one binary water mask, while
+detection predictions fill their boxes as pseudo masks to quantify how much a
+rectangle loses on irregular ponding shapes. ultralytics is imported lazily so
+prepare/tests run in the waterseg environment.
 """
 
 from __future__ import annotations
@@ -37,7 +40,6 @@ DATASETS = {
         "val_masks": Path("data/fred_ft/val/masks"),
     },
 }
-TASKS = {"seg": "polygon", "detect": "box"}
 
 
 def load_mask(path: Path) -> np.ndarray:
@@ -106,18 +108,13 @@ def boxes_to_mask(boxes_xyxy: np.ndarray, width: int, height: int) -> np.ndarray
     return canvas
 
 
-def _label_coords(task: str, polygon: list[float]) -> list[float]:
-    return polygon if task == "seg" else polygon_to_box(polygon)
-
-
-def _write_split(task_dir: Path, task: str, split: str, pairs: list[tuple[str, Path, Path]],
-                 min_area: int) -> dict:
-    labels_dir = task_dir / "labels" / split
+def _write_split(task_dir: Path, split: str, labels_dir: Path,
+                 pairs: list[tuple[str, Path, Path]], min_area: int) -> dict:
     labels_dir.mkdir(parents=True, exist_ok=True)
     image_lines, polygons_total, background = [], 0, 0
     for stem, image_path, mask_path in pairs:
         polygons = mask_to_polygons(load_mask(mask_path), min_area=min_area)
-        lines = [" ".join(["0", *[f"{value:.6f}" for value in _label_coords(task, polygon)]])
+        lines = [" ".join(["0", *[f"{value:.6f}" for value in polygon]])
                  for polygon in polygons]
         (labels_dir / f"{stem}.txt").write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
         image_lines.append(str(image_path.resolve()))
@@ -126,7 +123,7 @@ def _write_split(task_dir: Path, task: str, split: str, pairs: list[tuple[str, P
     list_path = (task_dir / f"{split}.txt").resolve()
     list_path.write_text("\n".join(image_lines) + "\n", encoding="utf-8")
     return {"images": len(pairs), "polygons": polygons_total, "background_images": background,
-            "list": str(list_path)}
+            "labels": str(labels_dir), "list": str(list_path)}
 
 
 def run_prepare(args: argparse.Namespace) -> None:
@@ -135,31 +132,33 @@ def run_prepare(args: argparse.Namespace) -> None:
         if not layout[key].is_dir():
             raise SystemExit(f"{args.dataset} 数据缺失：{layout[key]}（先完成原有导出/微调数据准备）")
     splits = {
-        "train": paired_stems(layout["train_images"].resolve(), layout["train_masks"].resolve()),
-        "val": paired_stems(layout["val_images"].resolve(), layout["val_masks"].resolve()),
+        "train": (paired_stems(layout["train_images"].resolve(), layout["train_masks"].resolve()),
+                  layout["train_images"].resolve().parent / "labels"),
+        "val": (paired_stems(layout["val_images"].resolve(), layout["val_masks"].resolve()),
+                layout["val_images"].resolve().parent / "labels"),
     }
-    for task in TASKS:
-        task_dir = Path("data/yolo") / f"{args.dataset}_{task}"
-        task_dir.mkdir(parents=True, exist_ok=True)
-        stats = {split: _write_split(task_dir, task, split, pairs, args.min_area)
-                 for split, pairs in splits.items()}
-        yaml_path = task_dir / "data.yaml"
-        yaml_path.write_text(
-            f"train: {Path(stats['train']['list']).as_posix()}\n"
-            f"val: {Path(stats['val']['list']).as_posix()}\n"
-            "names:\n  0: water\n", encoding="utf-8")
-        print(json.dumps({"task": task, "data_yaml": str(yaml_path.resolve()), "splits": stats},
-                         ensure_ascii=False, indent=2), flush=True)
+    task_dir = Path("data/yolo") / args.dataset
+    task_dir.mkdir(parents=True, exist_ok=True)
+    stats = {split: _write_split(task_dir, split, labels_dir, pairs, args.min_area)
+             for split, (pairs, labels_dir) in splits.items()}
+    yaml_path = task_dir / "data.yaml"
+    yaml_path.write_text(
+        f"train: {Path(stats['train']['list']).as_posix()}\n"
+        f"val: {Path(stats['val']['list']).as_posix()}\n"
+        "names:\n  0: water\n", encoding="utf-8")
+    print(json.dumps({"data_yaml": str(yaml_path.resolve()),
+                      "usable_by": "both seg and detect tasks (boxes derive from segments)",
+                      "splits": stats}, ensure_ascii=False, indent=2), flush=True)
 
 
 def run_train(args: argparse.Namespace) -> None:
     from ultralytics import YOLO
 
     task = "seg" if "seg" in args.model else "detect"
-    data_yaml = (Path("data/yolo") / f"{args.dataset}_{task}" / "data.yaml").resolve()
+    data_yaml = (Path("data/yolo") / args.dataset / "data.yaml").resolve()
     if not data_yaml.is_file():
         raise SystemExit(f"{data_yaml} 缺失；先运行 prepare --dataset {args.dataset}")
-    weights_dir = Path("output/yolo_seg")
+    weights_dir = (Path("output") / "yolo_seg").resolve()
     weights_dir.mkdir(parents=True, exist_ok=True)
     model = YOLO(str(weights_dir / f"{args.model}.pt"))  # first call downloads to this path
     kwargs = {"data": str(data_yaml), "epochs": args.epochs, "imgsz": args.imgsz, "batch": args.batch,
@@ -238,7 +237,7 @@ def run_evaluate(args: argparse.Namespace) -> None:
 
     native: dict = {}
     if not args.skip_native_val:
-        data_yaml = (Path("data/yolo") / f"{args.dataset}_{task}" / "data.yaml").resolve()
+        data_yaml = (Path("data/yolo") / args.dataset / "data.yaml").resolve()
         try:
             metrics = model.val(data=str(data_yaml), imgsz=args.imgsz, workers=2, verbose=False)
             for name, group in (("box", getattr(metrics, "box", None)), ("mask", getattr(metrics, "seg", None))):
