@@ -4,6 +4,7 @@ import numpy as np
 
 from waterwatch.yolo_seg_baseline import (
     boxes_to_mask,
+    count_patches,
     mask_to_polygons,
     paired_stems,
     polygon_to_box,
@@ -36,6 +37,16 @@ def test_small_speckles_are_dropped() -> None:
 
 def test_empty_mask_gives_no_polygons() -> None:
     assert mask_to_polygons(np.zeros((64, 64), np.uint8)) == []
+
+
+def test_count_patches_ignores_speckles() -> None:
+    mask = np.zeros((100, 100), np.uint8)
+    mask[10:30, 10:30] = 1   # 400 px
+    mask[50:70, 50:70] = 1   # 400 px
+    mask[5:8, 80:83] = 1     # 9 px speckle
+    assert count_patches(mask, min_area=50) == 2
+    assert count_patches(mask, min_area=1) == 3
+    assert count_patches(np.zeros((64, 64), np.uint8)) == 0
 
 
 def test_box_pseudo_mask_loses_disk_area() -> None:

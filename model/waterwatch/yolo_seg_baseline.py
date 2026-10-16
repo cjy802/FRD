@@ -25,6 +25,7 @@ import numpy as np
 from PIL import Image
 
 WATER_VALUES = (1, 255)  # same mask convention as evaluate_abcdwavenet
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
 DATASETS = {
     "puddle1000": {
@@ -108,6 +109,12 @@ def boxes_to_mask(boxes_xyxy: np.ndarray, width: int, height: int) -> np.ndarray
     return canvas
 
 
+def count_patches(mask: np.ndarray, min_area: int = 50) -> int:
+    """Connected water patches, ignoring speckles below min_area pixels."""
+    count, _, stats, _ = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), connectivity=8)
+    return int(sum(1 for i in range(1, count) if int(stats[i, cv2.CC_STAT_AREA]) >= min_area))
+
+
 def _write_split(task_dir: Path, split: str, labels_dir: Path,
                  pairs: list[tuple[str, Path, Path]], min_area: int) -> dict:
     labels_dir.mkdir(parents=True, exist_ok=True)
@@ -127,7 +134,13 @@ def _write_split(task_dir: Path, split: str, labels_dir: Path,
 
 
 def run_prepare(args: argparse.Namespace) -> None:
-    layout = DATASETS[args.dataset]
+    layout = dict(DATASETS[args.dataset])
+    override = [args.train_images, args.train_masks, args.val_images, args.val_masks]
+    if any(override):
+        if not all(override):
+            raise SystemExit("自定义路径必须同时给出 --train-images/--train-masks/--val-images/--val-masks")
+        layout = {"train_images": args.train_images, "train_masks": args.train_masks,
+                  "val_images": args.val_images, "val_masks": args.val_masks}
     for key in ("train_images", "train_masks", "val_images", "val_masks"):
         if not layout[key].is_dir():
             raise SystemExit(f"{args.dataset} 数据缺失：{layout[key]}（先完成原有导出/微调数据准备）")
@@ -287,13 +300,64 @@ def run_evaluate(args: argparse.Namespace) -> None:
                       "report": str(output / "report.json")}, ensure_ascii=False, indent=2), flush=True)
 
 
+def run_infer(args: argparse.Namespace) -> None:
+    """Label-free inference: water fraction, patch count, overlay per photo."""
+    from ultralytics import YOLO
+
+    paths = [args.input] if args.input.is_file() else sorted(
+        path for path in args.input.iterdir() if path.suffix.lower() in IMAGE_EXTS and not path.name.startswith("."))
+    if not paths:
+        raise SystemExit(f"{args.input} 没有可推理的图片")
+    model = YOLO(str(args.weights.resolve()))
+    args.output.mkdir(parents=True, exist_ok=True)
+    results = []
+    for number, path in enumerate(paths, start=1):
+        with Image.open(path) as image_file:
+            rgb = np.asarray(image_file.convert("RGB")).copy()
+        height, width = rgb.shape[:2]
+        result = model.predict(source=str(path), imgsz=args.imgsz, conf=args.conf,
+                               retina_masks=True, verbose=False)[0]
+        prediction = np.zeros((height, width), np.uint8)
+        confidences = []
+        if result.masks is not None and len(result.masks):
+            data = result.masks.data
+            data = data.cpu().numpy() if hasattr(data, "cpu") else np.asarray(data)
+            confidences = result.boxes.conf.tolist() if result.boxes is not None else []
+            for instance in data:
+                if instance.shape != (height, width):
+                    instance = cv2.resize(instance.astype(np.uint8), (width, height), interpolation=cv2.INTER_NEAREST)
+                prediction |= (instance > 0.5).astype(np.uint8)
+        fraction = float((prediction == 1).mean())
+        patches = count_patches(prediction, min_area=args.min_patch)
+        tinted = rgb.copy()
+        tinted[prediction == 1] = (30, 110, 255)
+        cv2.imwrite(str(args.output / f"overlay_{path.stem}.png"),
+                    cv2.cvtColor(cv2.addWeighted(rgb, 0.6, tinted, 0.4, 0), cv2.COLOR_RGB2BGR))
+        cv2.imwrite(str(args.output / f"mask_{path.stem}.png"), (prediction * 255))
+        results.append({"file": str(path), "water_fraction": round(fraction, 4),
+                        "water_patches": patches,
+                        "instance_conf_max": round(max(confidences), 4) if confidences else None,
+                        "instance_conf_mean": round(sum(confidences) / len(confidences), 4) if confidences else None,
+                        "instances": len(confidences)})
+        print(json.dumps(results[-1], ensure_ascii=False), flush=True)
+        if number % 20 == 0:
+            print(f"inferred {number}/{len(paths)}", flush=True)
+    (args.output / "results.json").write_text(json.dumps(results, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps({"images": len(paths), "results": str(args.output / "results.json")},
+                     ensure_ascii=False, indent=2), flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     prepare = subparsers.add_parser("prepare", help="build YOLO labels/data.yaml from the 0/1 mask folders")
-    prepare.add_argument("--dataset", choices=sorted(DATASETS), required=True)
+    prepare.add_argument("--dataset", choices=sorted(DATASETS), required=True,
+                         help="preset name; only used for the output folder when custom paths are given")
     prepare.add_argument("--min-area", type=int, default=30, help="drop polygon speckles below this pixel area")
+    for name in ("train_images", "train_masks", "val_images", "val_masks"):
+        prepare.add_argument(f"--{name.replace('_', '-')}", type=Path, default=None,
+                             help="override the preset path (all four must be given together)")
     prepare.set_defaults(func=run_prepare)
 
     train = subparsers.add_parser("train", help="train a yolov8(-seg) model on the prepared split")
@@ -321,6 +385,15 @@ def main() -> None:
     evaluate.add_argument("--output", type=Path, default=None)
     evaluate.add_argument("--skip-native-val", action="store_true", help="skip the ultralytics mAP reference run")
     evaluate.set_defaults(func=run_evaluate)
+
+    infer = subparsers.add_parser("infer", help="label-free inference on photos: fraction, patches, overlay")
+    infer.add_argument("--weights", type=Path, required=True)
+    infer.add_argument("--input", type=Path, required=True, help="one image or a folder of images")
+    infer.add_argument("--output", type=Path, default=Path("output/yolo_infer"))
+    infer.add_argument("--conf", type=float, default=0.25)
+    infer.add_argument("--imgsz", type=int, default=640)
+    infer.add_argument("--min-patch", type=int, default=50, help="ignore water patches below this pixel area")
+    infer.set_defaults(func=run_infer)
 
     args = parser.parse_args()
     args.func(args)
