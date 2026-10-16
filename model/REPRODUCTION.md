@@ -131,4 +131,31 @@ python -m waterwatch.export_onnx --model cmnext --checkpoint <best.pth> --output
 - `cmnext_b2_rgbt.onnx`：双输入（RGB ImageNet 归一化 + 三通道热图）；偏差 8.4e-05。
 - `artifacts/onnx/registry.json` 指向默认模型（ABCD 积水）；`Web/backend` 的 `/api/photo-analysis/*` 端点通过 `scripts/run_water_onnx.py` 子进程调用该目录，前端"飞行后照片分析"面板上传照片即可得到叠图/疑似掩膜/置信度。环境变量 `WATER_ANALYSIS_PYTHON`、`WATER_ANALYSIS_MODEL_DIR` 可覆盖默认路径。
 
+## 7. 域适配：FRED 淹水道路微调（本地城市照片验收通过）
+
+基础模型（第 5 节）在本地城市场景完全失效：2026-10-16 用 2 张本地实拍（城市沥青路浑浊泥水坑洼、整片天空反光淹水街道）做零样本测试，水类最高置信度仅 7/255、检出 0%——Puddle-1000 的砂石土路域与本地差距过大，调阈值无效。改用用户提供的 [FRED 数据集](https://huggingface.co/datasets/CMalone-Jupiter/FRED)（Flooded Road Environments Dataset，澳大利亚布里斯班 5 处地点真实淹水道路，车载前视相机逐帧语义标注，CC BY-NC-SA 4.0）做第二级微调。
+
+**流程**（token 需用户在 HF 接受数据集条款后提供）：
+
+```powershell
+python -m waterwatch.export_fred_abcd      # flooded/KITTI-style 前视子集 -> 二值掩膜（label==1 为水，SDK 官方口径；标注 NEAREST 缩放到 1920x1200）
+python -m waterwatch.fine_tune_ponding --data data/fred_ft --epochs 30 --batch-size 2 --lr 2e-5 --output output/abcdwavenet_fred --export-dir artifacts/onnx_fred
+```
+
+数据决策：flooded 前视共 5 序列；**Mount-Cotton_20241217（1,442 对）标注中没有任何水类像素（仅 0/2=unknown），整段排除**以防错误负样本。最终训练 812 对（Cambogan/DairyCreek/Pullenvale）、验证 420 对（Holmview，地点与训练集完全不交叉）。水面占比 16%-30%。
+
+| 指标 | 数值 |
+| --- | ---: |
+| 跨地点验证集水 IoU（Holmview） | **0.6513** |
+| ONNX 导出最大 logit 偏差 | 2.3e-05 |
+
+**零样本验收**（2 张本地城市场景照片，训练数据不含任何本地影像）：
+
+| 照片 | 微调前 | 微调后 |
+| --- | --- | --- |
+| 淹水街道（天空反光） | 0% 检出，置信度 4/255 | **疑似 11.2%、9 斑块、置信度 0.96**，水面定位正确 |
+| 坑洼浑浊泥水路 | 0% 检出，置信度 7/255 | **疑似 1.1%、13 斑块、置信度 0.87**，主水坑命中 |
+
+FRED 模型已设为演示与工作台的默认模型（`artifacts/onnx/registry.json`）；原 Puddle-1000 基础模型保留为 `abcdwavenet_ponding.onnx`。注意 FRED 为车载视角、澳大利亚道路，仍非本地无人机视角；检测结果是待人工核查线索。要进一步提升可按 `demo/README.md` 的流程标注 30+ 张本地照片做第三级微调。
+
 要验证雨后地面积水方案，仍需自己拍摄**同场景配准的 RGB＋二维热图**，标注干地、湿而无明水、可见积水三类，并按地点／雨次留出测试集。河湖防汛还需要同一岸段前后两期配准影像，才能验证水面变化，而不能仅靠单张图推断真实水位或堤防风险。
