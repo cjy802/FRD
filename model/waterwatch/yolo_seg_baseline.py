@@ -193,11 +193,22 @@ def _predict_mask(model, image_path: Path, task: str, width: int, height: int,
     return prediction
 
 
+def _infer_task(weights: Path) -> str:
+    """Read the task recorded in the run's args.yaml; fall back to the file name."""
+    train_args = weights.resolve().parent.parent / "args.yaml"
+    if train_args.is_file():
+        for line in train_args.read_text(encoding="utf-8").splitlines():
+            if line.startswith("task:"):
+                value = line.split(":", 1)[1].strip()
+                return "seg" if value == "segment" else "detect"
+    return "seg" if "seg" in weights.name.lower() else "detect"
+
+
 def run_evaluate(args: argparse.Namespace) -> None:
     from ultralytics import YOLO
 
     layout = DATASETS[args.dataset]
-    task = args.task or ("seg" if "seg" in Path(args.weights).name else "detect")
+    task = args.task or _infer_task(args.weights)
     pairs = paired_stems(layout["val_images"].resolve(), layout["val_masks"].resolve())
     if args.limit > 0:
         pairs = pairs[: args.limit]

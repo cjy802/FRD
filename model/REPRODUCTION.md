@@ -170,4 +170,39 @@ FRED 模型曾设为默认，但本地实拍暴露了残余缺口：城市沥青
 
 混合模型已设为默认（`artifacts/onnx/registry.json`，注明种子标注来源与替换计划）。局限如实说明：3 张种子图只能证明路径打通，模型可能部分记忆了这些场景；鲁棒的本地域覆盖仍需按 `demo/README.md` 流程积累 30+ 张原始照片（labelme 预标注辅助）再训练。ONNX 导出偏差 9.0e-05。
 
+## 9. 方法对比基线：YOLOv8-seg 实例分割与检测框（同数据同协议）
+
+第 5、7/8 节的 ABCDWaveNet 是语义分割；工程上常见的替代是 YOLO 目标检测或实例分割。本节在同一批数据、同一 IoU 口径下补齐两条 YOLO 对照：**YOLOv8n-seg**（预测实例掩膜并集成一张二值水掩膜）和 **YOLOv8n 纯检测框**（把预测矩形框填实当作伪掩膜）。检测框填实后的像素 IoU 直接量化"矩形框在不规则积水形状上损失多少"，回答是否只能靠检测框做积水识别。
+
+环境：复用机器上现成的 `yolov8-env` conda 环境（ultralytics 8.4.41、torch 2.7.1+cu118），**未安装任何新包**。标签由 `prepare` 从第 5/7 节同一批 0/1 掩膜生成（cv2 外轮廓多边形，丢弃 <30 像素碎斑；多边形不表达掩膜内空洞，属标注简化），写到图片同级 `labels/` 目录——这是 ultralytics 把图片路径中 `/images/` 替换为 `/labels/` 的固定查找规则；seg 与 detect 共用同一份多边形标签，检测框由 segments 自动派生，避免两套标签互相覆盖。训练/验证划分与第 5、7 节完全相同（Puddle-1000 786/198，FRED 812/420，验证地点不交叉）。
+
+```powershell
+D:\anaconda\envs\yolov8-env\python.exe -m waterwatch.yolo_seg_baseline prepare --dataset puddle1000
+D:\anaconda\envs\yolov8-env\python.exe -m waterwatch.yolo_seg_baseline prepare --dataset fred
+D:\anaconda\envs\yolov8-env\python.exe -m waterwatch.yolo_seg_baseline train --dataset puddle1000 --model yolov8n-seg --epochs 100 --batch 8 --run-name puddle1000_seg
+D:\anaconda\envs\yolov8-env\python.exe -m waterwatch.yolo_seg_baseline train --dataset fred --model yolov8n-seg --epochs 100 --batch 8 --run-name fred_seg
+D:\anaconda\envs\yolov8-env\python.exe -m waterwatch.yolo_seg_baseline evaluate --dataset puddle1000 --weights output/yolo_seg/puddle1000_seg/weights/best.pt --output output/reproduction_yoloseg_puddle1000
+D:\anaconda\envs\yolov8-env\python.exe -m waterwatch.yolo_seg_baseline evaluate --dataset fred --weights output/yolo_seg/fred_seg/weights/best.pt --output output/reproduction_yoloseg_fred
+# 检测框对照：--model 换成 yolov8n（不含 seg 即检测任务），评估命令同上，输出在 output/reproduction_yolodetect_*
+```
+
+训练配方：imgsz 640、batch 8、100 epochs、默认增强、seed 42；seg 模型 3.26M 参数（训练约 91/159 分钟），detect 模型 3.01M 参数（约 45/32 分钟）。评估统一 conf 0.25、原图分辨率逐图前向，IoU/Dice/精确率/召回率与 `evaluate_abcdwavenet` 同口径全局累计。
+
+| 验证集 | 模型与输出形式 | 水 IoU | Dice | 精确率 | 召回率 | 逐图 IoU 中位数 | 原生 mAP50 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Puddle-1000（198） | ABCDWaveNet 语义分割（第 5 节） | **0.7653** | 0.8670 | — | — | — | — |
+| Puddle-1000 | YOLOv8n-seg 实例掩膜并集 | 0.7562 | 0.8612 | 0.8451 | 0.8778 | 0.6867 | mask 0.677 / box 0.756 |
+| Puddle-1000 | YOLOv8n 检测框填实 | 0.4287 | 0.6001 | 0.4455 | 0.9192 | 0.4589 | box 0.753 |
+| FRED Holmview（420） | ABCDWaveNet，FRED-only（第 7 节） | 0.6513 | — | — | — | — | — |
+| FRED | ABCDWaveNet，加本地种子（第 8 节最好成绩） | 0.7691 | — | — | — | — | — |
+| FRED | YOLOv8n-seg 实例掩膜并集 | **0.8583** | 0.9237 | 0.9017 | 0.9469 | 0.8896 | mask 0.963 / box 0.960 |
+| FRED | YOLOv8n 检测框填实 | 0.7610 | 0.8643 | 0.7893 | 0.9550 | 0.7684 | box 0.982 |
+
+能支持的结论与限制：
+
+- **检测框损失随水体形态剧变**：同为 640px 配方，检测框填实在 Puddle-1000 上比实例掩膜低 **32.8 个 IoU 点**（0.7562→0.4287），在 FRED 上低 9.7 点（0.8583→0.7610）。Puddle 是小水洼碎片，矩形框内大部分是背景（精确率 0.446 对掩膜的 0.845）；FRED 是整片连通淹水，矩形近似损失较小。`demo_watch` 的三级判级依赖水面占比与斑块数，矩形框无法提供这两类统计。
+- **检测指标会严重高估可用性**：FRED 检测框 mAP50 高达 0.982，填实后像素 IoU 只有 0.761；只报 mAP 的检测方案回答不了"积了多少水、几个坑"。
+- **YOLOv8n-seg 与 ABCDWaveNet 各赢一个域**：Puddle-1000 打平（0.756 对 0.765）；FRED 上 YOLOv8n-seg 更高（0.858，对 FRED-only 0.651、加本地种子后的最好成绩 0.769）。但两者配方不同：YOLO 用其推荐配方（640px、batch 8、默认增强、100 epochs），ABCD 是受 8GB 显存限制的降配复现（256px、batch 2、fp32），第 5 节已把其与论文的差距归因于该降配。因此本表是"各自常规配方"的对比，不是严格架构公平对比；FRED 上的差距更可能主要来自输入分辨率（256px 对整片大面积水体的信息损失）而非架构本身——提高 ABCD 推理/微调分辨率是比换模型更值得先试的方向。
+- 其余简化：评估置信度阈值固定 0.25；ABCD 行的 Dice/精确率等见第 5、7、8 节各自报告，此处只并列 IoU。
+
 要验证雨后地面积水方案，仍需自己拍摄**同场景配准的 RGB＋二维热图**，标注干地、湿而无明水、可见积水三类，并按地点／雨次留出测试集。河湖防汛还需要同一岸段前后两期配准影像，才能验证水面变化，而不能仅靠单张图推断真实水位或堤防风险。
