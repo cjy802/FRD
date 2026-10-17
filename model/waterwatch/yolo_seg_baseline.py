@@ -53,6 +53,13 @@ DATASETS = {
         "val_images": Path("data/floodnet/test/images"),
         "val_masks": Path("data/floodnet/test/masks"),
     },
+    # four-domain replay mix built by waterwatch.build_replay_mix
+    "replaymix": {
+        "train_images": Path("data/replay_mix/train/images"),
+        "train_masks": Path("data/replay_mix/train/masks"),
+        "val_images": Path("data/replay_mix/val/images"),
+        "val_masks": Path("data/replay_mix/val/masks"),
+    },
 }
 
 
