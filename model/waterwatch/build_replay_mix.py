@@ -46,7 +46,7 @@ def build_mix(sources: dict, output: Path, seed: int = 42, val_per_domain: int =
         only_prefix = spec.get("only_prefix")
         stems = [stem for stem, _, _ in pairs if only_prefix is None or stem.startswith(only_prefix)]
         by_stem = {stem: (image_path, mask_path) for stem, image_path, mask_path in pairs if stem in set(stems)}
-        train_stems = sample_stems(stems, spec.get("train_k", 0), rng)
+        train_stems = sample_stems(stems, spec.get("train_k", 0), rng) if spec.get("train", True) else []
         val_stems = sample_stems(stems, spec.get("val_k") or val_per_domain, rng) if spec.get("val") else []
         stats = {"train": 0, "val": 0, "train_water_fraction": 0.0, "val_water_fraction": 0.0}
         for split, chosen in (("train", train_stems), ("val", val_stems)):
@@ -99,7 +99,7 @@ def main() -> None:
     }
     if args.val_per_domain > 0:
         sources["localval"] = {"images": Path("data/local_seed/images"), "masks": Path("data/local_seed/masks"),
-                               "prefix": "vlocal", "train_k": 0, "val": True}
+                               "prefix": "vlocal", "train": False, "val": True}
     for key, spec in sources.items():
         if not spec["images"].is_dir() or not spec["masks"].is_dir():
             raise SystemExit(f"{key} 数据缺失：{spec['images']} / {spec['masks']}")
