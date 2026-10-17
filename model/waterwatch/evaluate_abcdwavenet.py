@@ -65,12 +65,16 @@ def main() -> None:
     parser.add_argument("--dataset", type=Path, required=True, help="directory with images/ and masks/")
     parser.add_argument("--output", type=Path, default=Path("output/reproduction_abcdwavenet"))
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--image-size", type=int, default=IMAGE_SIZE,
+                        help="evaluation resolution; the UNet is fully convolutional so this may differ from training")
     args = parser.parse_args()
 
     repo = (args.third_party / "ABCDWaveNet").resolve()
     dataset = args.dataset.resolve()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model(repo, args.checkpoint.resolve()).to(device)
+    global IMAGE_SIZE
+    IMAGE_SIZE = args.image_size
 
     stems = sorted(path.stem for path in (dataset / "images").iterdir() if path.is_file() and not path.name.startswith("."))
     stems = [stem for stem in stems if (dataset / "masks" / f"{stem}.png").exists() or (dataset / "masks" / f"{stem}.jpg").exists()]
