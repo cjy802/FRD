@@ -205,4 +205,28 @@ D:\anaconda\envs\yolov8-env\python.exe -m waterwatch.yolo_seg_baseline evaluate 
 - **YOLOv8n-seg 与 ABCDWaveNet 各赢一个域**：Puddle-1000 打平（0.756 对 0.765）；FRED 上 YOLOv8n-seg 更高（0.858，对 FRED-only 0.651、加本地种子后的最好成绩 0.769）。但两者配方不同：YOLO 用其推荐配方（640px、batch 8、默认增强、100 epochs），ABCD 是受 8GB 显存限制的降配复现（256px、batch 2、fp32），第 5 节已把其与论文的差距归因于该降配。因此本表是"各自常规配方"的对比，不是严格架构公平对比；FRED 上的差距更可能主要来自输入分辨率（256px 对整片大面积水体的信息损失）而非架构本身——提高 ABCD 推理/微调分辨率是比换模型更值得先试的方向。
 - 其余简化：评估置信度阈值固定 0.25；ABCD 行的 Dice/精确率等见第 5、7、8 节各自报告，此处只并列 IoU。
 
+## 10. 无人机航拍域适配：FloodNet 双模型对决（跨域遗忘检查）
+
+第 5-9 节两个模型都只见过地面视角；[FloodNet-Supervised v1.0](https://github.com/BipinMeghwal/FloodNet)（飓风 Harvey 后 DJI Mavic Pro 航拍，4000×3000，10 类逐像素索引标注，官方 Train/Val/Test = 1445/450/448）是与本项目目标无人机视角最接近的公开数据。`waterwatch/export_floodnet` 把 **Water(5)∪Road-flooded(3)** 合并为水（Pool 是泳池、Building-flooded 是被淹建筑屋顶，均不算水），图像缩到长边 1280，水体占比约 13%，48% 帧完全无水。两模型均从各自 FRED 阶段检查点继续微调：ABCD 用 2e-5 低学习率、30 轮（fp32+CondConv 在第 11 轮附近 CUDA OOM 中断，滚动最佳=第 8 轮 0.7093 且验证已平台期，损失可忽略；复跑建议加 `PYTORCH_CUDA_ALLOC_CONF=expandable_segments`）；YOLOv8n-seg 用默认配方 100 轮。
+
+```powershell
+python -m waterwatch.export_floodnet --archive D:/DATASET/FloodNet.zip
+D:\anaconda\envs\yolov8-env\python.exe -m waterwatch.yolo_seg_baseline prepare --dataset floodnet
+D:\anaconda\envs\waterseg\python.exe -m waterwatch.fine_tune_ponding --data data/floodnet --train-dir data/floodnet/train --val-dir data/floodnet/val --epochs 30 --batch-size 2 --lr 2e-5 --base-checkpoint output/abcdwavenet_fred/abcdwavenet_local_best_0.6513.pth --output output/abcdwavenet_floodnet
+D:\anaconda\envs\yolov8-env\python.exe -m waterwatch.yolo_seg_baseline train --dataset floodnet --model output/yolo_seg/fred_seg/weights/best.pt --epochs 100 --batch 8 --run-name floodnet_seg
+# 评估：Test 用 --dataset floodnettest（YOLO）/ --dataset data/floodnet/test（ABCD）；FRED 遗忘检查各自对 data/fred_ft/val
+```
+
+| 模型 | FloodNet Test 水 IoU（448 张） | FRED val 水 IoU（微调前 → 后） | 本地 3 张照片 |
+| --- | ---: | ---: | --- |
+| ABCDWaveNet | **0.7056** | 0.6513 → 0.3172 | 未测（第 8 节混合模型仍是本地域最优） |
+| YOLOv8n-seg | 0.6920 | 0.8583 → **0.2081**（逐图中位数 0.000） | **全部零检出** |
+
+能支持的结论与限制：
+
+- **两个模型都能学会航拍域**（Test 0.69-0.71，对照引用该数据的 DINOv2 论文 10 类 mIoU 仅 54）；ABCD 略高，且训练量只有 YOLO 的约 1/3 就已平台。
+- **两模型都灾难性遗忘 FRED**。ABCD（低学习率）遗忘较轻（0.3172 对 0.2081，逐图中位数 0.30 对 0.000），证实遗忘烈度与配方相关；但"顺序微调跨大域"对双方都不可行是共性结论。单一部署模型要么做多域**混合回放训练**（FRED+FloodNet+本地同批混训，如第 8 节 local_mix 的推广），要么**按视角分模型**（航拍模型管无人机图、地面模型管街景）。
+- YOLO 微调后对本地照片零检出、FRED 逐图中位数 0.000，说明大学习率下旧域几乎清空；其 100 轮配方对域适配任务本身偏猛，续训场景应显著调低学习率。
+- ABCD 行的本地照片未在本轮重测：其第 8 节混合模型（FRED IoU 0.7691、浑浊水坑命中）仍是当前本地域最优与部署默认。
+
 要验证雨后地面积水方案，仍需自己拍摄**同场景配准的 RGB＋二维热图**，标注干地、湿而无明水、可见积水三类，并按地点／雨次留出测试集。河湖防汛还需要同一岸段前后两期配准影像，才能验证水面变化，而不能仅靠单张图推断真实水位或堤防风险。
