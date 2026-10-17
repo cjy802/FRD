@@ -40,6 +40,19 @@ DATASETS = {
         "val_images": Path("data/fred_ft/val/images"),
         "val_masks": Path("data/fred_ft/val/masks"),
     },
+    "floodnet": {
+        "train_images": Path("data/floodnet/train/images"),
+        "train_masks": Path("data/floodnet/train/masks"),
+        "val_images": Path("data/floodnet/val/images"),
+        "val_masks": Path("data/floodnet/val/masks"),
+    },
+    # official Test split as the held-out duel set (train half reuses val labels, unused)
+    "floodnettest": {
+        "train_images": Path("data/floodnet/val/images"),
+        "train_masks": Path("data/floodnet/val/masks"),
+        "val_images": Path("data/floodnet/test/images"),
+        "val_masks": Path("data/floodnet/test/masks"),
+    },
 }
 
 
@@ -173,10 +186,13 @@ def run_train(args: argparse.Namespace) -> None:
         raise SystemExit(f"{data_yaml} 缺失；先运行 prepare --dataset {args.dataset}")
     weights_dir = (Path("output") / "yolo_seg").resolve()
     weights_dir.mkdir(parents=True, exist_ok=True)
-    model = YOLO(str(weights_dir / f"{args.model}.pt"))  # first call downloads to this path
+    model_arg = Path(args.model)
+    model_path = model_arg if model_arg.is_file() else weights_dir / f"{args.model}.pt"
+    model = YOLO(str(model_path))  # first call downloads to this path
     kwargs = {"data": str(data_yaml), "epochs": args.epochs, "imgsz": args.imgsz, "batch": args.batch,
               "workers": args.workers, "cache": False, "seed": args.seed, "deterministic": True,
-              "project": str(weights_dir), "name": args.run_name or f"{args.model}_{args.dataset}",
+              "project": str(weights_dir),
+              "name": args.run_name or f"{model_arg.stem if model_arg.is_file() else args.model}_{args.dataset}",
               "exist_ok": True, "fraction": args.fraction}
     if args.device:
         kwargs["device"] = args.device

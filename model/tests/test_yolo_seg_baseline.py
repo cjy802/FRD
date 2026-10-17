@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from waterwatch.export_floodnet import water_mask_from_index
 from waterwatch.yolo_seg_baseline import (
     boxes_to_mask,
     count_patches,
@@ -47,6 +48,12 @@ def test_count_patches_ignores_speckles() -> None:
     assert count_patches(mask, min_area=50) == 2
     assert count_patches(mask, min_area=1) == 3
     assert count_patches(np.zeros((64, 64), np.uint8)) == 0
+
+
+def test_floodnet_water_classes() -> None:
+    index = np.array([[0, 3, 5], [9, 8, 3], [1, 5, 2]], np.uint8)
+    mask = water_mask_from_index(index)
+    assert mask.tolist() == [[0, 1, 1], [0, 0, 1], [0, 1, 0]]
 
 
 def test_box_pseudo_mask_loses_disk_area() -> None:
