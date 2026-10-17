@@ -24,14 +24,16 @@ def _make_domain(root, name: str, stems: list[str], mask_suffix: str = ".png") -
 
 def _sources(root) -> dict:
     puddle = _make_domain(root, "puddle", [f"p{i}" for i in range(5)])
+    puddleval = _make_domain(root, "puddleval", [f"pv{i}" for i in range(4)])
     fred = _make_domain(root, "fred", [f"f{i}" for i in range(4)])
     localmix = _make_domain(root, "localmix", ["fred_copy"] + [f"local_x{i}" for i in range(3)])
     localval = _make_domain(root, "localval", ["only_photo"], mask_suffix=".npy")
     return {
-        "puddle": {**puddle, "prefix": "puddle", "train_k": 3, "val": True},
+        "puddle": {**puddle, "prefix": "puddle", "train_k": 3, "val": True,
+                   "val_images": puddleval["images"], "val_masks": puddleval["masks"]},
         "fred": {**fred, "prefix": "fred", "train_k": 0, "val": True},
         "local": {**localmix, "prefix": "local", "train_k": 0, "val": False, "only_prefix": "local_"},
-        "localval": {**localval, "prefix": "vlocal", "train_k": 0, "val": True},
+        "localval": {**localval, "prefix": "vlocal", "train": False, "val": True},
     }
 
 
@@ -58,6 +60,10 @@ def test_build_mix_counts_prefixes_and_determinism(tmp_path) -> None:
     assert all(name.startswith("puddle_") for name in train_names if "puddle" in name)
     assert not any("fred_copy" in name for name in train_names)
     assert sum(1 for name in val_names if name.startswith("vlocal_")) == 1
+    # val frames come from the held-out val dir, never the train pool
+    val_puddles = [name for name in val_names if name.startswith("puddle_")]
+    assert 0 < len(val_puddles) <= 2 and all("pv" in name for name in val_puddles)
+    assert not any(name[7:] in {n[7:] for n in train_names} for name in val_puddles)
     # masks written as 0/1 PNG regardless of source encoding
     mask = np.asarray(Image.open(tmp_path / "out0/val/masks/vlocal_only_photo.png"))
     assert set(np.unique(mask)).issubset({0, 1})

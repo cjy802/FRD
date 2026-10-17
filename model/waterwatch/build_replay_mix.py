@@ -35,19 +35,30 @@ def sample_stems(stems: list[str], k: int, rng: random.Random) -> list[str]:
     return sorted(rng.sample(stems, k))
 
 
-def build_mix(sources: dict, output: Path, seed: int = 42, val_per_domain: int = 0) -> dict:
+def build_mix(sources: dict, output: Path, seed: int = 42, val_per_domain: int = 0,
+              skip_train: bool = False) -> dict:
     """sources: {name: {"images": Path, "masks": Path, "prefix": str,
-    "train_k": int or 0 (all), "val": bool, "val_k": int or None (val_per_domain),
+    "train_k": int or 0 (all), "train": bool, "val": bool, "val_k": int or None,
+    "val_images"/"val_masks": held-out dirs (default: the train dirs — avoid this!),
     "only_prefix": str or None}}; val sources may hold .npy masks."""
     rng = random.Random(seed)
     report = {"seed": seed, "domains": {}}
     for name, spec in sources.items():
-        pairs = paired_stems(spec["images"].resolve(), spec["masks"].resolve())
         only_prefix = spec.get("only_prefix")
-        stems = [stem for stem, _, _ in pairs if only_prefix is None or stem.startswith(only_prefix)]
-        by_stem = {stem: (image_path, mask_path) for stem, image_path, mask_path in pairs if stem in set(stems)}
-        train_stems = sample_stems(stems, spec.get("train_k", 0), rng) if spec.get("train", True) else []
-        val_stems = sample_stems(stems, spec.get("val_k") or val_per_domain, rng) if spec.get("val") else []
+        by_stem = {}
+        if not skip_train:
+            train_pairs = paired_stems(spec["images"].resolve(), spec["masks"].resolve())
+            stems = [stem for stem, _, _ in train_pairs if only_prefix is None or stem.startswith(only_prefix)]
+            by_stem = {stem: (image_path, mask_path) for stem, image_path, mask_path in train_pairs}
+            train_stems = sample_stems(stems, spec.get("train_k", 0), rng) if spec.get("train", True) else []
+        else:
+            train_stems = []
+        val_stems: list[str] = []
+        if spec.get("val"):
+            val_pairs = paired_stems(spec.get("val_images", spec["images"]).resolve(),
+                                     spec.get("val_masks", spec["masks"]).resolve())
+            val_stems = sample_stems([stem for stem, _, _ in val_pairs], spec.get("val_k") or val_per_domain, rng)
+            by_stem.update({stem: (image_path, mask_path) for stem, image_path, mask_path in val_pairs})
         stats = {"train": 0, "val": 0, "train_water_fraction": 0.0, "val_water_fraction": 0.0}
         for split, chosen in (("train", train_stems), ("val", val_stems)):
             if not chosen:
@@ -80,16 +91,22 @@ def main() -> None:
     parser.add_argument("--fred-k", type=int, default=0, help="0 = all 812")
     parser.add_argument("--floodnet-k", type=int, default=500)
     parser.add_argument("--val-per-domain", type=int, default=60)
+    parser.add_argument("--val-only", action="store_true",
+                        help="rebuild only the balanced mini-val (keep the existing train split)")
     args = parser.parse_args()
     sources = {
         "puddle": {"images": Path("data/abcd/puddle1000/train/images"),
                    "masks": Path("data/abcd/puddle1000/train/masks"),
+                   "val_images": Path("data/abcd/puddle1000/val/images"),
+                   "val_masks": Path("data/abcd/puddle1000/val/masks"),
                    "prefix": "puddle", "train_k": args.puddle_k,
                    "val": True, "val_k": args.val_per_domain},
         "fred": {"images": Path("data/fred_ft/images"), "masks": Path("data/fred_ft/masks"),
+                 "val_images": Path("data/fred_ft/val/images"), "val_masks": Path("data/fred_ft/val/masks"),
                  "prefix": "fred", "train_k": args.fred_k,
                  "val": True, "val_k": args.val_per_domain},
         "floodnet": {"images": Path("data/floodnet/train/images"), "masks": Path("data/floodnet/train/masks"),
+                     "val_images": Path("data/floodnet/val/images"), "val_masks": Path("data/floodnet/val/masks"),
                      "prefix": "floodnet", "train_k": args.floodnet_k,
                      "val": True, "val_k": args.val_per_domain},
         # oversampled local copies (incl. flips) produced by seed_local_labels in data/local_mix;
@@ -101,11 +118,14 @@ def main() -> None:
         sources["localval"] = {"images": Path("data/local_seed/images"), "masks": Path("data/local_seed/masks"),
                                "prefix": "vlocal", "train": False, "val": True}
     for key, spec in sources.items():
-        if not spec["images"].is_dir() or not spec["masks"].is_dir():
-            raise SystemExit(f"{key} 数据缺失：{spec['images']} / {spec['masks']}")
-    if (args.output / "train" / "images").is_dir():
+        for key2 in ("images", "masks", "val_images", "val_masks"):
+            path = spec.get(key2)
+            if path is not None and not path.is_dir():
+                raise SystemExit(f"{key} 数据缺失：{path}")
+    if not args.val_only and (args.output / "train" / "images").is_dir():
         raise SystemExit(f"{args.output}/train 已存在；换 --output 或手动清理后重跑")
-    report = build_mix(sources, args.output.resolve(), seed=args.seed, val_per_domain=args.val_per_domain)
+    report = build_mix(sources, args.output.resolve(), seed=args.seed,
+                       val_per_domain=args.val_per_domain, skip_train=args.val_only)
     report["train_total"] = sum(d["train"] for d in report["domains"].values())
     report["val_total"] = sum(d["val"] for d in report["domains"].values())
     (args.output / "build_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n",
