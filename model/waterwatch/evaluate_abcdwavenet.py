@@ -59,6 +59,7 @@ def predict(model: torch.nn.Module, tensor: np.ndarray, device: torch.device) ->
 
 
 def main() -> None:
+    global IMAGE_SIZE
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--third-party", type=Path, default=Path("third_party"))
     parser.add_argument("--checkpoint", type=Path, required=True)
@@ -68,13 +69,12 @@ def main() -> None:
     parser.add_argument("--image-size", type=int, default=IMAGE_SIZE,
                         help="evaluation resolution; the UNet is fully convolutional so this may differ from training")
     args = parser.parse_args()
+    IMAGE_SIZE = args.image_size
 
     repo = (args.third_party / "ABCDWaveNet").resolve()
     dataset = args.dataset.resolve()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model(repo, args.checkpoint.resolve()).to(device)
-    global IMAGE_SIZE
-    IMAGE_SIZE = args.image_size
 
     stems = sorted(path.stem for path in (dataset / "images").iterdir() if path.is_file() and not path.name.startswith("."))
     stems = [stem for stem in stems if (dataset / "masks" / f"{stem}.png").exists() or (dataset / "masks" / f"{stem}.jpg").exists()]
