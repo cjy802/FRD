@@ -62,6 +62,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--third-party", type=Path, default=Path("third_party"))
     parser.add_argument("--data", type=Path, required=True, help="folder with images/ and masks/ (0/1 masks)")
+    parser.add_argument("--train-dir", type=Path, default=None, help="images/+masks/ folder; default <data>")
+    parser.add_argument("--val-dir", type=Path, default=None, help="holdout images/+masks/ folder; default <data>/val")
     parser.add_argument("--base-checkpoint", type=Path, default=Path("output/abcdwavenet_puddle1000/UNet_train_best_0.7751.pth"))
     parser.add_argument("--val-fraction", type=float, default=0.2, help="held-out fraction when no val/ split exists")
     parser.add_argument("--epochs", type=int, default=40)
@@ -83,10 +85,12 @@ def main() -> None:
         raise SystemExit(f"ABCDWaveNet HEAD {head} 不是固定 commit {ABCD_COMMIT}")
     if not args.base_checkpoint.is_file():
         raise SystemExit(f"基础检查点缺失：{args.base_checkpoint}")
-    images_dir = args.data / "images"
-    masks_dir = args.data / "masks"
+    train_root = args.train_dir or args.data
+    val_dir = args.val_dir or (args.data / "val")
+    images_dir = train_root / "images"
+    masks_dir = train_root / "masks"
     if not images_dir.is_dir() or not masks_dir.is_dir():
-        raise SystemExit(f"{args.data} 需要包含 images/ 和 masks/")
+        raise SystemExit(f"{train_root} 需要包含 images/ 和 masks/")
 
     from utils.data_loading import BasicDataset
     full = BasicDataset(str(images_dir), str(masks_dir), scale=1.0)
