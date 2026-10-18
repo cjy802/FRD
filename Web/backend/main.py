@@ -155,6 +155,7 @@ class VideoSurveyPathRequest(BaseModel):
 class TaskCreateRequest(BaseModel):
     route: dict[str, Any]
     departure_time: str = Field(min_length=1, max_length=40)
+    departure_auto_managed: bool = True
 
 
 class TaskUpdateRequest(BaseModel):
@@ -166,6 +167,8 @@ class TaskUpdateRequest(BaseModel):
     video_survey_id: str | None = Field(default=None, max_length=40)
     analysis_job_id: str | None = Field(default=None, max_length=40)
     analysis_targets: list[dict[str, Any]] | None = Field(default=None, max_length=100)
+    departure_time: str | None = Field(default=None, min_length=1, max_length=40)
+    departure_auto_managed: bool | None = None
 
 
 @lru_cache(maxsize=1)
@@ -196,7 +199,7 @@ def health():
 def create_task(request: Request, payload: TaskCreateRequest):
     require_local_request(request, mutation=True, label="飞行任务")
     try:
-        return tasks.create(payload.route, payload.departure_time)
+        return tasks.create(payload.route, payload.departure_time, payload.departure_auto_managed)
     except TaskError as error:
         raise HTTPException(status_code=error.http_status, detail=str(error)) from error
 

@@ -36,7 +36,7 @@ class TaskStore:
             raise TaskError("找不到该任务。", http_status=404)
         return path
 
-    def create(self, route: dict[str, Any], departure_time: str) -> dict[str, Any]:
+    def create(self, route: dict[str, Any], departure_time: str, departure_auto_managed: bool = True) -> dict[str, Any]:
         task_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S") + "-" + uuid.uuid4().hex[:8]
         directory = self.storage_dir / task_id
         directory.mkdir(parents=True, exist_ok=False)
@@ -47,6 +47,7 @@ class TaskStore:
             "status": "planning",
             "route": route,
             "departure_time": departure_time,
+            "departure_auto_managed": departure_auto_managed,
             "weather": None,
             "aircraft": None,
             "export_file_name": None,
@@ -66,7 +67,7 @@ class TaskStore:
         directory = self._directory(task_id)
         record = json.loads((directory / "task.json").read_text(encoding="utf-8"))
         for key, value in changes.items():
-            if key in {"weather", "aircraft", "export_file_name", "flight_started_at", "video_survey_id", "status", "analysis_targets"}:
+            if key in {"weather", "aircraft", "export_file_name", "flight_started_at", "video_survey_id", "status", "analysis_targets", "departure_time", "departure_auto_managed"}:
                 record[key] = value
             elif key == "analysis_job_id" and value:
                 ids = record.setdefault("analysis_job_ids", [])

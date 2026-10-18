@@ -247,9 +247,8 @@ async function createCurrentTask() {
   if (!preview.value || previewKey.value !== routeKey.value || taskBusy.value) return
   taskBusy.value = true
   taskError.value = ''
-  departureAutoManaged.value = false
   try {
-    const created = await createMissionTask(taskRouteSnapshot.value, departureBeijing.value)
+    const created = await createMissionTask(taskRouteSnapshot.value, departureBeijing.value, departureAutoManaged.value)
     activeTask.value = await updateMissionTask(created.task_id, { aircraft: {
       drone_model: djiModel.value, waypoint_settings: waypointSettings.value,
     } })
@@ -304,7 +303,9 @@ async function recordTaskAnalysis(job: PhotoAnalysisJob) {
 
 async function markTaskFlightStarted() {
   if (!activeTask.value || !taskRouteMatches.value || !activeTask.value.export_file_name) return
-  await persistTask({ status: 'in_flight', flight_started_at: new Date().toISOString() })
+  departureAutoManaged.value = false
+  await persistTask({ status: 'in_flight', flight_started_at: new Date().toISOString(),
+    departure_time: departureBeijing.value, departure_auto_managed: false })
 }
 
 async function addTaskFrame(frame: TaskVideoFrame) {
@@ -360,8 +361,11 @@ async function restoreCurrentTask() {
     if (activeTask.value.aircraft?.drone_model === 'fly' || activeTask.value.aircraft?.drone_model === 'm30' || activeTask.value.aircraft?.drone_model === 'm3e') {
       djiModel.value = activeTask.value.aircraft.drone_model
     }
-    departureBeijing.value = activeTask.value.departure_time
-    departureAutoManaged.value = false
+    const savedDeparture = new Date(`${activeTask.value.departure_time}:00+08:00`)
+    const expiredLegacyDeparture = !Number.isNaN(savedDeparture.getTime()) && savedDeparture.getTime() <= Date.now()
+    departureAutoManaged.value = (activeTask.value.departure_auto_managed ?? false)
+      || (expiredLegacyDeparture && activeTask.value.status !== 'in_flight')
+    departureBeijing.value = departureAutoManaged.value ? currentDepartureBeijing() : activeTask.value.departure_time
     routeAssessment.value = activeTask.value.weather as unknown as RouteAssessment | null
     await refreshTaskFrames(taskId)
   } catch {
@@ -386,6 +390,14 @@ async function onTaskSurveyChange(survey: VideoSurvey | null) {
 
 watch(djiModel, (model) => {
   void persistTask({ aircraft: { drone_model: model, waypoint_settings: waypointSettings.value } })
+})
+let taskDepartureSaveTimer: ReturnType<typeof setTimeout> | null = null
+watch([departureBeijing, departureAutoManaged], () => {
+  if (!activeTask.value || !taskRouteMatches.value) return
+  if (taskDepartureSaveTimer) clearTimeout(taskDepartureSaveTimer)
+  taskDepartureSaveTimer = setTimeout(() => {
+    void persistTask({ departure_time: departureBeijing.value, departure_auto_managed: departureAutoManaged.value })
+  }, 250)
 })
 let taskSettingsSaveTimer: ReturnType<typeof setTimeout> | null = null
 watch(waypointSettings, () => {
@@ -446,8 +458,7 @@ const distance = computed(() => preview.value ? `${preview.value.distance_km.toF
 const layoutStyle = computed(() => ({ '--sidebar-width': `${sidebarWidth.value}px`, '--insights-width': `${insightsWidth.value}px` }))
 const routeKey = computed(() => JSON.stringify([anchors.value.map((anchor) => [anchor.id, anchor.latitude, anchor.longitude]), roadSource.value, form.clearance_m]))
 const taskRouteSnapshot = computed(() => ({
-  fingerprint: JSON.stringify({ routeKey: routeKey.value, altitude_m: form.altitude_m, speed_kmh: form.speed_kmh,
-    departure_time: departureBeijing.value }),
+  fingerprint: JSON.stringify({ routeKey: routeKey.value, altitude_m: form.altitude_m, speed_kmh: form.speed_kmh }),
   geometry: preview.value?.geometry ?? null,
   road_names: preview.value?.road_names ?? [],
   data_source: preview.value?.data_source ?? '',
@@ -460,8 +471,17 @@ const taskRouteSnapshot = computed(() => ({
   clearance_m: form.clearance_m,
   waypoint_settings: waypointSettings.value,
 }))
-const taskRouteMatches = computed(() => Boolean(activeTask.value
-  && activeTask.value.route.fingerprint === taskRouteSnapshot.value.fingerprint))
+const taskRouteMatches = computed(() => {
+  const storedFingerprint = activeTask.value?.route.fingerprint
+  if (typeof storedFingerprint !== 'string') return false
+  try {
+    const saved = JSON.parse(storedFingerprint) as { routeKey?: string; altitude_m?: number; speed_kmh?: number }
+    const current = JSON.parse(taskRouteSnapshot.value.fingerprint) as { routeKey: string; altitude_m: number; speed_kmh: number }
+    return saved.routeKey === current.routeKey && saved.altitude_m === current.altitude_m && saved.speed_kmh === current.speed_kmh
+  } catch {
+    return false
+  }
+})
 const taskStatusLabel = computed(() => activeTask.value?.status === 'in_flight' ? '飞行中'
   : activeTask.value?.status === 'ready' ? '已准备' : '规划中')
 const weatherCoordinates = computed(() => preview.value && previewKey.value === routeKey.value ? preview.value.geometry.coordinates : null)
@@ -2277,6 +2297,7 @@ onMounted(() => {
   window.addEventListener('pointerup', finishMapCameraDrag)
   window.addEventListener('pointerdown', onMapAnchorOutsidePointerDown)
   scheduleDepartureClock()
+  window.addEventListener('focus', refreshDepartureClock)
   void restoreCurrentTask().then(async () => {
     await calculate()
     restoreTaskWaypointSettings()
@@ -2300,6 +2321,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('blur', cancelCameraPreviewDrag)
   window.removeEventListener('blur', finishMapCameraDrag)
   window.removeEventListener('blur', pauseFlight)
+  window.removeEventListener('focus', refreshDepartureClock)
   window.removeEventListener('pointerup', endFlightSeek)
   window.removeEventListener('pointercancel', endFlightSeek)
   window.removeEventListener('pointerup', finishMapCameraDrag)
@@ -2309,6 +2331,7 @@ onBeforeUnmount(() => {
   finishMapCameraDrag()
   pauseFlight()
   if (departureClockTimer) clearTimeout(departureClockTimer)
+  if (taskDepartureSaveTimer) clearTimeout(taskDepartureSaveTimer)
   if (taskSettingsSaveTimer) clearTimeout(taskSettingsSaveTimer)
   stopColumnResize()
   cancelCalculation()

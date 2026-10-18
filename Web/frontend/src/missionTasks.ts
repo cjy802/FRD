@@ -7,6 +7,7 @@ export type MissionTask = {
   status: 'planning' | 'ready' | 'in_flight' | 'completed'
   route: Record<string, unknown>
   departure_time: string
+  departure_auto_managed?: boolean
   weather: Record<string, unknown> | null
   aircraft: Record<string, unknown> | null
   export_file_name: string | null
@@ -41,11 +42,11 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return payload as T
 }
 
-export function createMissionTask(route: Record<string, unknown>, departureTime: string): Promise<MissionTask> {
+export function createMissionTask(route: Record<string, unknown>, departureTime: string, departureAutoManaged = true): Promise<MissionTask> {
   return request<MissionTask>('/api/tasks', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ route, departure_time: departureTime }),
+    body: JSON.stringify({ route, departure_time: departureTime, departure_auto_managed: departureAutoManaged }),
   })
 }
 
@@ -54,7 +55,7 @@ export function fetchMissionTask(taskId: string): Promise<MissionTask> {
 }
 
 export function updateMissionTask(taskId: string, changes: Partial<Pick<MissionTask,
-  'status' | 'weather' | 'aircraft' | 'export_file_name' | 'flight_started_at' | 'video_survey_id' | 'analysis_targets'>> & { analysis_job_id?: string }): Promise<MissionTask> {
+  'status' | 'weather' | 'aircraft' | 'export_file_name' | 'flight_started_at' | 'video_survey_id' | 'analysis_targets' | 'departure_time' | 'departure_auto_managed'>> & { analysis_job_id?: string }): Promise<MissionTask> {
   return request<MissionTask>(`/api/tasks/${encodeURIComponent(taskId)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
