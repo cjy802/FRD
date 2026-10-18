@@ -20,6 +20,7 @@ const busy = ref(false)
 const error = ref('')
 const status = ref('')
 const viewMode = ref<'overlay' | 'original'>('overlay')
+const fileInput = ref<HTMLInputElement | null>(null)
 const previewDialog = ref<HTMLDialogElement | null>(null)
 const preview = ref<{ image: PhotoAnalysisResultImage; index: number } | null>(null)
 let pollTimer: number | null = null
@@ -28,6 +29,11 @@ const selectedModelOption = computed(() => health.value?.models?.find(model => m
 const canSubmit = computed(() => Boolean(health.value?.available && selectedModelOption.value?.available
   && selectedFiles.value.length && !busy.value))
 const interpretation = computed(() => job.value?.results?.interpretation ?? '')
+const selectedFileSummary = computed(() => {
+  if (selectedFiles.value.length === 1) return selectedFiles.value[0].name
+  if (selectedFiles.value.length > 1) return `${selectedFiles.value.length} 张已选择`
+  return '支持多选 JPG、PNG、WebP、BMP'
+})
 const previewUrl = computed(() => {
   if (!preview.value) return ''
   return viewMode.value === 'overlay'
@@ -61,6 +67,10 @@ function onFilesChanged(event: Event) {
   const max = health.value?.max_photos_per_job ?? 200
   selectedFiles.value = files.slice(0, max)
   if (files.length > max) status.value = `一次最多 ${max} 张，已截取前 ${max} 张。`
+}
+
+function openFilePicker() {
+  fileInput.value?.click()
 }
 
 async function submit() {
@@ -175,12 +185,15 @@ onUnmounted(stopPolling)
         </select>
         <small v-if="selectedModelOption" class="photo-model-description">{{ selectedModelOption.description }}</small>
         <label for="photo-analysis-files">照片（可多选）</label>
-        <input id="photo-analysis-files" class="photo-file-input" type="file" accept="image/jpeg,image/png,image/webp,image/bmp" multiple :disabled="busy || !health?.available" @change="onFilesChanged" />
+        <div class="photo-file-picker">
+          <input id="photo-analysis-files" ref="fileInput" class="photo-file-native" type="file" accept="image/jpeg,image/png,image/webp,image/bmp" multiple :disabled="busy || !health?.available" @change="onFilesChanged" />
+          <button type="button" class="photo-file-trigger" :disabled="busy || !health?.available" @click="openFilePicker">选择文件</button>
+          <small class="photo-file-selection" :title="selectedFileSummary">{{ selectedFileSummary }}</small>
+        </div>
         <div class="photo-context">
           <input v-model="siteName" type="text" maxlength="60" autocomplete="off" placeholder="站点/地点（可选）" :disabled="busy" />
           <input v-model="note" type="text" maxlength="120" autocomplete="off" placeholder="备注（可选）" :disabled="busy" />
         </div>
-        <p v-if="selectedFiles.length" class="photo-count">{{ selectedFiles.length }} 张已选择</p>
         <button type="button" class="photo-submit" :disabled="!canSubmit" @click="submit">
           {{ busy ? '分析中…' : '开始分析' }}
         </button>
@@ -252,14 +265,12 @@ onUnmounted(stopPolling)
 .photo-form > label { display: block; margin-bottom: 4px; color: #424242; font-weight: 600; }
 .photo-model-select { display: block; width: 100%; min-width: 0; height: 32px; margin: 0 0 4px; padding: 4px 7px; border: 1px solid #d1d5db; border-radius: 6px; background: #f9fafb; color: #27364a; font-size: var(--font-caption); }
 .photo-model-description { display: block; margin: 0 0 8px; color: var(--ui-muted); line-height: 1.4; }
-.photo-file-input { display: block; width: 100%; min-width: 0; margin: 0 0 4px; padding: 4px 6px; border: 1px solid #d1d5db; border-radius: 6px; background: #f9fafb; color: #424242; font-size: var(--font-caption); }
-.photo-file-input::file-selector-button { min-height: 28px; margin-right: 8px; padding: 4px 9px; border: 1px solid #d7dfe8; border-radius: 5px; background: #fff; color: #34506c; font-size: inherit; cursor: pointer; }
-.photo-file-input:hover::file-selector-button { border-color: var(--ui-accent); color: var(--ui-accent); background: #eff6ff; }
-.photo-file-input:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 2px; }
-.photo-file-input:disabled { opacity: .55; cursor: not-allowed; }
+.photo-file-native { display: none; }
+.photo-file-picker { display: flex; min-width: 0; align-items: center; gap: 8px; margin-bottom: 4px; }
+.photo-file-trigger { flex: 0 0 auto; }
+.photo-file-selection { min-width: 0; overflow: hidden; color: var(--ui-muted); text-overflow: ellipsis; white-space: nowrap; }
 .photo-form input[type='text'] { width: 100%; min-width: 0; height: 30px; padding: 4px 7px; border: 1px solid #d1d5db; border-radius: 6px; background: #f9fafb; font-size: var(--font-caption); }
 .photo-context { display: grid; gap: 5px; margin-top: 6px; }
-.photo-count { margin: 5px 0 0; color: var(--ui-muted); }
 .photo-submit { margin-top: 8px; border-color: var(--ui-accent) !important; background: var(--ui-accent) !important; color: #fff !important; }
 .photo-submit:hover:not(:disabled) { background: var(--ui-accent-hover) !important; }
 .photo-feedback { margin: 0 0 8px; padding: 6px 8px; border-radius: 6px; background: #eff6ff; color: #1d4ed8; line-height: 1.4; overflow-wrap: anywhere; }
@@ -280,17 +291,17 @@ onUnmounted(stopPolling)
 .photo-meta strong { display: block; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .photo-meta small { display: block; margin-top: 2px; color: var(--ui-muted); }
 .photo-warning { margin: 10px 0 0; padding: 6px 8px; border-radius: 6px; background: #fff7ed; color: #9a5b13; line-height: 1.4; }
-.photo-lightbox { width: min(96vw, 1400px); max-width: 96vw; max-height: 94vh; margin: auto; padding: 0; overflow: hidden; border: 1px solid #394658; border-radius: 12px; background: #101820; color: #f8fafc; box-shadow: 0 24px 80px rgba(0, 0, 0, .5); }
-.photo-lightbox::backdrop { background: rgba(5, 10, 16, .78); backdrop-filter: blur(3px); }
+.photo-lightbox { width: min(96vw, 1400px); max-width: 96vw; max-height: 94vh; margin: auto; padding: 0; overflow: hidden; border: 1px solid var(--ui-line); border-radius: var(--ui-radius); background: #fff; color: #27364a; }
+.photo-lightbox::backdrop { background: rgba(15, 23, 42, .48); }
 .photo-lightbox-content { display: flex; max-height: 94vh; flex-direction: column; }
-.photo-lightbox-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; }
+.photo-lightbox-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border-bottom: 1px solid var(--ui-line); background: #fff; }
 .photo-lightbox-heading { display: grid; min-width: 0; gap: 3px; }
 .photo-lightbox-heading strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.photo-lightbox-heading small { color: #a9b7c7; }
+.photo-lightbox-heading small { color: var(--ui-muted); }
 .photo-lightbox-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 10px; }
-.photo-lightbox .photo-view-toggle button { border-color: #536174; background: #1c2835; color: #e2e8f0; }
-.photo-lightbox .photo-view-toggle button.is-active { border-color: var(--ui-accent); background: var(--ui-accent); color: #fff; }
-.photo-lightbox-close { border-color: #536174 !important; background: #1c2835 !important; color: #e2e8f0 !important; }
+.photo-lightbox button { min-height: 28px; padding: 4px 8px; border: 1px solid #d7dfe8; border-radius: 6px; background: #fff; color: #34506c; white-space: nowrap; font-size: 11px; }
+.photo-lightbox button:hover:not(:disabled) { border-color: var(--ui-accent); color: var(--ui-accent); background: #eff6ff; }
+.photo-lightbox button:disabled { opacity: .5; cursor: not-allowed; }
 .photo-lightbox-body { display: grid; min-height: 0; place-items: center; padding: 0 12px 12px; }
 .photo-lightbox-image { display: block; max-width: 100%; max-height: calc(94vh - 66px); object-fit: contain; }
 @media (max-width: 560px) {
