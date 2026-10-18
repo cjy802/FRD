@@ -204,6 +204,12 @@ def create_task(request: Request, payload: TaskCreateRequest):
         raise HTTPException(status_code=error.http_status, detail=str(error)) from error
 
 
+@app.get("/api/tasks")
+def list_tasks(request: Request):
+    require_local_request(request, label="任务列表")
+    return {"tasks": tasks.list_summaries()}
+
+
 @app.get("/api/tasks/{task_id}")
 def get_task(request: Request, task_id: str):
     require_local_request(request, label="飞行任务")

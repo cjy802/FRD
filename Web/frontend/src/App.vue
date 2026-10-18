@@ -7,7 +7,6 @@ import RoadWeatherComparison from './RoadWeatherComparison.vue'
 import EarthMap from './EarthMap.vue'
 import PlaceSearch from './PlaceSearch.vue'
 import BaiduCameraPreview from './BaiduCameraPreview.vue'
-import RouteTemplatePanel from './RouteTemplatePanel.vue'
 import PhotoAnalysisPanel from './PhotoAnalysisPanel.vue'
 import VideoSurveyPanel from './VideoSurveyPanel.vue'
 import type { VideoCaptureTarget, VideoSurvey, VideoTelemetryPoint } from './videoSurvey'
@@ -17,11 +16,9 @@ import { weatherOnlyChecks } from './weatherPresentation'
 import type { RoadPreview as Preview } from './routeTypes'
 import { createFlightTimeline, sampleFlight, type FlightSample } from './flightPlayback'
 import { createMissionTask, deleteMissionTaskFrame, fetchMissionTask, fetchMissionTaskFrameFile, fetchMissionTaskFrames, saveMissionTaskFrame,
-  updateMissionTask, type MissionTask, type StoredMissionFrame } from './missionTasks'
+  listMissionTasks, updateMissionTask, type MissionTask, type MissionTaskSummary, type StoredMissionFrame } from './missionTasks'
 import type { PhotoAnalysisJob, TaskVideoFrame } from './photoAnalysis'
 import { fetchLocationAddress, placeToPoint, type PlaceResult } from './placeSearch'
-import { createRouteTemplate, deleteRouteTemplate, getRouteTemplate, listRouteTemplates, RouteTemplateApiError, updateRouteTemplate,
-  type RouteTemplatePayload, type RouteTemplateRecord, type RouteTemplateSummary } from './routeTemplates'
 
 type Point = { latitude: number; longitude: number }
 type MajorPoint = { id: string; latitude: number | null; longitude: number | null }
@@ -164,6 +161,10 @@ const taskBusy = ref(false)
 const taskError = ref('')
 const taskFrames = ref<TaskVideoFrame[]>([])
 const analysisMapTargets = ref<VideoCaptureTarget[]>([])
+const savedTasks = ref<MissionTaskSummary[]>([])
+const taskListOpen = ref(false)
+const taskListLoading = ref(false)
+const taskListError = ref('')
 const taskSurveyStatus = ref('')
 const ACTIVE_TASK_STORAGE_KEY = 'low-altitude-current-mission-task'
 type Rc2Status = {
@@ -256,6 +257,7 @@ async function createCurrentTask() {
     taskFrames.value = []
     analysisMapTargets.value = []
     taskSurveyStatus.value = ''
+    void refreshMissionTaskList()
   } catch (cause) {
     taskError.value = cause instanceof Error ? cause.message : '创建当前任务失败。'
   } finally {
@@ -267,6 +269,7 @@ async function persistTask(changes: Parameters<typeof updateMissionTask>[1]) {
   if (!activeTask.value || !taskRouteMatches.value) return
   try {
     activeTask.value = await updateMissionTask(activeTask.value.task_id, changes)
+    if (taskListOpen.value) void refreshMissionTaskList()
   } catch (cause) {
     taskError.value = cause instanceof Error ? cause.message : '保存任务状态失败。'
   }
@@ -346,31 +349,93 @@ async function restoreCurrentTask() {
   const taskId = localStorage.getItem(ACTIVE_TASK_STORAGE_KEY)
   if (!taskId) return
   try {
-    activeTask.value = await fetchMissionTask(taskId)
-    analysisMapTargets.value = (activeTask.value.analysis_targets ?? []) as unknown as VideoCaptureTarget[]
-    const route = activeTask.value.route
-    const savedAnchors = route.anchors
-    if (Array.isArray(savedAnchors) && savedAnchors.length >= 2) {
-      anchors.value = savedAnchors.map((anchor: any) => ({ id: String(anchor.id), latitude: Number(anchor.latitude), longitude: Number(anchor.longitude) }))
-      selectedAnchorId.value = anchors.value[0].id
-    }
-    if (route.road_source === 'local' || route.road_source === 'online') roadSource.value = route.road_source
-    if (typeof route.altitude_m === 'number') form.altitude_m = route.altitude_m
-    if (typeof route.speed_kmh === 'number') form.speed_kmh = route.speed_kmh
-    if (typeof route.clearance_m === 'number') form.clearance_m = route.clearance_m
-    if (activeTask.value.aircraft?.drone_model === 'fly' || activeTask.value.aircraft?.drone_model === 'm30' || activeTask.value.aircraft?.drone_model === 'm3e') {
-      djiModel.value = activeTask.value.aircraft.drone_model
-    }
-    const savedDeparture = new Date(`${activeTask.value.departure_time}:00+08:00`)
-    const expiredLegacyDeparture = !Number.isNaN(savedDeparture.getTime()) && savedDeparture.getTime() <= Date.now()
-    departureAutoManaged.value = (activeTask.value.departure_auto_managed ?? false)
-      || (expiredLegacyDeparture && activeTask.value.status !== 'in_flight')
-    departureBeijing.value = departureAutoManaged.value ? currentDepartureBeijing() : activeTask.value.departure_time
-    routeAssessment.value = activeTask.value.weather as unknown as RouteAssessment | null
+    applyMissionTask(await fetchMissionTask(taskId))
     await refreshTaskFrames(taskId)
   } catch {
     localStorage.removeItem(ACTIVE_TASK_STORAGE_KEY)
     activeTask.value = null
+  }
+}
+
+function applyMissionTask(task: MissionTask) {
+  activeTask.value = task
+  localStorage.setItem(ACTIVE_TASK_STORAGE_KEY, task.task_id)
+  preview.value = null
+  previewKey.value = ''
+  settingsRoute.value = null
+  waypointSettings.value = []
+  taskFrames.value = []
+  taskSurveyStatus.value = ''
+  analysisMapTargets.value = (task.analysis_targets ?? []) as unknown as VideoCaptureTarget[]
+  const route = task.route
+  const savedAnchors = route.anchors
+  if (Array.isArray(savedAnchors) && savedAnchors.length >= 2) {
+    anchors.value = savedAnchors.map((anchor: any) => ({ id: String(anchor.id), latitude: Number(anchor.latitude), longitude: Number(anchor.longitude) }))
+    selectedAnchorId.value = anchors.value[0].id
+  }
+  if (route.road_source === 'local' || route.road_source === 'online') roadSource.value = route.road_source
+  if (typeof route.altitude_m === 'number') form.altitude_m = route.altitude_m
+  if (typeof route.speed_kmh === 'number') form.speed_kmh = route.speed_kmh
+  if (typeof route.clearance_m === 'number') form.clearance_m = route.clearance_m
+  if (task.aircraft?.drone_model === 'fly' || task.aircraft?.drone_model === 'm30' || task.aircraft?.drone_model === 'm3e') {
+    djiModel.value = task.aircraft.drone_model
+  }
+  const savedDeparture = new Date(`${task.departure_time}:00+08:00`)
+  const expiredLegacyDeparture = !Number.isNaN(savedDeparture.getTime()) && savedDeparture.getTime() <= Date.now()
+  departureAutoManaged.value = (task.departure_auto_managed ?? false)
+    || (expiredLegacyDeparture && task.status !== 'in_flight')
+  departureBeijing.value = departureAutoManaged.value ? currentDepartureBeijing() : task.departure_time
+  routeAssessment.value = task.weather as unknown as RouteAssessment | null
+}
+
+async function refreshMissionTaskList() {
+  taskListLoading.value = true
+  taskListError.value = ''
+  try {
+    savedTasks.value = await listMissionTasks()
+  } catch (cause) {
+    taskListError.value = cause instanceof Error ? cause.message : '读取已保存任务失败。'
+  } finally {
+    taskListLoading.value = false
+  }
+}
+
+function toggleTaskList() {
+  taskListOpen.value = !taskListOpen.value
+  if (taskListOpen.value) void refreshMissionTaskList()
+}
+
+function closeTaskList() { taskListOpen.value = false }
+
+function taskStatusText(status: MissionTaskSummary['status']) {
+  return ({ planning: '规划中', ready: '已准备', in_flight: '已开始', completed: '已完成' } as Record<string, string>)[status] ?? status
+}
+
+function taskDateText(value: string) {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+  })
+}
+
+async function selectSavedTask(taskId: string) {
+  if (taskBusy.value || activeTask.value?.task_id === taskId) { closeTaskList(); return }
+  taskBusy.value = true
+  taskListError.value = ''
+  cancelCalculation()
+  stopFlight()
+  try {
+    applyMissionTask(await fetchMissionTask(taskId))
+    selectModule('route')
+    await nextTick()
+    await refreshTaskFrames(taskId)
+    await calculate(false)
+    restoreTaskWaypointSettings()
+    closeTaskList()
+  } catch (cause) {
+    taskListError.value = cause instanceof Error ? cause.message : '载入已保存任务失败。'
+  } finally {
+    taskBusy.value = false
   }
 }
 
@@ -485,33 +550,6 @@ const taskRouteMatches = computed(() => {
 const taskStatusLabel = computed(() => activeTask.value?.status === 'in_flight' ? '飞行中'
   : activeTask.value?.status === 'ready' ? '已准备' : '规划中')
 const weatherCoordinates = computed(() => preview.value && previewKey.value === routeKey.value ? preview.value.geometry.coordinates : null)
-const templateSummaries = ref<RouteTemplateSummary[]>([])
-const activeTemplate = ref<RouteTemplateRecord | null>(null)
-const savedTemplateFingerprint = ref('')
-const templatesBusy = ref(false)
-const templatesError = ref('')
-const templatesStatus = ref('')
-const templatePanelBusy = computed(() => templatesBusy.value || loading.value || checkingPoint.value || locatingPoint.value !== null || kmzLoading.value)
-const hasSavableRoute = computed(() => allAnchorsReady.value && !!preview.value && previewKey.value === routeKey.value
-  && waypointSettings.value.length === preview.value.geometry.coordinates.length
-  && Number.isFinite(form.altitude_m) && form.altitude_m >= 0 && form.altitude_m <= 1000
-  && Number.isFinite(form.speed_kmh) && form.speed_kmh > 0 && form.speed_kmh <= 200
-  && Number.isFinite(form.clearance_m) && form.clearance_m >= 0 && form.clearance_m <= 20)
-const canSaveTemplate = computed(() => hasSavableRoute.value && !templatePanelBusy.value)
-const templateFingerprint = computed(() => JSON.stringify({
-  schema_version: 1,
-  plan_input: {
-    anchors: anchors.value.map((anchor) => ({ id: anchor.id, latitude: anchor.latitude, longitude: anchor.longitude })),
-    road_source: roadSource.value,
-    altitude_m: form.altitude_m,
-    speed_kmh: form.speed_kmh,
-    clearance_m: form.clearance_m,
-  },
-  route_snapshot: preview.value,
-  waypoint_settings: waypointSettings.value,
-  dji_model: djiModel.value,
-}))
-const templateDirty = computed(() => !!activeTemplate.value && templateFingerprint.value !== savedTemplateFingerprint.value)
 const generatedPointCount = computed(() => preview.value ? Math.max(0, preview.value.geometry.coordinates.length - (preview.value.anchor_indices?.length ?? anchors.value.length)) : 0)
 const batchAnchorRange = computed(() => {
   if (batchBoundaryIds.value.length !== 2) return null
@@ -1599,185 +1637,6 @@ function cancelCalculation() {
   loading.value = false
 }
 
-function templatePayloadSnapshot(): RouteTemplatePayload {
-  if (!hasSavableRoute.value) throw new Error('请先计算一条完整路线，再保存模板。')
-  return JSON.parse(templateFingerprint.value) as RouteTemplatePayload
-}
-
-function templateSummary(record: RouteTemplateRecord): RouteTemplateSummary {
-  const { payload, ...metadata } = record
-  const points = payload.plan_input.anchors
-  return { ...metadata, anchor_count: points.length,
-    start: { latitude: points[0].latitude, longitude: points[0].longitude },
-    end: { latitude: points[points.length - 1].latitude, longitude: points[points.length - 1].longitude } }
-}
-
-function upsertTemplate(record: RouteTemplateRecord) {
-  templateSummaries.value = [templateSummary(record), ...templateSummaries.value.filter((item) => item.id !== record.id)]
-    .sort((first, second) => second.updated_at.localeCompare(first.updated_at))
-}
-
-function templateErrorMessage(cause: unknown): string {
-  if (cause instanceof RouteTemplateApiError && cause.status === 422) return '模板数据未通过校验，请检查路线和逐点设置。'
-  if (cause instanceof RouteTemplateApiError && cause.status === 413) return '路线数据过大，无法保存为模板。'
-  if (cause instanceof TypeError) return '无法连接模板服务，请检查后端是否运行。'
-  return cause instanceof Error ? cause.message : '模板操作失败，请稍后重试。'
-}
-
-async function runTemplateOperation(action: () => Promise<void>) {
-  if (templatePanelBusy.value) return
-  templatesBusy.value = true
-  templatesError.value = ''
-  templatesStatus.value = ''
-  try { await action() }
-  catch (cause) { templatesError.value = templateErrorMessage(cause) }
-  finally { templatesBusy.value = false }
-}
-
-async function refreshRouteTemplates(silent = false) {
-  await runTemplateOperation(async () => {
-    templateSummaries.value = await listRouteTemplates()
-    if (activeTemplate.value && !templateSummaries.value.some((item) => item.id === activeTemplate.value?.id)) {
-      activeTemplate.value = null
-      savedTemplateFingerprint.value = ''
-    }
-    if (!silent) templatesStatus.value = '模板列表已刷新。'
-  })
-}
-
-async function saveRouteTemplateAsNew(name: string) {
-  if (!canSaveTemplate.value) return
-  const payload = templatePayloadSnapshot()
-  const fingerprint = templateFingerprint.value
-  await runTemplateOperation(async () => {
-    const record = await createRouteTemplate({ name, payload })
-    activeTemplate.value = record
-    savedTemplateFingerprint.value = fingerprint
-    upsertTemplate(record)
-    templatesStatus.value = `已保存模板“${record.name}”。`
-  })
-}
-
-async function saveCurrentRouteTemplate() {
-  if (!canSaveTemplate.value || !activeTemplate.value) return
-  const current = activeTemplate.value
-  const payload = templatePayloadSnapshot()
-  const fingerprint = templateFingerprint.value
-  await runTemplateOperation(async () => {
-    const record = await updateRouteTemplate(current.id, { name: current.name, description: current.description,
-      payload, expected_version: current.version })
-    activeTemplate.value = record
-    savedTemplateFingerprint.value = fingerprint
-    upsertTemplate(record)
-    templatesStatus.value = `已更新模板“${record.name}”。`
-  })
-}
-
-async function loadRouteTemplate(id: string) {
-  await runTemplateOperation(async () => {
-    const record = await getRouteTemplate(id)
-    const payload = record.payload
-    if (payload.schema_version !== 1 || payload.plan_input.anchors.length < 2
-      || payload.waypoint_settings.length !== payload.route_snapshot.geometry.coordinates.length) {
-      throw new Error('模板版本或路线数据无法识别。')
-    }
-    if ((templateDirty.value || (!activeTemplate.value && !!preview.value))
-      && !window.confirm('当前路线尚未保存，载入模板会覆盖当前编辑内容。确定载入吗？')) {
-      templatesStatus.value = '已取消载入。'
-      return
-    }
-
-    const restoredAnchors = payload.plan_input.anchors.map((point) => ({ ...point }))
-    const restoredRoute = JSON.parse(JSON.stringify(payload.route_snapshot)) as Preview
-    const restoredSettings = JSON.parse(JSON.stringify(payload.waypoint_settings)) as WaypointSetting[]
-    cancelCalculation()
-    stopFlight()
-    cancelCameraPreviewDrag()
-    finishMapCameraDrag()
-    clearBatchRange()
-    selectedWaypointIndex.value = null
-    mapEditMode.value = 'route'
-    preview.value = null
-    settingsRoute.value = null
-    waypointSettings.value = []
-    anchors.value = restoredAnchors
-    selectedAnchorId.value = restoredAnchors[0].id
-    nextAnchorNumber = Math.max(nextAnchorNumber,
-      ...restoredAnchors.map((point) => Number(/^anchor-(\d+)$/.exec(point.id)?.[1] ?? 0) + 1))
-    roadSource.value = payload.plan_input.road_source
-    form.altitude_m = payload.plan_input.altitude_m
-    form.speed_kmh = payload.plan_input.speed_kmh
-    form.clearance_m = payload.plan_input.clearance_m
-    djiModel.value = payload.dji_model
-    await nextTick()
-    previewKey.value = routeKey.value
-    settingsRoute.value = restoredRoute
-    waypointSettings.value = restoredSettings
-    preview.value = restoredRoute
-    activeTemplate.value = record
-    savedTemplateFingerprint.value = templateFingerprint.value
-    error.value = ''
-    kmzError.value = ''
-    locationFeedback.value = null
-    placeSelectionFeedback.value = null
-    weatherJobId.value = null
-    weatherState.value = { status: 'idle', message: '等待天气预测。' }
-    routeAssessment.value = null
-    routePhase.value = { pending: false, error: '' }
-    windowPhase.value = 'waiting'
-    comparisonPhase.value = 'waiting'
-    const departure = currentDepartureBeijing()
-    latestDepartureBeijing.value = departure
-    departureBeijing.value = departure
-    departureAutoManaged.value = true
-    weatherRefreshVersion.value += 1
-    workspacePanel.value = 'map'
-    drawCesiumRoute(true)
-    templatesStatus.value = `已载入模板“${record.name}”，天气正在重新获取。`
-  })
-}
-
-async function renameRouteTemplate(id: string, name: string) {
-  await runTemplateOperation(async () => {
-    const source = activeTemplate.value?.id === id ? activeTemplate.value : await getRouteTemplate(id)
-    const record = await updateRouteTemplate(id, { name, description: source.description,
-      payload: source.payload, expected_version: source.version })
-    if (activeTemplate.value?.id === id) activeTemplate.value = record
-    upsertTemplate(record)
-    templatesStatus.value = `已将模板改名为“${record.name}”。`
-  })
-}
-
-async function duplicateRouteTemplate(id: string) {
-  await runTemplateOperation(async () => {
-    const source = await getRouteTemplate(id)
-    const usedNames = new Set(templateSummaries.value.map((item) => item.name.toLocaleLowerCase()))
-    const copyName = (copy: number) => {
-      const suffix = copy === 1 ? ' 副本' : ` 副本 ${copy}`
-      return `${source.name.slice(0, 80 - suffix.length)}${suffix}`
-    }
-    let copy = 1
-    while (usedNames.has(copyName(copy).toLocaleLowerCase())) copy += 1
-    const name = copyName(copy)
-    const record = await createRouteTemplate({ name, description: source.description, payload: source.payload })
-    upsertTemplate(record)
-    templatesStatus.value = `已复制模板“${record.name}”。`
-  })
-}
-
-async function removeRouteTemplate(id: string) {
-  await runTemplateOperation(async () => {
-    const name = templateSummaries.value.find((item) => item.id === id)?.name ?? '所选模板'
-    await deleteRouteTemplate(id)
-    templateSummaries.value = templateSummaries.value.filter((item) => item.id !== id)
-    if (activeTemplate.value?.id === id) {
-      activeTemplate.value = null
-      savedTemplateFingerprint.value = ''
-    }
-    templatesStatus.value = `已删除模板“${name}”。当前编辑的路线仍可另存为新模板。`
-  })
-}
-
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(Math.max(value, minimum), maximum)
 }
@@ -2357,7 +2216,7 @@ onMounted(() => {
     await calculate()
     restoreTaskWaypointSettings()
   })
-  void refreshRouteTemplates(true)
+  void refreshMissionTaskList()
   if ((window as any).Cesium) {
     initMap()
   }
@@ -2427,11 +2286,35 @@ onBeforeUnmount(() => {
             <span class="module-nav-icon"><span class="svg-icon icon-layers" aria-hidden="true"></span></span><span>4. 任务视频 / 分析</span>
           </button>
         </nav>
-        <div v-if="activeTask" class="module-task-indicator" :class="{ 'is-stale': !taskRouteMatches }">
-          <strong>{{ taskRouteMatches ? taskStatusLabel : '路线已变化' }}</strong>
-          <small>任务 {{ activeTask.task_id.slice(-8) }}</small>
-        </div>
+        <button type="button" class="module-task-indicator" :class="{ 'is-stale': activeTask && !taskRouteMatches }" :aria-expanded="taskListOpen" @click="toggleTaskList">
+          <strong>任务列表</strong>
+          <small>{{ activeTask ? `${taskStatusLabel} · ${activeTask.task_id.slice(-6)}` : `${savedTasks.length} 个已保存` }}</small>
+        </button>
       </aside>
+
+      <Teleport to="body">
+        <div v-if="taskListOpen" class="task-list-backdrop" @click.self="closeTaskList">
+          <section class="task-list-dialog" role="dialog" aria-modal="true" aria-labelledby="saved-task-list-title" tabindex="-1" @keydown.esc.stop.prevent="closeTaskList">
+            <header class="task-list-heading">
+              <div><h2 id="saved-task-list-title">已保存的任务</h2><small>{{ savedTasks.length }} 个任务 · 选择一个继续</small></div>
+              <div><button type="button" :disabled="taskListLoading" @click="refreshMissionTaskList">{{ taskListLoading ? '刷新中…' : '刷新列表' }}</button><button type="button" aria-label="关闭任务列表" @click="closeTaskList">关闭</button></div>
+            </header>
+            <p v-if="taskListError" class="task-list-feedback is-error" role="alert">{{ taskListError }}</p>
+            <p v-else-if="taskListLoading && !savedTasks.length" class="task-list-feedback" role="status">正在读取已保存的任务…</p>
+            <p v-else-if="!savedTasks.length" class="task-list-feedback">还没有保存的任务。先规划航线，再点击“设为当前任务”。</p>
+            <ul v-else class="saved-task-list">
+              <li v-for="task in savedTasks" :key="task.task_id">
+                <button type="button" class="saved-task-entry" :class="{ 'is-current': activeTask?.task_id === task.task_id }" :disabled="taskBusy" @click="selectSavedTask(task.task_id)">
+                  <span class="saved-task-entry-title"><strong>{{ task.route_summary }}</strong><b>{{ activeTask?.task_id === task.task_id ? '当前' : taskStatusText(task.status) }}</b></span>
+                  <small>{{ taskDateText(task.created_at) }} · {{ task.distance_km === null ? '距离待算' : `${task.distance_km.toFixed(2)} km` }}</small>
+                  <small v-if="task.max_wind_m_s !== null || task.max_rain_6h_mm !== null">天气：{{ task.max_wind_m_s === null ? '风缺测' : `最大风 ${task.max_wind_m_s.toFixed(1)} m/s` }} · {{ task.max_rain_6h_mm === null ? '雨缺测' : `六小时雨 ${task.max_rain_6h_mm.toFixed(1)} mm` }}</small>
+                  <small>机型 {{ task.drone_model ?? '未选' }} · 关键帧 {{ task.frame_count }} 张{{ task.video_survey_id ? ' · 已导入视频/SRT' : '' }}</small>
+                </button>
+              </li>
+            </ul>
+          </section>
+        </div>
+      </Teleport>
 
       <aside id="mission-sidebar" class="sidebar module-panel" :class="[{ 'panel-active': workspacePanel === 'settings', 'module-active': activeModule === 'route' || activeModule === 'photos' }, `module-mode-${activeModule}`]" aria-label="航线设置">
         <div v-if="activeModule === 'route'" class="section-heading"><span class="eyebrow"><span class="svg-icon icon-route" aria-hidden="true"></span>第 1 步 · 选定航线</span><h1>规划本次飞行</h1><PlaceSearch :disabled="loading || checkingPoint" :targets="anchorChoices" :selection-feedback="placeSelectionFeedback" @choose-point="chooseSearchedPoint" @clear-selection-feedback="placeSelectionFeedback = null" /></div>
@@ -2445,11 +2328,6 @@ onBeforeUnmount(() => {
         <form class="route-form" @submit.prevent="calculate" @invalid.capture="revealInvalidSetting">
           <nav v-if="activeModule === 'route'" class="settings-pages" aria-label="航线设置分组"><button type="button" :aria-pressed="settingsPage === 'points'" @click="settingsPage = 'points'">主点与坐标</button><button type="button" :aria-pressed="settingsPage === 'mission'" @click="settingsPage = 'mission'">飞行参数</button></nav>
           <div class="settings-fields">
-          <RouteTemplatePanel v-if="activeModule === 'route'" :templates="templateSummaries" :active-id="activeTemplate?.id ?? null" :dirty="templateDirty"
-            :busy="templatePanelBusy" :can-save="canSaveTemplate" :error="templatesError" :status="templatesStatus"
-            @save-new="saveRouteTemplateAsNew" @save-current="saveCurrentRouteTemplate" @load="loadRouteTemplate"
-            @rename="renameRouteTemplate" @duplicate="duplicateRouteTemplate" @remove="removeRouteTemplate"
-            @refresh="refreshRouteTemplates()" />
           <div class="settings-group" data-settings-page="points" :class="{ 'settings-active': settingsPage === 'points' }">
           <p class="batch-range-guide">{{ batchRouteAnchorIndices ? batchBoundaryIds.length === 1 ? '再勾选一个主点，确定批量视角区间。' : '勾选两个主点，统一设置两端及中间航点的视角。' : '计算道路路线后可勾选两个主点，批量设置视角。' }}</p>
           <div v-for="(anchor, index) in anchors" :key="anchor.id" class="major-point-card" :class="{ 'is-selected': selectedAnchorId === anchor.id, 'is-batch-boundary': batchBoundaryIds.includes(anchor.id), 'is-batch-range': batchAnchorRange && index >= batchAnchorRange.first && index <= batchAnchorRange.last }">

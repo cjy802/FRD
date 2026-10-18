@@ -17,6 +17,22 @@ export type MissionTask = {
   analysis_targets: Record<string, unknown>[]
 }
 
+export type MissionTaskSummary = {
+  task_id: string
+  created_at: string
+  updated_at: string
+  status: MissionTask['status']
+  route_summary: string
+  distance_km: number | null
+  departure_time: string | null
+  weather_level: string | null
+  max_wind_m_s: number | null
+  max_rain_6h_mm: number | null
+  drone_model: string | null
+  video_survey_id: string | null
+  frame_count: number
+}
+
 export class MissionTaskError extends Error {
   constructor(message: string, readonly status: number) {
     super(message)
@@ -52,6 +68,11 @@ export function createMissionTask(route: Record<string, unknown>, departureTime:
 
 export function fetchMissionTask(taskId: string): Promise<MissionTask> {
   return request<MissionTask>(`/api/tasks/${encodeURIComponent(taskId)}`)
+}
+
+export async function listMissionTasks(): Promise<MissionTaskSummary[]> {
+  const response = await request<{ tasks: MissionTaskSummary[] }>('/api/tasks')
+  return response.tasks
 }
 
 export function updateMissionTask(taskId: string, changes: Partial<Pick<MissionTask,

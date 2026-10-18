@@ -63,6 +63,53 @@ class TaskStore:
     def get(self, task_id: str) -> dict[str, Any]:
         return json.loads((self._directory(task_id) / "task.json").read_text(encoding="utf-8"))
 
+    def list_summaries(self) -> list[dict[str, Any]]:
+        if not self.storage_dir.is_dir():
+            return []
+        summaries = []
+        for directory in self.storage_dir.iterdir():
+            if not directory.is_dir() or not _TASK_ID.fullmatch(directory.name):
+                continue
+            try:
+                record = json.loads((directory / "task.json").read_text(encoding="utf-8"))
+                route = record.get("route") or {}
+                anchors = route.get("anchors") or []
+                road_names = list(dict.fromkeys(name for name in route.get("road_names", []) if isinstance(name, str) and name.strip()))
+                if road_names:
+                    route_summary = " → ".join(road_names[:3])
+                    if len(road_names) > 3:
+                        route_summary += " …"
+                elif len(anchors) >= 2:
+                    start, end = anchors[0], anchors[-1]
+                    route_summary = (f"{float(start['latitude']):.4f}, {float(start['longitude']):.4f} → "
+                                     f"{float(end['latitude']):.4f}, {float(end['longitude']):.4f}")
+                else:
+                    route_summary = "未命名航线"
+                weather = record.get("weather") or {}
+                risk = weather.get("weather_risk") or {}
+                weather_summary = risk.get("summary") or {}
+                frames_path = directory / "frames" / "frames.json"
+                frames = json.loads(frames_path.read_text(encoding="utf-8")) if frames_path.is_file() else []
+                summaries.append({
+                    "task_id": record["task_id"],
+                    "created_at": record.get("created_at"),
+                    "updated_at": record.get("updated_at"),
+                    "status": record.get("status", "planning"),
+                    "route_summary": route_summary,
+                    "distance_km": route.get("distance_km"),
+                    "departure_time": record.get("departure_time"),
+                    "weather_level": risk.get("level"),
+                    "max_wind_m_s": weather_summary.get("max_wind_m_s"),
+                    "max_rain_6h_mm": weather_summary.get("max_rain_6h_mm"),
+                    "drone_model": (record.get("aircraft") or {}).get("drone_model"),
+                    "video_survey_id": record.get("video_survey_id"),
+                    "frame_count": len(frames),
+                })
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+        summaries.sort(key=lambda item: (item.get("updated_at") or item.get("created_at") or ""), reverse=True)
+        return summaries
+
     def update(self, task_id: str, changes: dict[str, Any]) -> dict[str, Any]:
         directory = self._directory(task_id)
         record = json.loads((directory / "task.json").read_text(encoding="utf-8"))
