@@ -30,10 +30,18 @@ type ModuleKey = 'route' | 'photos' | 'status' | 'dji'
 const activeModule = ref<ModuleKey>('route')
 
 function selectModule(module: ModuleKey) {
-  if (module !== 'route' && !taskRouteMatches.value) {
-    taskError.value = activeTask.value ? '路线参数已变化，请创建新任务。' : '请先选定并生成航线，再创建任务。'
+  const currentRouteReady = Boolean(preview.value && previewKey.value === routeKey.value)
+  if ((module === 'status' || module === 'dji') && !currentRouteReady) {
+    taskError.value = '请先选定航点并生成当前路线，再继续后续步骤。'
     activeModule.value = 'route'
     workspacePanel.value = 'settings'
+    settingsPage.value = 'points'
+    return
+  }
+  if (module === 'photos' && !taskRouteMatches.value) {
+    taskError.value = '请先在“命名 / 导出”阶段创建任务，再导入视频和分析照片。'
+    activeModule.value = currentRouteReady ? 'dji' : 'route'
+    workspacePanel.value = currentRouteReady ? 'overview' : 'settings'
     settingsPage.value = 'points'
     return
   }
@@ -44,6 +52,7 @@ function selectModule(module: ModuleKey) {
   } else {
     workspacePanel.value = 'overview'
   }
+  if (module === 'dji' && !taskRouteMatches.value) void openCreateTaskDialog()
 }
 type LandingCheck = {
   state: 'mapped_building' | 'road_nearby' | 'no_road'
@@ -159,6 +168,9 @@ const djiModel = ref<'fly' | 'm30' | 'm3e'>('fly')
 const activeTask = ref<MissionTask | null>(null)
 const taskBusy = ref(false)
 const taskError = ref('')
+const createTaskDialogOpen = ref(false)
+const createTaskName = ref('')
+const createTaskNameInput = ref<HTMLInputElement | null>(null)
 const taskFrames = ref<TaskVideoFrame[]>([])
 const analysisMapTargets = ref<VideoCaptureTarget[]>([])
 const savedTasks = ref<MissionTaskSummary[]>([])
@@ -205,6 +217,7 @@ const rc2JobRunning = computed(() => rc2Submitting.value || rc2Job.value?.status
 const rc2JobMatchesCurrent = computed(() => !!rc2Job.value && !!preview.value && djiModel.value === 'fly'
   && rc2JobRequestFingerprint.value === JSON.stringify(djiKmzRequestBody()))
 const rc2CanImport = computed(() => !!preview.value && djiModel.value === 'fly' && !!rc2Status.value?.available
+  && !!activeTask.value && taskRouteMatches.value
   && !rc2Status.value?.busy && rc2Targets.value.some((target) => target.name === rc2TargetName.value)
   && !rc2JobRunning.value && !rc2Loading.value && !kmzLoading.value && !loading.value)
 let rc2JobPollTimer: ReturnType<typeof setTimeout> | null = null
@@ -245,20 +258,48 @@ function setVideoTelemetryPosition(position: VideoTelemetryPoint | null) { video
 function setVideoCaptureTargets(targets: VideoCaptureTarget[]) { videoCaptureTargets.value = targets }
 const mapCaptureTargets = computed(() => [...videoCaptureTargets.value, ...analysisMapTargets.value])
 
+async function openCreateTaskDialog() {
+  if (!canFinalizeTask.value) {
+    taskError.value = '请等待当前路线计算完成后再创建任务。'
+    return
+  }
+  taskError.value = ''
+  createTaskName.value = ''
+  createTaskDialogOpen.value = true
+  await nextTick()
+  createTaskNameInput.value?.focus()
+}
+
+function closeCreateTaskDialog() {
+  if (taskBusy.value) return
+  createTaskDialogOpen.value = false
+}
+
 async function createCurrentTask() {
-  if (!preview.value || previewKey.value !== routeKey.value || taskBusy.value || loading.value || checkingPoint.value || locatingPoint.value !== null) return
+  const name = createTaskName.value.trim()
+  if (!name) {
+    taskError.value = '请填写任务名称。'
+    createTaskNameInput.value?.focus()
+    return
+  }
+  if (!canFinalizeTask.value) {
+    taskError.value = '路线已变化或仍在计算，请返回选定航线并等待计算完成。'
+    return
+  }
   taskBusy.value = true
   taskError.value = ''
   try {
-    const created = await createMissionTask(taskRouteSnapshot.value, departureBeijing.value, departureAutoManaged.value)
-    activeTask.value = await updateMissionTask(created.task_id, { aircraft: {
-      drone_model: djiModel.value, waypoint_settings: waypointSettings.value,
-    } })
+    const created = await createMissionTask(taskRouteSnapshot.value, departureBeijing.value, departureAutoManaged.value, {
+      name,
+      weather: routeAssessment.value as unknown as Record<string, unknown> | null,
+      aircraft: { drone_model: djiModel.value, waypoint_settings: waypointSettings.value },
+    })
+    activeTask.value = created
     localStorage.setItem(ACTIVE_TASK_STORAGE_KEY, created.task_id)
     taskFrames.value = []
     analysisMapTargets.value = []
+    createTaskDialogOpen.value = false
     void refreshMissionTaskList()
-    selectModule('status')
   } catch (cause) {
     taskError.value = cause instanceof Error ? cause.message : '创建当前任务失败。'
   } finally {
@@ -571,6 +612,7 @@ const taskRouteSnapshot = computed(() => ({
   waypoint_settings: waypointSettings.value,
 }))
 const taskRouteMatches = computed(() => {
+  if (!preview.value || previewKey.value !== routeKey.value) return false
   const storedFingerprint = activeTask.value?.route.fingerprint
   if (typeof storedFingerprint !== 'string') return false
   try {
@@ -581,7 +623,7 @@ const taskRouteMatches = computed(() => {
     return false
   }
 })
-const canCreateTask = computed(() => Boolean(preview.value
+const canFinalizeTask = computed(() => Boolean(preview.value
   && previewKey.value === routeKey.value && !taskBusy.value && !loading.value && !checkingPoint.value && locatingPoint.value === null))
 const taskStatusLabel = computed(() => activeTask.value?.status === 'in_flight' ? '飞行中'
   : activeTask.value?.status === 'ready' ? '已准备' : '规划中')
@@ -1482,13 +1524,11 @@ function chooseRoad(route: Preview) {
 }
 
 async function exportDjiKmz() {
-  if (!preview.value || kmzLoading.value) return
+  if (!preview.value || !activeTask.value || !taskRouteMatches.value || kmzLoading.value) return
   kmzLoading.value = true
   kmzError.value = ''
   try {
-    const exportUrl = activeTask.value && taskRouteMatches.value
-      ? `/api/routes/export-kmz?task_id=${encodeURIComponent(activeTask.value.task_id)}`
-      : '/api/routes/export-kmz'
+    const exportUrl = `/api/routes/export-kmz?task_id=${encodeURIComponent(activeTask.value.task_id)}`
     const response = await fetch(exportUrl, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(djiKmzRequestBody()),
@@ -2332,7 +2372,7 @@ onBeforeUnmount(() => {
             <span class="module-nav-icon"><span class="svg-icon icon-square-check" aria-hidden="true"></span></span><span>2. 查看天气</span>
           </button>
           <button type="button" class="module-nav-item" :class="{ active: activeModule === 'dji' }" :aria-current="activeModule === 'dji' ? 'page' : undefined" @click="selectModule('dji')">
-            <span class="module-nav-icon"><span class="svg-icon icon-download" aria-hidden="true"></span></span><span>3. 机型 / 飞行</span>
+            <span class="module-nav-icon"><span class="svg-icon icon-download" aria-hidden="true"></span></span><span>3. 命名 / 导出</span>
           </button>
           <button type="button" class="module-nav-item" :class="{ active: activeModule === 'photos' }" :aria-current="activeModule === 'photos' ? 'page' : undefined" @click="selectModule('photos')">
             <span class="module-nav-icon"><span class="svg-icon icon-layers" aria-hidden="true"></span></span><span>4. 任务视频 / 分析</span>
@@ -2340,7 +2380,7 @@ onBeforeUnmount(() => {
         </nav>
         <button type="button" class="module-task-indicator" :class="{ 'is-stale': activeTask && !taskRouteMatches }" :aria-expanded="taskListOpen" @click="toggleTaskList">
           <strong>任务列表</strong>
-          <small>{{ activeTask ? `${taskStatusLabel} · ${activeTask.task_id.slice(-6)}` : `${savedTasks.length} 个已保存` }}</small>
+          <small>{{ activeTask ? `${activeTask.name || taskStatusLabel} · ${activeTask.task_id.slice(-6)}` : `${savedTasks.length} 个已保存` }}</small>
         </button>
       </aside>
 
@@ -2353,18 +2393,19 @@ onBeforeUnmount(() => {
             </header>
             <p v-if="taskListError" class="task-list-feedback is-error" role="alert">{{ taskListError }}</p>
             <p v-else-if="taskListLoading && !savedTasks.length" class="task-list-feedback" role="status">正在读取已保存的任务…</p>
-            <p v-else-if="!savedTasks.length" class="task-list-feedback">还没有保存的任务。先选定航线，再点击“创建任务”。</p>
+            <p v-else-if="!savedTasks.length" class="task-list-feedback">还没有保存的任务。完成路线和天气检查后，到“命名 / 导出”阶段创建任务。</p>
             <ul v-else class="saved-task-list">
               <li v-for="task in savedTasks" :key="task.task_id">
                 <div class="saved-task-row">
                   <button type="button" class="saved-task-entry" :class="{ 'is-current': activeTask?.task_id === task.task_id }" :disabled="taskBusy || !!deletingTaskId" @click="selectSavedTask(task.task_id)">
-                    <span class="saved-task-entry-title"><strong>{{ task.route_summary }}</strong><b>{{ activeTask?.task_id === task.task_id ? '当前' : taskStatusText(task.status) }}</b></span>
+                    <span class="saved-task-entry-title"><strong>{{ task.name || task.route_summary }}</strong><b>{{ activeTask?.task_id === task.task_id ? '当前' : taskStatusText(task.status) }}</b></span>
+                    <small>{{ task.route_summary }}</small>
                     <small>{{ taskDateText(task.created_at) }} · {{ task.distance_km === null ? '距离待算' : `${task.distance_km.toFixed(2)} km` }}</small>
                     <small v-if="task.max_wind_m_s !== null || task.max_rain_6h_mm !== null">天气：{{ task.max_wind_m_s === null ? '风缺测' : `最大风 ${task.max_wind_m_s.toFixed(1)} m/s` }} · {{ task.max_rain_6h_mm === null ? '雨缺测' : `六小时雨 ${task.max_rain_6h_mm.toFixed(1)} mm` }}</small>
                     <small>机型 {{ task.drone_model ?? '未选' }} · 关键帧 {{ task.frame_count }} 张{{ task.video_survey_id ? ' · 已导入视频/SRT' : '' }}</small>
                   </button>
-                  <button type="button" class="saved-task-delete" :disabled="taskBusy || !!deletingTaskId" :aria-label="`删除任务：${task.route_summary}`" @click="requestDeleteMissionTask(task.task_id)">{{ deletingTaskId === task.task_id ? '删除中…' : pendingDeleteTaskId === task.task_id ? '取消' : '删除' }}</button>
-                  <div v-if="pendingDeleteTaskId === task.task_id" class="saved-task-confirm" role="group" :aria-label="`确认删除任务：${task.route_summary}`">
+                  <button type="button" class="saved-task-delete" :disabled="taskBusy || !!deletingTaskId" :aria-label="`删除任务：${task.name || task.route_summary}`" @click="requestDeleteMissionTask(task.task_id)">{{ deletingTaskId === task.task_id ? '删除中…' : pendingDeleteTaskId === task.task_id ? '取消' : '删除' }}</button>
+                  <div v-if="pendingDeleteTaskId === task.task_id" class="saved-task-confirm" role="group" :aria-label="`确认删除任务：${task.name || task.route_summary}`">
                     <span>将永久删除该任务及其视频、关键帧、分析结果和导出文件。</span>
                     <button type="button" class="saved-task-confirm-button" :disabled="!!deletingTaskId" @click="deleteSavedMissionTask(task)">{{ deletingTaskId === task.task_id ? '正在删除…' : '确认删除' }}</button>
                   </div>
@@ -2375,10 +2416,31 @@ onBeforeUnmount(() => {
         </div>
       </Teleport>
 
+      <Teleport to="body">
+        <div v-if="createTaskDialogOpen" class="task-list-backdrop" @click.self="closeCreateTaskDialog">
+          <section class="task-create-dialog task-list-dialog" role="dialog" aria-modal="true" aria-labelledby="create-task-title" @keydown.esc.stop.prevent="closeCreateTaskDialog">
+            <header class="task-list-heading">
+              <div><h2 id="create-task-title">命名并创建任务</h2><small>任务确认后会保存到任务列表。</small></div>
+              <button type="button" :disabled="taskBusy" aria-label="关闭创建任务窗口" @click="closeCreateTaskDialog">关闭</button>
+            </header>
+            <form class="task-create-form" @submit.prevent="createCurrentTask">
+              <label for="create-task-name">当前任务名称</label>
+              <input id="create-task-name" ref="createTaskNameInput" v-model="createTaskName" type="text" maxlength="80" required placeholder="例如：下午道路巡检" />
+              <small>路线、出发时间、已生成的天气结果和当前机型设置会一并保存。</small>
+              <p v-if="taskError" class="form-error" role="alert">{{ taskError }}</p>
+              <div class="task-create-actions">
+                <button type="button" :disabled="taskBusy" @click="closeCreateTaskDialog">取消</button>
+                <button type="submit" class="task-create-confirm" :disabled="taskBusy || !canFinalizeTask">{{ taskBusy ? '正在创建…' : '确认创建' }}</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      </Teleport>
+
       <aside id="mission-sidebar" class="sidebar module-panel" :class="[{ 'panel-active': workspacePanel === 'settings', 'module-active': activeModule === 'route' || activeModule === 'photos' }, `module-mode-${activeModule}`]" aria-label="航线设置">
         <div v-if="activeModule === 'route'" class="section-heading"><span class="eyebrow"><span class="svg-icon icon-route" aria-hidden="true"></span>第 1 步 · 选定航线</span><h1>规划本次飞行</h1><PlaceSearch :disabled="loading || checkingPoint" :targets="anchorChoices" :selection-feedback="placeSelectionFeedback" @choose-point="chooseSearchedPoint" @clear-selection-feedback="placeSelectionFeedback = null" /></div>
 
-        <form class="route-form" @submit.prevent="createCurrentTask" @invalid.capture="revealInvalidSetting">
+        <form class="route-form" @submit.prevent @invalid.capture="revealInvalidSetting">
           <nav v-if="activeModule === 'route'" class="settings-pages" aria-label="航线设置分组"><button type="button" :aria-pressed="settingsPage === 'points'" @click="settingsPage = 'points'">主点与坐标</button><button type="button" :aria-pressed="settingsPage === 'mission'" @click="settingsPage = 'mission'">飞行参数</button></nav>
           <div class="settings-fields">
           <div class="settings-group" data-settings-page="points" :class="{ 'settings-active': settingsPage === 'points' }">
@@ -2424,8 +2486,8 @@ onBeforeUnmount(() => {
           <PhotoAnalysisPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frames="taskFrames" @remove-frame="removeTaskFrame" @analysis-complete="recordTaskAnalysis" />
           </div>
           </div>
-            <fluent-button v-if="activeModule === 'route'" class="primary-button" appearance="primary" type="submit" :disabled="!canCreateTask"><span class="svg-icon" :class="taskBusy ? 'icon-refresh is-spinning' : 'icon-square-check'" aria-hidden="true"></span><span>{{ taskBusy ? '创建中…' : '创建任务' }}</span></fluent-button>
-           <p v-if="activeModule === 'route'" class="form-scope-note task-create-guide">路线计算完成且参数未变化、没有正在进行的计算、定位或创建操作时可创建。创建后新任务成为当前任务，已有任务仍保留在任务列表。</p>
+            <fluent-button v-if="activeModule === 'route'" class="primary-button" appearance="primary" type="button" :disabled="!weatherCoordinates || loading || checkingPoint || locatingPoint !== null" @click="selectModule('status')"><span class="svg-icon icon-cloud-rain" aria-hidden="true"></span><span>继续查看天气</span></fluent-button>
+           <p v-if="activeModule === 'route'" class="form-scope-note task-create-guide">路线和天气阶段可以继续返回修改；完成后到“命名 / 导出”阶段创建任务。</p>
            <p v-if="taskError && activeModule === 'route'" class="form-error" role="alert">{{ taskError }}</p>
            <p v-if="error && activeModule === 'route' && !locationFeedback?.error && !placeSelectionFeedback?.error" class="form-error" role="alert">{{ error }}</p>
         </form>
@@ -2466,8 +2528,14 @@ onBeforeUnmount(() => {
       <div class="column-resizer column-resizer-right" role="separator" aria-orientation="vertical" aria-label="调整任务概览栏宽度" aria-controls="route-map mission-insights" :aria-valuenow="Math.round(insightsWidth)" :aria-valuemin="minimumWidth('right')" :aria-valuemax="Math.round(widthLimit('right'))" tabindex="0" title="拖动调整任务概览栏宽度，双击恢复默认" :style="{ right: `${insightsWidth}px` }" @pointerdown="startColumnResize('right', $event)" @dblclick="resetColumnWidths" @keydown="resizeColumnByKeyboard('right', $event)"></div>
 
       <aside id="mission-insights" class="insights module-panel" :class="[{ 'panel-active': workspacePanel === 'overview', 'module-active': activeModule === 'status' || activeModule === 'dji' }, `module-mode-${activeModule}`]" aria-label="任务概览" tabindex="0" @change="markWaypointEdited">
-        <div v-if="activeModule === 'status'" class="insights-header"><span class="eyebrow"><span class="svg-icon icon-square-check" aria-hidden="true"></span>第 2 步 · 查看天气</span><h2>检查任务沿线天气</h2><p>天气结果会保存到当前任务记录。</p></div>
-        <div v-if="activeModule === 'dji'" class="insights-header"><span class="eyebrow"><span class="svg-icon icon-download" aria-hidden="true"></span>第 3 步 · 机型模板与飞行</span><h2>导出本次任务航线</h2><p>导出文件归档到任务目录；准备实飞后再手动标记开始。</p></div>
+        <div v-if="activeModule === 'status'" class="insights-header"><span class="eyebrow"><span class="svg-icon icon-square-check" aria-hidden="true"></span>第 2 步 · 查看天气</span><h2>检查当前航线天气</h2><p>天气阶段的结果会在最后创建任务时一并保存。</p></div>
+        <div v-if="activeModule === 'dji'" class="insights-header"><span class="eyebrow"><span class="svg-icon icon-download" aria-hidden="true"></span>第 3 步 · 命名与机型导出</span><h2>导出本次任务航线</h2><p>先命名并创建任务，再导出归档到任务目录的航线文件。</p></div>
+        <p v-if="taskError && (activeModule === 'status' || activeModule === 'dji')" class="form-error" role="alert">{{ taskError }}</p>
+        <section v-if="activeModule === 'dji'" class="task-finalize-card" aria-label="创建本次任务">
+          <div><strong>{{ activeTask && taskRouteMatches ? '当前路线已关联任务' : '确认并保存本次任务' }}</strong><p>{{ activeTask && taskRouteMatches ? `当前任务：${activeTask.name || activeTask.task_id}` : '路线和天气可以先反复调整，确认后再将本次方案保存到任务列表。' }}</p></div>
+          <button type="button" class="weather-refresh" :disabled="!canFinalizeTask" @click="openCreateTaskDialog">{{ activeTask && taskRouteMatches ? '新建任务' : '命名并创建任务' }}</button>
+          <small>创建时会保存当前路线、出发时间、已生成的天气结果和机型设置；原有任务会保留在列表中。</small>
+        </section>
         <section v-if="activeModule === 'status'" class="overview-hero" aria-label="天气结论概览">
         <div class="mission-facts"><div><span class="fact-label"><span class="svg-icon icon-route" aria-hidden="true"></span>路线长度</span><strong>{{ distance }}</strong></div><div><span class="fact-label"><span class="svg-icon icon-refresh" aria-hidden="true"></span>预计用时</span><strong>{{ elapsed }}</strong></div><div><span class="fact-label"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>计划出发</span><strong>{{ departureBeijing.replace('T', ' ') }}</strong><small>北京时间</small></div></div>
          <div class="decision" :class="decisionTone" aria-live="polite"><span class="decision-kicker"><span class="svg-icon icon-alert" aria-hidden="true"></span>气象初筛</span><strong>{{ decisionTitle }}</strong><p>{{ decisionDescription }}</p><small>这里只反映已覆盖的天气指标，不等于放飞许可。</small><details v-if="routeAssessment"><summary><span class="svg-icon icon-eye" aria-hidden="true"></span>查看判断依据</summary><div v-for="check in weatherChecks" :key="check.key" class="decision-check"><b>{{ check.label }}</b><span :class="check.state === 'ready' ? 'check-ready' : 'check-pending'">{{ check.state === 'ready' ? '资料已就绪' : check.state === 'no_trigger' ? '未触发当前阈值' : check.state === 'elevated' ? '较强提示' : check.state === 'attention' ? '需要留意' : '资料待补齐' }}</span><small>{{ check.detail }}</small></div></details></div>
@@ -2497,7 +2565,7 @@ onBeforeUnmount(() => {
         </details>
           <details v-if="activeModule === 'status'" class="overview-group"><summary><span><span class="svg-icon icon-route" aria-hidden="true"></span>调整出发时间或路线</span><small>可选参考，不会自动替换当前设置</small></summary><div class="overview-group-body overview-planning"><WeatherWindowsPanel :job-id="weatherJobId" :coordinates="weatherCoordinates" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" :limits="activeLimits" @choose="chooseDeparture" @state="windowPhase = $event" /><RoadWeatherComparison v-if="anchors.length === 2" :job-id="weatherJobId" :can-compare="!!weatherCoordinates" :current-coordinates="weatherCoordinates" :start="form.start" :end="form.end" :road-source="roadSource" :clearance-m="form.clearance_m" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" :limits="activeLimits" @choose="chooseRoad" @state="comparisonPhase = $event" /><p v-else class="multi-route-comparison-note">多段路线候选比较暂不支持；沿线天气检查仍按完整路线进行。</p></div></details>
           <details v-if="activeModule === 'status'" class="overview-group"><summary><span><span class="svg-icon icon-layers" aria-hidden="true"></span>天气规则和技术状态</span><small>仅在需要核对时查看</small></summary><div class="overview-group-body"><details class="limits-settings"><summary>天气初筛阈值</summary><label class="limits-toggle"><input v-model="customLimitsEnabled" type="checkbox" /> 填写自定义气象阈值</label><p>关闭时使用演示阈值。阈值用于天气提示与比较，参考分不是事故概率。</p><template v-if="customLimitsEnabled"><label>阈值名称<input v-model="customLimits.name" maxlength="80" /></label><div class="coordinate-row"><label>最大高度风 · m/s<input v-model.number="customLimits.max_wind_m_s" type="number" min="0.1" max="200" step="0.1" required /></label><label>最大侧风 · m/s<input v-model.number="customLimits.max_crosswind_m_s" type="number" min="0.1" max="200" step="0.1" required /></label></div><div class="coordinate-row"><label>最大逆风 · m/s<input v-model.number="customLimits.max_headwind_m_s" type="number" min="0.1" max="200" step="0.1" required /></label><label>最大地面阵风 · m/s<input v-model.number="customLimits.max_gust_m_s" type="number" min="0.1" max="200" step="0.1" required /></label></div><div class="coordinate-row"><label>最大雨量 · mm/6h<input v-model.number="customLimits.max_rain_6h_mm" type="number" min="0.1" max="500" step="0.1" required /></label><label>最低地面能见度 · m<input v-model.number="customLimits.min_visibility_m" type="number" min="1" max="100000" step="1" required /></label></div></template></details><div class="pipeline"><h3>系统状态</h3><div><span>01</span><p>{{ alignmentProgress }}</p></div><div><span>02</span><p>{{ routeAssessment ? decisionTitle : '沿线初筛等待资料' }}</p></div><div><span>03</span><p>{{ planningProgress }}</p></div></div></div></details>
-          <div v-if="activeModule === 'dji' && preview" class="road-summary"><strong><span class="svg-icon icon-route" aria-hidden="true"></span>当前路线：{{ preview.road_names.join(' → ') || '未命名道路' }}</strong><span>{{ distance }} · 预计用时 {{ elapsed }}</span><details><summary><span class="svg-icon icon-eye" aria-hidden="true"></span>查看路线数据</summary><small>直线 {{ preview.straight_distance_km.toFixed(2) }} km · {{ preview.building_clearance_m === null ? '在线模式未检查建筑缓冲' : `建筑缓冲 ${preview.building_clearance_m} m` }}</small><small>首末主点到道路分别约 {{ preview.start_snap_m }} m / {{ preview.end_snap_m }} m</small><small>手动主点 {{ anchors.length }} 个 · 自动生成小点 {{ generatedPointCount }} 个 · {{ preview.segments?.length ?? 1 }} 段</small><small v-for="segment in preview.segments" :key="segment.id">{{ majorPointLabel(segment.index) }} → {{ majorPointLabel(segment.index + 1) }}：{{ segment.distance_km.toFixed(2) }} km</small><small>{{ preview.data_source }}</small><small>路线数据 © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap contributors</a></small></details><div class="route-export"><label>DJI 机型模板<select v-model="djiModel"><option value="fly">DJI Fly · Air 3 / Air 3S / Mini 4 Pro</option><option value="m30">DJI Pilot 2 · M30 / M30T</option><option value="m3e">DJI Pilot 2 · Mavic 3E / 3T / 3M</option></select></label><details class="waypoint-editor" @toggle="onWaypointEditorToggle"><summary>逐点设置高度和面向（{{ waypointSettings.length }} 个点）</summary><p class="waypoint-editor-note">高度相对起飞点；机头角度控制水平朝向，真北为 0°。摄像头俯仰默认 0°（水平），负数向下；每个航点独立设置。</p><p v-if="waypointSettings.length > 200" class="waypoint-editor-note">此处列出前 200 个点和当前选中点；完整路线与导出仍保留全部 {{ waypointSettings.length }} 个点。</p><div v-for="{ setting, index } in editorWaypoints" :key="index" class="waypoint-row" :data-waypoint-index="index"><strong>点 {{ index + 1 }}</strong><label>高度（m）<input v-model.number="setting.altitude_m" type="number" min="1" max="1500" step="1" /></label><label>机头方向<select v-model="setting.heading_mode"><option value="followWayline">沿航线</option><option value="fixed">固定角度</option><option value="smoothTransition">平滑转向</option><option value="manually">手动控制</option></select></label><label v-if="setting.heading_mode === 'fixed' || setting.heading_mode === 'smoothTransition'">机头角度（°）<input v-model.number="setting.heading_angle" type="number" step="1" /></label><label>摄像头俯仰（°）<input v-model.number="setting.gimbal_pitch_angle" type="number" min="-90" max="45" step="1" /></label></div></details><button type="button" class="weather-refresh" :disabled="kmzLoading || loading" @click="exportDjiKmz"><span class="svg-icon icon-download" aria-hidden="true"></span>{{ kmzLoading ? '正在生成 KMZ…' : '导出 DJI KMZ 草稿' }}</button><button type="button" class="weather-refresh task-flight-start" :disabled="!activeTask || !taskRouteMatches || !activeTask.export_file_name || activeTask.status === 'in_flight'" @click="markTaskFlightStarted">{{ activeTask?.status === 'in_flight' ? '已标记本次任务开始' : '标记本次任务已开始' }}</button><small v-if="activeTask?.export_file_name">KMZ 已保存在任务目录：{{ activeTask.export_file_name }}</small><small>按相对起飞点高度生成。路线折点会先抽稀，减少 DJI 中高度标签和航点标记重叠。{{ roadSource === 'online' ? '当前是在线机动车道路参考，不应直接作为飞行线。' : '当前是道路走廊参考，不代表已核实飞行航线。' }}{{ djiModel === 'fly' ? 'DJI Fly 需先创建一条占位航线，再用相同 UUID 文件名替换 waypoint 目录中的 KMZ。' : '导入 DJI Pilot 2 后仍需核对机型、动作、返航、空域和现场条件。' }}文件不是放飞许可。</small><small v-if="djiModel === 'fly'">Air 3/Air 3S 使用 DJI Fly 消费级 WPML；当前通用机型枚举按 RC 2 航线格式生成，若设备拒绝文件需要用设备原生占位 KMZ 校验。</small><small v-if="kmzError" class="form-error" role="alert">{{ kmzError }}</small></div></div>
+          <div v-if="activeModule === 'dji' && preview" class="road-summary"><strong><span class="svg-icon icon-route" aria-hidden="true"></span>当前路线：{{ preview.road_names.join(' → ') || '未命名道路' }}</strong><span>{{ distance }} · 预计用时 {{ elapsed }}</span><details><summary><span class="svg-icon icon-eye" aria-hidden="true"></span>查看路线数据</summary><small>直线 {{ preview.straight_distance_km.toFixed(2) }} km · {{ preview.building_clearance_m === null ? '在线模式未检查建筑缓冲' : `建筑缓冲 ${preview.building_clearance_m} m` }}</small><small>首末主点到道路分别约 {{ preview.start_snap_m }} m / {{ preview.end_snap_m }} m</small><small>手动主点 {{ anchors.length }} 个 · 自动生成小点 {{ generatedPointCount }} 个 · {{ preview.segments?.length ?? 1 }} 段</small><small v-for="segment in preview.segments" :key="segment.id">{{ majorPointLabel(segment.index) }} → {{ majorPointLabel(segment.index + 1) }}：{{ segment.distance_km.toFixed(2) }} km</small><small>{{ preview.data_source }}</small><small>路线数据 © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap contributors</a></small></details><div class="route-export"><label>DJI 机型模板<select v-model="djiModel"><option value="fly">DJI Fly · Air 3 / Air 3S / Mini 4 Pro</option><option value="m30">DJI Pilot 2 · M30 / M30T</option><option value="m3e">DJI Pilot 2 · Mavic 3E / 3T / 3M</option></select></label><details class="waypoint-editor" @toggle="onWaypointEditorToggle"><summary>逐点设置高度和面向（{{ waypointSettings.length }} 个点）</summary><p class="waypoint-editor-note">高度相对起飞点；机头角度控制水平朝向，真北为 0°。摄像头俯仰默认 0°（水平），负数向下；每个航点独立设置。</p><p v-if="waypointSettings.length > 200" class="waypoint-editor-note">此处列出前 200 个点和当前选中点；完整路线与导出仍保留全部 {{ waypointSettings.length }} 个点。</p><div v-for="{ setting, index } in editorWaypoints" :key="index" class="waypoint-row" :data-waypoint-index="index"><strong>点 {{ index + 1 }}</strong><label>高度（m）<input v-model.number="setting.altitude_m" type="number" min="1" max="1500" step="1" /></label><label>机头方向<select v-model="setting.heading_mode"><option value="followWayline">沿航线</option><option value="fixed">固定角度</option><option value="smoothTransition">平滑转向</option><option value="manually">手动控制</option></select></label><label v-if="setting.heading_mode === 'fixed' || setting.heading_mode === 'smoothTransition'">机头角度（°）<input v-model.number="setting.heading_angle" type="number" step="1" /></label><label>摄像头俯仰（°）<input v-model.number="setting.gimbal_pitch_angle" type="number" min="-90" max="45" step="1" /></label></div></details><button type="button" class="weather-refresh" :disabled="kmzLoading || loading || !activeTask || !taskRouteMatches" @click="exportDjiKmz"><span class="svg-icon icon-download" aria-hidden="true"></span>{{ kmzLoading ? '正在生成 KMZ…' : '导出 DJI KMZ 草稿' }}</button><button type="button" class="weather-refresh task-flight-start" :disabled="!activeTask || !taskRouteMatches || !activeTask.export_file_name || activeTask.status === 'in_flight'" @click="markTaskFlightStarted">{{ activeTask?.status === 'in_flight' ? '已标记本次任务开始' : '标记本次任务已开始' }}</button><small v-if="activeTask?.export_file_name">KMZ 已保存在任务目录：{{ activeTask.export_file_name }}</small><small>按相对起飞点高度生成。路线折点会先抽稀，减少 DJI 中高度标签和航点标记重叠。{{ roadSource === 'online' ? '当前是在线机动车道路参考，不应直接作为飞行线。' : '当前是道路走廊参考，不代表已核实飞行航线。' }}{{ djiModel === 'fly' ? 'DJI Fly 需先创建一条占位航线，再用相同 UUID 文件名替换 waypoint 目录中的 KMZ。' : '导入 DJI Pilot 2 后仍需核对机型、动作、返航、空域和现场条件。' }}文件不是放飞许可。</small><small v-if="djiModel === 'fly'">Air 3/Air 3S 使用 DJI Fly 消费级 WPML；当前通用机型枚举按 RC 2 航线格式生成，若设备拒绝文件需要用设备原生占位 KMZ 校验。</small><small v-if="kmzError" class="form-error" role="alert">{{ kmzError }}</small></div></div>
          <section v-if="activeModule === 'dji' && ((preview && djiModel === 'fly') || rc2Job)" class="rc2-import-panel" aria-label="导入 DJI RC 2">
           <div class="rc2-import-heading">
             <h3>导入已连接的 DJI RC 2</h3>
@@ -2505,6 +2573,7 @@ onBeforeUnmount(() => {
           </div>
           <p role="status">{{ rc2Loading ? '正在检查本机和遥控器…' : rc2Status?.message ?? '等待检查 RC 2 连接状态。' }}</p>
           <small v-if="rc2Status?.generation_directory">本机 KMZ 生成目录：{{ rc2Status.generation_directory }}</small>
+          <small v-if="preview && djiModel === 'fly' && (!activeTask || !taskRouteMatches)">请先命名并创建当前任务，再导入到 RC 2。</small>
           <template v-if="preview && djiModel === 'fly' && rc2Status?.available">
             <small v-if="rc2DeviceName">遥控器：{{ rc2DeviceName }}</small>
             <small v-if="rc2WaypointPath">占位航线目录：{{ rc2WaypointPath }}</small>

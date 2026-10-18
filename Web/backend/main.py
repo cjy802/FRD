@@ -21,7 +21,7 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from online_router import OnlineServiceUnavailable, plan_online_route, plan_online_alternatives
 from road_planner import CampusRoadNetwork, LOCAL_INDEX_FILE, LocalRoadStore, RouteUnavailable
@@ -175,6 +175,17 @@ class TaskCreateRequest(BaseModel):
     route: dict[str, Any]
     departure_time: str = Field(min_length=1, max_length=40)
     departure_auto_managed: bool = True
+    name: str = Field(min_length=1, max_length=80)
+    weather: dict[str, Any] | None = None
+    aircraft: dict[str, Any] | None = None
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("请填写任务名称。")
+        return normalized
 
 
 class TaskUpdateRequest(BaseModel):
@@ -218,7 +229,8 @@ def health():
 def create_task(request: Request, payload: TaskCreateRequest):
     require_local_request(request, mutation=True, label="飞行任务")
     try:
-        return tasks.create(payload.route, payload.departure_time, payload.departure_auto_managed)
+        return tasks.create(payload.route, payload.departure_time, payload.departure_auto_managed,
+                            payload.name, payload.weather, payload.aircraft)
     except TaskError as error:
         raise HTTPException(status_code=error.http_status, detail=str(error)) from error
 

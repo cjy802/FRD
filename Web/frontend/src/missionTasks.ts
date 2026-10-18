@@ -2,6 +2,7 @@ import type { TaskVideoFrame } from './photoAnalysis'
 
 export type MissionTask = {
   task_id: string
+  name?: string | null
   created_at: string
   updated_at: string
   status: 'planning' | 'ready' | 'in_flight' | 'completed'
@@ -19,6 +20,7 @@ export type MissionTask = {
 
 export type MissionTaskSummary = {
   task_id: string
+  name: string
   created_at: string
   updated_at: string
   status: MissionTask['status']
@@ -58,11 +60,12 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return payload as T
 }
 
-export function createMissionTask(route: Record<string, unknown>, departureTime: string, departureAutoManaged = true): Promise<MissionTask> {
+export function createMissionTask(route: Record<string, unknown>, departureTime: string, departureAutoManaged = true,
+  details: { name?: string; weather?: Record<string, unknown> | null; aircraft?: Record<string, unknown> | null } = {}): Promise<MissionTask> {
   return request<MissionTask>('/api/tasks', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ route, departure_time: departureTime, departure_auto_managed: departureAutoManaged }),
+    body: JSON.stringify({ route, departure_time: departureTime, departure_auto_managed: departureAutoManaged, ...details }),
   })
 }
 

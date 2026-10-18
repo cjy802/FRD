@@ -37,20 +37,23 @@ class TaskStore:
             raise TaskError("找不到该任务。", http_status=404)
         return path
 
-    def create(self, route: dict[str, Any], departure_time: str, departure_auto_managed: bool = True) -> dict[str, Any]:
+    def create(self, route: dict[str, Any], departure_time: str, departure_auto_managed: bool = True,
+               name: str | None = None, weather: dict[str, Any] | None = None,
+               aircraft: dict[str, Any] | None = None) -> dict[str, Any]:
         task_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S") + "-" + uuid.uuid4().hex[:8]
         directory = self.storage_dir / task_id
         directory.mkdir(parents=True, exist_ok=False)
         record: dict[str, Any] = {
             "task_id": task_id,
+            "name": name.strip() if isinstance(name, str) and name.strip() else None,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "status": "planning",
             "route": route,
             "departure_time": departure_time,
             "departure_auto_managed": departure_auto_managed,
-            "weather": None,
-            "aircraft": None,
+            "weather": weather,
+            "aircraft": aircraft,
             "export_file_name": None,
             "flight_started_at": None,
             "video_survey_id": None,
@@ -93,6 +96,7 @@ class TaskStore:
                 frames = json.loads(frames_path.read_text(encoding="utf-8")) if frames_path.is_file() else []
                 summaries.append({
                     "task_id": record["task_id"],
+                    "name": record.get("name") or route_summary,
                     "created_at": record.get("created_at"),
                     "updated_at": record.get("updated_at"),
                     "status": record.get("status", "planning"),
