@@ -6,10 +6,11 @@ import type { VideoCaptureTarget, VideoTelemetryPoint } from './videoSurvey'
 type Point = { longitude: number; latitude: number }
 type AnchorRole = 'start' | 'middle' | 'end'
 type Anchor = Point & { id: string; label?: string; role?: AnchorRole }
-type OverlayPoint = { x: number; y: number; index?: number; id?: string; label?: string; role?: AnchorRole }
+type OverlayPoint = { x: number; y: number; index?: number; id?: string; label?: string; role?: AnchorRole; selected?: boolean }
 const props = defineProps<{
   active: boolean; provider: MapProvider; viewMode: '2d' | '3d'; start: Point; end: Point; route: number[][] | null
   anchors?: Anchor[]
+  selectedAnchorId?: string
   selectedIndex: number | null; editMode: 'route' | 'node'; footprint: number[][]
   weatherSegments: { start: number[]; end: number[]; level: string }[]
   showStartRange: boolean; showEndRange: boolean; rangeMeters: number
@@ -27,7 +28,7 @@ const tilt = ref(52)
 const overlay = reactive({
   nodes: [] as { x: number; y: number; index: number }[],
   groundNodes: [] as { x: number; y: number; index: number }[],
-  anchors: [] as { id: string; x: number; y: number; label: string; role: 'start' | 'middle' | 'end' }[],
+  anchors: [] as { id: string; x: number; y: number; label: string; role: 'start' | 'middle' | 'end'; selected: boolean }[],
   autoNodes: [] as { index: number; x: number; y: number }[],
   drone: null as { x: number; y: number; angle: number } | null,
   videoPosition: null as { x: number; y: number; time_seconds: number; altitude_m: number | null } | null,
@@ -50,7 +51,7 @@ function sameOverlayPoints(first: OverlayPoint[], second: OverlayPoint[]) {
     const previous = second[index]
     return point.x === previous.x && point.y === previous.y
       && point.index === previous.index && point.id === previous.id
-      && point.label === previous.label && point.role === previous.role
+      && point.label === previous.label && point.role === previous.role && point.selected === previous.selected
   })
 }
 
@@ -107,7 +108,7 @@ function renderOverlay() {
   const majorAnchors = anchorPoints()
   const anchors = majorAnchors.flatMap((point, index, all) => {
     const pixel = scene!.project([point.longitude, point.latitude, 2])
-    return pixel ? [{ id: point.id, ...pixel, label: point.label ?? anchorLabel(index), role: anchorRole(point, index, all.length) }] : []
+    return pixel ? [{ id: point.id, ...pixel, label: point.label ?? anchorLabel(index), role: anchorRole(point, index, all.length), selected: point.id === props.selectedAnchorId }] : []
   })
   const route = props.route ?? []
   const stride = Math.max(1, Math.ceil(Math.max(0, route.length - 2) / 120))
@@ -162,6 +163,7 @@ function refreshRoute() {
   if (!props.flightPose?.follow && (!routeSignature || (signature !== routeSignature && props.editMode === 'route'))) scene.fit(coordinates(), props.viewMode)
   routeSignature = signature
   refreshFootprint()
+  renderOverlay()
 }
 function refreshFootprint() {
   if (!scene) return
@@ -315,6 +317,7 @@ watch(() => props.provider, async () => {
   if (!unmounted) void initialize()
 })
 watch(() => [props.route, props.start, props.end, props.anchors, props.weatherSegments, props.showStartRange, props.showEndRange, props.rangeMeters], refreshRoute, { deep: true })
+watch(() => props.selectedAnchorId, renderOverlay, { flush: 'sync' })
 watch(() => [props.footprint, props.selectedIndex, props.editMode], () => { refreshFootprint(); renderOverlay() }, { deep: true, flush: 'sync' })
 watch(() => props.videoTrack, refreshVideoTrack, { deep: true })
 watch(() => [props.videoPosition, props.captureTargets], renderOverlay, { deep: true, flush: 'sync' })
@@ -341,7 +344,7 @@ onBeforeUnmount(() => {
     <div ref="earthElement" class="earth-map-canvas" @pointerdown="onMapPointerDown" @pointermove="onMapPointerMove" @click="onMapClick"></div>
     <div class="earth-map-overlay">
       <div v-if="videoTrack?.length" class="earth-video-legend" aria-label="视频轨迹图例"><span><i class="track-key"></i>SRT 轨迹</span><span><i class="position-key">V</i>当前画面</span><span><i class="target-key">拍</i>近拍点</span></div>
-      <span v-for="anchor in overlay.anchors" :key="anchor.id" class="earth-endpoint" :class="anchor.role" :style="{ left: `${anchor.x}px`, top: `${anchor.y}px` }">{{ anchor.label }}</span>
+      <span v-for="anchor in overlay.anchors" :key="anchor.id" class="earth-endpoint" :class="[anchor.role, { selected: anchor.selected }]" :style="{ left: `${anchor.x}px`, top: `${anchor.y}px` }">{{ anchor.label }}</span>
       <span v-for="target in overlay.captureTargets" :key="`video-target-${target.id}`" class="earth-capture-target" :title="`${target.label} · ${Math.floor(target.time_seconds / 60)}:${String(Math.floor(target.time_seconds % 60)).padStart(2, '0')}`" :aria-label="`${target.label} 拍摄位置`" :style="{ left: `${target.x}px`, top: `${target.y}px` }">{{ target.marker }}</span>
       <span v-for="node in overlay.autoNodes" :key="`auto-${node.index}`" class="earth-auto-node" aria-hidden="true" :style="{ left: `${node.x}px`, top: `${node.y}px` }"></span>
       <span v-for="node in overlay.groundNodes" :key="`ground-${node.index}`" class="earth-ground-node" aria-hidden="true" :style="{ left: `${node.x}px`, top: `${node.y}px` }"><span></span></span>
@@ -380,6 +383,7 @@ onBeforeUnmount(() => {
 .earth-endpoint.start { background: #0f6cbd; }
 .earth-endpoint.middle { background: #197b78; }
 .earth-endpoint.end { background: #5b5fc7; }
+.earth-endpoint.selected { outline: 2px solid #f5bd4f; outline-offset: 2px; z-index: 2; }
 .earth-auto-node { position: absolute; width: 6px; height: 6px; transform: translate(-50%, -50%); border: 1px solid #fff; border-radius: 50%; background: #00aa83; box-shadow: 0 1px 3px rgb(18 52 59 / .5); pointer-events: none; }
 .earth-flight-drone { position: absolute; z-index: 3; width: 40px; height: 40px; display: grid; place-items: center; border: 2px solid #fff; border-radius: 50%; background: #126cb7; box-shadow: 0 0 0 5px rgb(18 108 183 / .19), 0 4px 14px rgb(9 42 74 / .45); pointer-events: none; will-change: left, top, transform; }
 .earth-flight-drone img { width: 28px; height: 28px; display: block; }

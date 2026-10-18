@@ -553,6 +553,8 @@ let viewer: any = null
 let Cesium: any = null
 let routeController: AbortController | null = null
 let routeRequestVersion = 0
+let routeRefreshTimer: ReturnType<typeof setTimeout> | null = null
+let isBootstrappingRoute = true
 
 const elapsed = computed(() => preview.value && form.speed_kmh > 0 ? `${(preview.value.distance_km / form.speed_kmh * 60).toFixed(2)} 分钟` : '待计算')
 const distance = computed(() => preview.value ? `${preview.value.distance_km.toFixed(2)} km` : '待计算')
@@ -771,7 +773,21 @@ const taskWeatherAdvisories = computed(() => {
 
 watch(routeKey, () => {
   clearBatchRange()
-  if (preview.value && previewKey.value !== routeKey.value) { preview.value = null; routeAssessment.value = null; drawCesiumRoute(false) }
+  if (routeRefreshTimer) clearTimeout(routeRefreshTimer)
+  routeRefreshTimer = null
+  cancelCalculation()
+  error.value = ''
+  kmzError.value = ''
+  if (previewKey.value !== routeKey.value) {
+    preview.value = null
+    routeAssessment.value = null
+  }
+  drawCesiumRoute(false)
+  if (isBootstrappingRoute || !allAnchorsReady.value) return
+  routeRefreshTimer = setTimeout(() => {
+    routeRefreshTimer = null
+    void calculate(false)
+  }, 280)
 })
 watch(routeAssessment, () => { drawCesiumRoute(false) })
 watch(workspacePanel, async () => {
@@ -1616,6 +1632,8 @@ watch([preview, djiModel], () => {
 
 async function calculate(flyToRoute: boolean | SubmitEvent = true) {
   if (loading.value || locatingPoint.value) return
+  if (routeRefreshTimer) clearTimeout(routeRefreshTimer)
+  routeRefreshTimer = null
   if (!allAnchorsReady.value) {
     settingsPage.value = 'points'
     const missingIndex = anchors.value.findIndex((anchor) => !validMajorPoint(anchor))
@@ -1782,7 +1800,6 @@ async function chooseMapPoint(point: Point, target: string = selectedAnchorId.va
       clearLocationFeedback(anchor.id)
       routeAssessment.value = null
       if (fromPlaceSearch) placeSelectionFeedback.value = { message: `已设置${label}。`, error: false }
-      if (allAnchorsReady.value) void calculate(false)
       return
     }
     const response = await fetch('/api/landing/check', {
@@ -1821,7 +1838,6 @@ async function chooseMapPoint(point: Point, target: string = selectedAnchorId.va
     // A map click changes the route, but should not reset the camera the user
     // is currently inspecting.
     if (fromPlaceSearch) placeSelectionFeedback.value = { message: `已设置${label}。`, error: false }
-    if (allAnchorsReady.value) void calculate(false)
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '暂时无法检查该点位。'
     if (fromPlaceSearch) placeSelectionFeedback.value = { message: error.value, error: true }
@@ -2249,6 +2265,7 @@ onMounted(() => {
   scheduleDepartureClock()
   window.addEventListener('focus', refreshDepartureClock)
   void restoreCurrentTask().then(async () => {
+    isBootstrappingRoute = false
     await calculate()
     restoreTaskWaypointSettings()
   })
@@ -2281,6 +2298,7 @@ onBeforeUnmount(() => {
   finishMapCameraDrag()
   pauseFlight()
   if (departureClockTimer) clearTimeout(departureClockTimer)
+  if (routeRefreshTimer) clearTimeout(routeRefreshTimer)
   if (taskDepartureSaveTimer) clearTimeout(taskDepartureSaveTimer)
   if (taskSettingsSaveTimer) clearTimeout(taskSettingsSaveTimer)
   stopColumnResize()
@@ -2421,7 +2439,7 @@ onBeforeUnmount(() => {
 
       <section id="route-map" class="map-panel" :class="{ 'panel-active': workspacePanel === 'map' }" aria-label="航线地图">
         <div ref="mapElement" class="cesium-map" aria-hidden="true"></div>
-        <EarthMap ref="earthMapRef" :active="true" :provider="baseMap === 'earth' ? 'baidu' : 'osm'" :view-mode="mapViewMode" :start="form.start" :end="form.end" :anchors="mapAnchors" :route="earthRoute" :selected-index="selectedWaypointIndex" :edit-mode="mapEditMode" :footprint="earthFootprint" :flight-pose="mapFlightPose" :flight-footprint="flightFootprint" :weather-segments="routeAssessment?.weather_risk.segments ?? []" :show-start-range="showStartRange" :show-end-range="showEndRange" :range-meters="landingSearchRadiusM" :video-track="activeModule === 'photos' ? videoTelemetryTrack : []" :video-position="activeModule === 'photos' ? videoTelemetryPosition : null" :capture-targets="activeModule === 'photos' ? mapCaptureTargets : []" @select-waypoint="selectWaypoint" @choose-point="chooseMapPoint" @rotate-waypoint="setSelectedWaypointOrientation($event, undefined, true)" />
+        <EarthMap ref="earthMapRef" :active="true" :provider="baseMap === 'earth' ? 'baidu' : 'osm'" :view-mode="mapViewMode" :start="form.start" :end="form.end" :anchors="mapAnchors" :selected-anchor-id="selectedAnchorId" :route="earthRoute" :selected-index="selectedWaypointIndex" :edit-mode="mapEditMode" :footprint="earthFootprint" :flight-pose="mapFlightPose" :flight-footprint="flightFootprint" :weather-segments="routeAssessment?.weather_risk.segments ?? []" :show-start-range="showStartRange" :show-end-range="showEndRange" :range-meters="landingSearchRadiusM" :video-track="activeModule === 'photos' ? videoTelemetryTrack : []" :video-position="activeModule === 'photos' ? videoTelemetryPosition : null" :capture-targets="activeModule === 'photos' ? mapCaptureTargets : []" @select-waypoint="selectWaypoint" @choose-point="chooseMapPoint" @rotate-waypoint="setSelectedWaypointOrientation($event, undefined, true)" />
         <div class="map-top">
           <div v-if="!flightActive" class="map-title-group"><span class="map-badge"><span class="svg-icon icon-layers" aria-hidden="true"></span>{{ (baseMap === 'earth' ? '地球模式' : '当前底图') + (mapViewMode === '3d' ? ' · 3D 航线' : ' · 2D 平面') }}</span><span class="map-mode-chip">{{ form.altitude_m }} m AGL</span><div class="map-source-switch base-map-switch" aria-label="底图"><button type="button" :class="{ active: baseMap === 'current' }" :aria-pressed="baseMap === 'current'" @click="chooseBaseMap('current')">当前底图</button><button type="button" :class="{ active: baseMap === 'earth' }" :aria-pressed="baseMap === 'earth'" @click="chooseBaseMap('earth')">地球模式</button></div><div class="map-edit-switch" aria-label="编辑对象"><button type="button" :class="{ active: mapEditMode === 'route' }" :aria-pressed="mapEditMode === 'route'" @click="mapEditMode = 'route'">路径 / 主点</button><button type="button" :class="{ active: mapEditMode === 'node' }" :aria-pressed="mapEditMode === 'node'" @click="mapEditMode = 'node'">节点 / 视角</button></div></div>
           <button v-if="!flightActive" class="flight-entry" type="button" :disabled="!flightTimeline" aria-label="开始模拟飞行" title="模拟飞行" @click="toggleFlight"><span class="svg-icon icon-drone" aria-hidden="true"></span></button>
