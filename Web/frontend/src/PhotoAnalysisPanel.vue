@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import {
   PhotoAnalysisApiError,
   fetchPhotoAnalysisHealth,
@@ -8,11 +8,15 @@ import {
   submitPhotoAnalysis,
 } from './photoAnalysis'
 import type { PhotoAnalysisHealth, PhotoAnalysisJob, PhotoAnalysisResultImage } from './photoAnalysis'
+import type { TaskVideoFrame } from './photoAnalysis'
+
+const props = defineProps<{ taskId: string | null; frames: TaskVideoFrame[] }>()
+const emit = defineEmits<{ 'remove-frame': [index: number]; 'analysis-complete': [job: PhotoAnalysisJob] }>()
 
 const health = ref<PhotoAnalysisHealth | null>(null)
 const healthError = ref('')
 const selectedModel = ref('')
-const selectedFiles = ref<File[]>([])
+const excludedFrames = ref<number[]>([])
 const siteName = ref('')
 const note = ref('')
 const job = ref<PhotoAnalysisJob | null>(null)
@@ -20,19 +24,25 @@ const busy = ref(false)
 const error = ref('')
 const status = ref('')
 const viewMode = ref<'overlay' | 'original'>('overlay')
-const fileInput = ref<HTMLInputElement | null>(null)
 const previewDialog = ref<HTMLDialogElement | null>(null)
 const preview = ref<{ image: PhotoAnalysisResultImage; index: number } | null>(null)
 let pollTimer: number | null = null
 
+watch(() => props.frames.map(frame => `${frame.file.name}:${frame.time_seconds}`).join('|'), () => {
+  excludedFrames.value = []
+})
+
 const selectedModelOption = computed(() => health.value?.models?.find(model => model.id === selectedModel.value) ?? null)
+const isRemoteModel = computed(() => selectedModel.value === 'remote-glm-puddle')
+const selectedFrames = computed(() => props.frames.filter((_, index) => !excludedFrames.value.includes(index)))
+const selectedFiles = computed(() => selectedFrames.value.map(frame => frame.file))
 const canSubmit = computed(() => Boolean(health.value?.available && selectedModelOption.value?.available
-  && selectedFiles.value.length && !busy.value))
+  && props.taskId && selectedFiles.value.length && !busy.value))
 const interpretation = computed(() => job.value?.results?.interpretation ?? '')
 const selectedFileSummary = computed(() => {
   if (selectedFiles.value.length === 1) return selectedFiles.value[0].name
-  if (selectedFiles.value.length > 1) return `${selectedFiles.value.length} 张已选择`
-  return '支持多选 JPG、PNG、WebP、BMP'
+  if (selectedFiles.value.length > 1) return `${selectedFiles.value.length} 个视频关键帧已选择`
+  return '先从任务视频中截取需要分析的关键帧'
 })
 const previewUrl = computed(() => {
   if (!preview.value) return ''
@@ -61,16 +71,16 @@ async function refreshHealth() {
   }
 }
 
-function onFilesChanged(event: Event) {
-  const input = event.target as HTMLInputElement
-  const files = Array.from(input.files ?? [])
-  const max = health.value?.max_photos_per_job ?? 200
-  selectedFiles.value = files.slice(0, max)
-  if (files.length > max) status.value = `一次最多 ${max} 张，已截取前 ${max} 张。`
+function removeFrame(index: number) {
+  excludedFrames.value = [...excludedFrames.value, index]
+  emit('remove-frame', index)
 }
 
-function openFilePicker() {
-  fileInput.value?.click()
+function setFrameIncluded(index: number, event: Event) {
+  const checked = (event.target as HTMLInputElement).checked
+  excludedFrames.value = checked
+    ? excludedFrames.value.filter(item => item !== index)
+    : excludedFrames.value.includes(index) ? excludedFrames.value : [...excludedFrames.value, index]
 }
 
 async function submit() {
@@ -84,7 +94,7 @@ async function submit() {
     const submitted = await submitPhotoAnalysis(selectedFiles.value, {
       site_name: siteName.value.trim() || undefined,
       note: note.value.trim() || undefined,
-    }, selectedModel.value)
+    }, selectedModel.value, props.taskId ?? '', selectedFrames.value.map(({ file, ...metadata }) => metadata))
     status.value = '已提交，正在分析…'
     pollJob(submitted.job_id)
   } catch (cause) {
@@ -102,6 +112,7 @@ function pollJob(jobId: string) {
       if (current.state === 'done') {
         busy.value = false
         status.value = `分析完成：${current.results?.images.length ?? 0} 张照片，用时 ${current.results?.elapsed_seconds ?? 0} 秒。`
+        emit('analysis-complete', current)
         return
       }
       if (current.state === 'error') {
@@ -172,7 +183,7 @@ onUnmounted(stopPolling)
       <p v-else-if="health && !health.available" class="photo-feedback is-error" role="alert">{{ health.message }}</p>
 
       <div class="photo-toolbar">
-        <small>上传无人机拍摄的照片，自动分割疑似积水并生成叠图；结果仅提示待核查位置。</small>
+        <small>只分析当前任务视频中手动截取的关键帧；SRT 按时间提供无人机位置，不逐帧调用模型。</small>
         <button type="button" aria-label="刷新照片分析状态" @click="refreshHealth">刷新</button>
       </div>
 
@@ -184,12 +195,18 @@ onUnmounted(stopPolling)
           </option>
         </select>
         <small v-if="selectedModelOption" class="photo-model-description">{{ selectedModelOption.description }}</small>
-        <label for="photo-analysis-files">照片（可多选）</label>
-        <div class="photo-file-picker">
-          <input id="photo-analysis-files" ref="fileInput" class="photo-file-native" type="file" accept="image/jpeg,image/png,image/webp,image/bmp" multiple :disabled="busy || !health?.available" @change="onFilesChanged" />
-          <button type="button" class="photo-file-trigger" :disabled="busy || !health?.available" @click="openFilePicker">选择文件</button>
-          <small class="photo-file-selection" :title="selectedFileSummary">{{ selectedFileSummary }}</small>
-        </div>
+        <p v-if="isRemoteModel" class="photo-feedback">所选任务关键帧会发送到 BigModel 接口处理；API Key 只保存在本机后端。返回多边形会在本机生成掩膜。</p>
+        <label>任务关键帧（{{ selectedFiles.length }} / {{ frames.length }}）</label>
+        <p v-if="!taskId" class="photo-file-selection">先在“选定航线”中创建当前任务。</p>
+        <p v-else-if="!frames.length" class="photo-file-selection">{{ selectedFileSummary }}</p>
+        <ul v-else class="photo-frame-list">
+          <li v-for="(frame, index) in frames" :key="`${frame.file.name}-${index}`" :class="{ 'is-excluded': excludedFrames.includes(index) }">
+            <label><input type="checkbox" :checked="!excludedFrames.includes(index)" :disabled="busy" @change="setFrameIncluded(index, $event)" />
+              <span><strong>{{ frame.file.name }}</strong><small>{{ Math.floor(frame.time_seconds / 60).toString().padStart(2, '0') }}:{{ Math.floor(frame.time_seconds % 60).toString().padStart(2, '0') }} · {{ frame.latitude.toFixed(6) }}, {{ frame.longitude.toFixed(6) }}<template v-if="frame.altitude_m !== null"> · {{ frame.altitude_m.toFixed(0) }} m</template></small></span>
+            </label>
+            <button type="button" :disabled="busy" :aria-label="`从任务分析队列移除 ${frame.file.name}`" @click="removeFrame(index)">移除</button>
+          </li>
+        </ul>
         <div class="photo-context">
           <input v-model="siteName" type="text" maxlength="60" autocomplete="off" placeholder="站点/地点（可选）" :disabled="busy" />
           <input v-model="note" type="text" maxlength="120" autocomplete="off" placeholder="备注（可选）" :disabled="busy" />
@@ -265,10 +282,16 @@ onUnmounted(stopPolling)
 .photo-form > label { display: block; margin-bottom: 4px; color: #424242; font-weight: 600; }
 .photo-model-select { display: block; width: 100%; min-width: 0; height: 32px; margin: 0 0 4px; padding: 4px 7px; border: 1px solid #d1d5db; border-radius: 6px; background: #f9fafb; color: #27364a; font-size: var(--font-caption); }
 .photo-model-description { display: block; margin: 0 0 8px; color: var(--ui-muted); line-height: 1.4; }
-.photo-file-native { display: none; }
-.photo-file-picker { display: flex; min-width: 0; align-items: center; gap: 8px; margin-bottom: 4px; }
-.photo-file-trigger { flex: 0 0 auto; }
 .photo-file-selection { min-width: 0; overflow: hidden; color: var(--ui-muted); text-overflow: ellipsis; white-space: nowrap; }
+.photo-frame-list { display: grid; max-height: 200px; gap: 5px; margin: 5px 0; padding: 0; overflow: auto; list-style: none; }
+.photo-frame-list li { display: flex; align-items: center; justify-content: space-between; gap: 5px; padding: 5px 6px; border: 1px solid var(--ui-line); border-radius: 6px; }
+.photo-frame-list li.is-excluded { opacity: .55; }
+.photo-frame-list label { display: flex; min-width: 0; align-items: flex-start; gap: 6px; margin: 0; cursor: pointer; }
+.photo-frame-list input { margin: 2px 0 0; accent-color: var(--ui-accent); }
+.photo-frame-list span { display: grid; min-width: 0; gap: 2px; }
+.photo-frame-list strong, .photo-frame-list small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.photo-frame-list strong { font-size: 11px; }
+.photo-frame-list small { color: var(--ui-muted); font-size: 10px; }
 .photo-form input[type='text'] { width: 100%; min-width: 0; height: 30px; padding: 4px 7px; border: 1px solid #d1d5db; border-radius: 6px; background: #f9fafb; font-size: var(--font-caption); }
 .photo-context { display: grid; gap: 5px; margin-top: 6px; }
 .photo-submit { margin-top: 8px; border-color: var(--ui-accent) !important; background: var(--ui-accent) !important; color: #fff !important; }

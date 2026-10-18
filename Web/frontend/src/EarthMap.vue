@@ -31,7 +31,7 @@ const overlay = reactive({
   autoNodes: [] as { index: number; x: number; y: number }[],
   drone: null as { x: number; y: number; angle: number } | null,
   videoPosition: null as { x: number; y: number; time_seconds: number; altitude_m: number | null } | null,
-  captureTargets: [] as { id: string; x: number; y: number; label: string; time_seconds: number }[],
+  captureTargets: [] as { id: string; x: number; y: number; label: string; marker: string; time_seconds: number }[],
 })
 let scene: BaiduScene | null = null
 let resizeObserver: ResizeObserver | null = null
@@ -137,7 +137,9 @@ function renderOverlay() {
     : null
   const captureTargets = (props.captureTargets ?? []).flatMap((target, index) => {
     const pixel = scene!.project([target.longitude, target.latitude, props.viewMode === '2d' ? 2 : (target.altitude_m ?? 2)])
-    return pixel ? [{ ...pixel, id: target.id, label: target.label || `近拍点 ${index + 1}`, time_seconds: target.time_seconds }] : []
+    const label = target.label || `近拍点 ${index + 1}`
+    const marker = label.match(/候选\s*(\d+)/)?.[1] ?? (label.replace(/[^0-9]/g, '').slice(0, 2) || '拍')
+    return pixel ? [{ ...pixel, id: target.id, label, marker, time_seconds: target.time_seconds }] : []
   })
   if (!sameOverlayPoints(nodes, overlay.nodes)) overlay.nodes = nodes
   if (!sameOverlayPoints(groundNodes, overlay.groundNodes)) overlay.groundNodes = groundNodes
@@ -340,7 +342,7 @@ onBeforeUnmount(() => {
     <div class="earth-map-overlay">
       <div v-if="videoTrack?.length" class="earth-video-legend" aria-label="视频轨迹图例"><span><i class="track-key"></i>SRT 轨迹</span><span><i class="position-key">V</i>当前画面</span><span><i class="target-key">拍</i>近拍点</span></div>
       <span v-for="anchor in overlay.anchors" :key="anchor.id" class="earth-endpoint" :class="anchor.role" :style="{ left: `${anchor.x}px`, top: `${anchor.y}px` }">{{ anchor.label }}</span>
-      <span v-for="target in overlay.captureTargets" :key="`video-target-${target.id}`" class="earth-capture-target" :title="`${target.label} · ${Math.floor(target.time_seconds / 60)}:${String(Math.floor(target.time_seconds % 60)).padStart(2, '0')}`" :aria-label="`${target.label} 拍摄位置`" :style="{ left: `${target.x}px`, top: `${target.y}px` }">{{ target.label.replace(/[^0-9]/g, '') || '拍' }}</span>
+      <span v-for="target in overlay.captureTargets" :key="`video-target-${target.id}`" class="earth-capture-target" :title="`${target.label} · ${Math.floor(target.time_seconds / 60)}:${String(Math.floor(target.time_seconds % 60)).padStart(2, '0')}`" :aria-label="`${target.label} 拍摄位置`" :style="{ left: `${target.x}px`, top: `${target.y}px` }">{{ target.marker }}</span>
       <span v-for="node in overlay.autoNodes" :key="`auto-${node.index}`" class="earth-auto-node" aria-hidden="true" :style="{ left: `${node.x}px`, top: `${node.y}px` }"></span>
       <span v-for="node in overlay.groundNodes" :key="`ground-${node.index}`" class="earth-ground-node" aria-hidden="true" :style="{ left: `${node.x}px`, top: `${node.y}px` }"><span></span></span>
       <button v-for="node in overlay.nodes" :key="node.index" type="button" class="earth-node" :class="{ selected: node.index === selectedIndex }" :aria-label="`选择航点 ${node.index + 1}`" :aria-pressed="node.index === selectedIndex" :data-waypoint-index="node.index" :disabled="flightPose?.playing" :style="{ left: `${node.x}px`, top: `${node.y}px` }" @pointerdown="onNodeDown($event, node.index)" @pointermove="onNodeMove" @pointerup="onNodeUp" @pointercancel="onNodeUp" @lostpointercapture="onNodeUp" @click.stop="onNodeClick(node.index)"><span></span></button>

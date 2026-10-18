@@ -17,6 +17,15 @@ export type PhotoAnalysisModelOption = {
   message: string
 }
 
+export type TaskVideoFrame = {
+  frame_id?: string
+  file: File
+  time_seconds: number
+  latitude: number
+  longitude: number
+  altitude_m: number | null
+}
+
 export type PhotoAnalysisResultImage = {
   name: string
   original_name?: string
@@ -39,7 +48,11 @@ export type PhotoAnalysisJob = {
   state: 'pending' | 'running' | 'done' | 'error'
   created_at: string
   finished_at: string | null
-  context: { site_name?: string; note?: string }
+  context: {
+    site_name?: string
+    note?: string
+    frames?: Array<{ time_seconds: number; latitude: number; longitude: number; altitude_m: number | null; [key: string]: unknown }>
+  }
   inputs: { name: string; original_name: string; bytes: number }[]
   results: {
     model: {
@@ -97,12 +110,16 @@ export async function submitPhotoAnalysis(
   files: File[],
   context: { site_name?: string; note?: string } = {},
   modelId = '',
+  taskId = '',
+  frameMetadata: Omit<TaskVideoFrame, 'file'>[] = [],
 ): Promise<{ job_id: string; job_url: string }> {
   const form = new FormData()
   for (const file of files) form.append('photos', file, file.name)
   if (context.site_name) form.append('site_name', context.site_name)
   if (context.note) form.append('note', context.note)
   if (modelId) form.append('model_id', modelId)
+  if (taskId) form.append('task_id', taskId)
+  form.append('frame_metadata', JSON.stringify(frameMetadata))
   return request<{ job_id: string; job_url: string }>(`${endpoint}/jobs`, { method: 'POST', body: form })
 }
 

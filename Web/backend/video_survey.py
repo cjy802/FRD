@@ -167,6 +167,7 @@ def interpolate_telemetry(points: list[dict[str, Any]], time_seconds: float) -> 
 class VideoSurveyStore:
     def __init__(self, storage_dir: Path = DEFAULT_STORAGE) -> None:
         self.storage_dir = storage_dir
+        self.task_storage_dir = BACKEND_ROOT / "user_data" / "tasks"
 
     @staticmethod
     def _allowed_roots() -> list[dict[str, str]]:
@@ -274,9 +275,12 @@ class VideoSurveyStore:
         if not _JOB_ID.fullmatch(job_id):
             raise VideoSurveyError("视频任务编号无效。", http_status=404)
         directory = self.storage_dir / job_id
-        if not directory.is_dir():
-            raise VideoSurveyError("找不到该视频任务。", http_status=404)
-        return directory
+        if directory.is_dir():
+            return directory
+        for candidate in self.task_storage_dir.glob(f"*/media/video-surveys/{job_id}"):
+            if candidate.is_dir():
+                return candidate
+        raise VideoSurveyError("找不到该视频任务。", http_status=404)
 
     async def create(self, video: UploadFile, srt: UploadFile) -> dict[str, Any]:
         video_name = Path(video.filename or "").name
@@ -342,7 +346,7 @@ class VideoSurveyStore:
                 pass
             raise
 
-    def create_from_paths(self, video_path: str, srt_path: str) -> dict[str, Any]:
+    def create_from_paths(self, video_path: str, srt_path: str, task_id: str | None = None) -> dict[str, Any]:
         video_source = self._selected_file(video_path, ALLOWED_VIDEO_SUFFIXES, "视频")
         srt_source = self._selected_file(srt_path, {".srt"}, "SRT")
         video_size = video_source.stat().st_size
@@ -367,7 +371,8 @@ class VideoSurveyStore:
             raise VideoSurveyError(f"无法读取 SRT 文件：{error}") from error
 
         job_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S") + "-" + uuid.uuid4().hex[:8]
-        directory = self.storage_dir / job_id
+        directory = (self.task_storage_dir / task_id / "media" / "video-surveys" / job_id
+                     if task_id else self.storage_dir / job_id)
         directory.mkdir(parents=True, exist_ok=False)
         video_path_out = directory / ("video" + video_source.suffix.lower())
         try:
@@ -377,6 +382,7 @@ class VideoSurveyStore:
             points = parse_srt_telemetry(srt_text)
             metadata = {
                 "job_id": job_id,
+                "task_id": task_id,
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "video_name": video_source.name,
                 "srt_name": srt_source.name,

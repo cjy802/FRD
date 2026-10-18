@@ -60,9 +60,11 @@ npm run dev
 
 - `GET /api/dji/rc2/status`、`GET /api/dji/rc2/targets`：仅本机 Windows 会话可用，分别检查导入组件和读取 RC 2 上现有的 `.kmz` 占位航线。
 - `POST /api/dji/rc2/import`、`GET /api/dji/rc2/jobs/{job_id}`：生成 DJI Fly KMZ 并异步写入所选占位航线，轮询返回生成文件、备份路径、传输和回读校验状态；单次只允许一个写入任务。
-- `GET /api/photo-analysis/health`：仅本机可用，检查 ONNX 与 YOLO 两种照片分析模型的运行环境、权重和 runner。
-- `POST /api/photo-analysis/jobs`（multipart，含可选 `model_id`）、`GET /api/photo-analysis/jobs/{job_id}`、`GET /api/photo-analysis/jobs/{job_id}/files/{name}`：上传无人机照片，选择本地 ABCDWaveNet ONNX 或 YOLOv8n-seg 4090 混训冠军，轮询任务并取回叠图/疑似掩膜/置信度图与逐图统计；单次最多 200 张，同时只跑一个任务。
-- `GET /api/video-surveys/browse?kind=video|srt&path=...`：网页内浏览桌面、下载、视频、文档及本机磁盘中的匹配文件；`POST /api/video-surveys/import` 根据选中文件的本机路径导入。`GET /api/video-surveys/{job_id}`、`GET /api/video-surveys/{job_id}/video`、`POST/DELETE /api/video-surveys/{job_id}/targets` 读取视频、轨迹和近拍点。视频只用于预览与轨迹定位，不逐帧运行视觉模型。
+- `POST /api/tasks`、`GET/PATCH /api/tasks/{task_id}`：保存一次飞行任务的路线快照、天气结论、机型模板、KMZ 导出状态、飞行开始状态和视频关联。任务目录位于 `backend/user_data/tasks/<task_id>/`。
+- `POST/GET /api/tasks/{task_id}/frames`、`GET /api/tasks/{task_id}/frames/{frame_id}`：把从当前任务视频手动截取的关键帧和 SRT 定位信息保存在任务目录中。
+- `GET /api/photo-analysis/health`：检查 ONNX、YOLO 和远程 GLM 测试模型的配置状态。
+- `POST /api/photo-analysis/jobs`（multipart，含 `task_id`、`frame_metadata` 和可选 `model_id`）、`GET /api/photo-analysis/jobs/{job_id}`、`GET /api/photo-analysis/jobs/{job_id}/files/{name}`：对任务关键帧运行所选模型，轮询任务并取回叠图/疑似掩膜/置信度图与逐图统计；单次最多 200 张，同时只跑一个任务。任务分析文件保存在该任务目录。
+- `GET /api/video-surveys/browse?kind=video|srt&path=...`：网页内浏览桌面、下载、视频、文档及本机磁盘中的匹配文件；`POST /api/video-surveys/import` 需带 `task_id`，按选中的本机路径把视频和 SRT 归档到该任务目录。`GET /api/video-surveys/{job_id}`、`GET /api/video-surveys/{job_id}/video`、`POST/DELETE /api/video-surveys/{job_id}/targets` 读取视频、轨迹和近拍点。视频只用于预览与轨迹定位；用户手动截取关键帧后才会调用分割模型。
 - `POST /api/landing/check`：用本地索引对候选点做快速初筛，返回 `mapped_building`、`road_nearby` 或 `no_road`，以及 35 米接路半径和最近道路点。`landing_verified` 始终为 `false`。
 - `POST /api/routes/preview`：保留原有的两点直线基线接口
 
@@ -76,11 +78,15 @@ npm run dev
 
 ### 飞行后照片分析（本机）
 
-航线设置里的“飞行后照片”页可把无人机照片上传到本机，选择 `ABCDWaveNet 本地混合模型` 或 `YOLOv8n-seg 4090 混训冠军`。前者由 `WATER_ANALYSIS_PYTHON`（默认 `D:/anaconda/envs/waterseg/python.exe`）运行 `backend/scripts/run_water_onnx.py`，读取 `WATER_ANALYSIS_MODEL_DIR` 下 `registry.json` 指定的 ONNX 模型；后者由 `WATER_ANALYSIS_YOLO_PYTHON`（默认 `D:/anaconda/envs/yolov8-env/python.exe`，需安装 Ultralytics）运行 `backend/scripts/run_water_yolo.py`，读取 `WATER_ANALYSIS_YOLO_MODEL`（默认 `../../model/output/4090_champions/yoloj_mix4_best.pt`）。当冠军权重和环境存在时，页面默认选中 YOLO 冠军；也可切回本地 ONNX 模型。两者都输出叠图、疑似掩膜、置信度图及逐图疑似占比/斑块数。模型文件继续保存在 `model/` 的忽略目录，不复制进 Web 或提交到 Git。没有可用模型时接口会明确报告“未就绪”。结果文件保存在 `backend/user_data/photo_analysis/<任务 ID>/`，接口只允许下载任务清单内的文件。**YOLO 冠军的 3 张本地种子照片参与过训练，不能用这 3 张证明本地泛化；所有疑似水体都只是人工复核线索**，像素占比不是面积，更不是水深、水位或堤防安全结论。上传与分析只在本机回环地址开放，与其他本机设备接口使用相同的来源校验。
+左侧工作顺序是“选定航线 → 查看天气 → 机型模板与飞行 → 任务视频 / 分析”。航线计算完成后点击“设为当前任务”，系统会在 `backend/user_data/tasks/<任务 ID>/` 记录本次路线。任务标识会保存在本机浏览器，刷新页面后恢复当前任务。KMZ 同时保存到任务目录；“标记本次任务已开始”只更新任务记录，不会控制无人机。
+
+第 4 步必须选择当前任务的视频和对应 SRT。播放或拖动视频时，SRT 按时间映射无人机位置；点击“截取当前画面用于分析”后，关键帧和位置会存入任务目录。照片分析页只从任务关键帧队列选择，不再接受任意图片。可选本地 `ABCDWaveNet`、`YOLOv8n-seg 4090` 或 `GLM-5.3-Flash 测试模型`。本地模型沿用 `WATER_ANALYSIS_PYTHON`、`WATER_ANALYSIS_MODEL_DIR`、`WATER_ANALYSIS_YOLO_PYTHON` 和 `WATER_ANALYSIS_YOLO_MODEL` 配置；模型文件继续保存在 `model/` 忽略目录。
+
+远程测试模型由后端 `backend/.env` 读取 `WATER_ANALYSIS_REMOTE_URL`、`WATER_ANALYSIS_REMOTE_API_KEY` 和 `WATER_ANALYSIS_REMOTE_MODEL`。Key 不进入浏览器或 Git。模型返回归一化的水坑多边形，`run_water_glm.py` 在本机生成掩膜、置信度图与叠图。它是语言视觉模型给出的候选边界，**不等同于专用像素级分割权重，结果必须人工复核**；也不表示真实面积、水深或飞行安全结论。选择此模型时，所选关键帧会发送到配置的 BigModel 接口。若 GLM-5.3-Flash 的接口或账号不支持图像输入，任务会显示接口错误，不会伪造掩膜。上传与分析只在本机回环地址开放。
 
 ### 视频与 SRT 轨迹定位
 
-“视频轨迹定位”页上传本地视频和配套 SRT，后端保存到 `backend/user_data/video_surveys/<任务 ID>/` 并解析带时间戳的 GPS、高度、航向和云台俯仰。播放或拖动视频时，地图显示实际轨迹和当前时刻无人机位置；可在画面位置加入近拍点，坐标与时间保存在该任务目录。视频帧只用于回看，不经过水体模型。近拍点的坐标表示无人机位置；画面中的水体像素还没有投影到地面。SRT 没有可识别的经纬度时仍可预览视频，但地图不会显示轨迹。
+“视频轨迹定位”页在当前任务内选择本机视频和配套 SRT，后端保存到 `backend/user_data/tasks/<任务 ID>/media/video-surveys/` 并解析带时间戳的 GPS、高度、航向和云台俯仰。播放或拖动视频时，地图显示实际轨迹和当前时刻无人机位置；可在画面位置加入近拍点，也可把当前帧保存为任务关键帧。分析后排名靠前的候选会在地图上标出对应时刻的无人机位置。该坐标不是水坑像素投影到地面的坐标。SRT 没有可识别的经纬度时仍可预览视频，但无法将帧定位到地图。
 
 上线模型默认读取 `Web/mode/output_production/corrector_ridge.npz`，它由两份表去重后的全部可用样本拟合（目前 3893 条，包含 2024、2025、2026 年），使用已验证方案的公共 8 特征。在训练点及训练覆盖的原生提前量上，温度、U 风、6 小时降水采用订正结果，V 风和海平面气压严格保留 FuXi 原值；其他坐标/高度/时次遵循下述适用范围限制。派生风速、风向以及单点提示均使用最终值。全量拟合不再留测试集，也不产生新的独立测试指标；此前 `output_year_transfer_2026` 验证结果保留不变。
 

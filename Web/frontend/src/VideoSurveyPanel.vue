@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import {
   addVideoCaptureTarget,
   browseVideoSurveyFiles,
@@ -9,11 +9,16 @@ import {
   interpolateVideoPosition,
 } from './videoSurvey'
 import type { VideoBrowserEntry, VideoBrowserListing, VideoCaptureTarget, VideoSurvey, VideoTelemetryPoint } from './videoSurvey'
+import type { TaskVideoFrame } from './photoAnalysis'
+
+const props = defineProps<{ taskId: string | null; frameCount: number }>()
 
 const emit = defineEmits<{
   'track-change': [track: number[][]]
   'position-change': [position: VideoTelemetryPoint | null]
   'targets-change': [targets: VideoCaptureTarget[]]
+  'frame-capture': [frame: TaskVideoFrame]
+  'survey-change': [survey: VideoSurvey | null]
 }>()
 
 const STORAGE_KEY = 'low-altitude-active-video-survey'
@@ -33,10 +38,13 @@ const videoDuration = ref(0)
 const targetLabel = ref('')
 const loading = ref(false)
 const busyTarget = ref(false)
+const capturingFrame = ref(false)
 const error = ref('')
 const status = ref('')
 
-const canImport = computed(() => Boolean(videoPath.value && srtPath.value && !loading.value))
+const canImport = computed(() => Boolean(props.taskId && videoPath.value && srtPath.value && !loading.value))
+const canCaptureFrame = computed(() => Boolean(survey.value && currentPosition.value && videoElement.value?.videoWidth
+  && props.frameCount < 30 && !capturingFrame.value))
 const currentTimeLabel = computed(() => formatVideoTime(currentTime.value))
 const videoSelectionName = computed(() => videoPath.value ? pathBasename(videoPath.value) : survey.value?.video_name ?? '尚未选择视频')
 const srtSelectionName = computed(() => srtPath.value ? pathBasename(srtPath.value) : survey.value?.srt_name ?? '尚未选择 SRT')
@@ -66,6 +74,7 @@ function compactTrack(points: VideoTelemetryPoint[]): number[][] {
 
 function publishSurvey(value: VideoSurvey | null) {
   survey.value = value
+  emit('survey-change', value)
   emit('track-change', value ? compactTrack(value.telemetry) : [])
   emit('targets-change', value?.targets ?? [])
   updatePosition()
@@ -113,13 +122,13 @@ function selectBrowserEntry(entry: VideoBrowserEntry) {
 function closeFileBrowser() { fileBrowserOpen.value = false }
 
 async function importVideo() {
-  if (!videoPath.value || !srtPath.value || loading.value) return
+  if (!props.taskId || !videoPath.value || !srtPath.value || loading.value) return
   loading.value = true
   error.value = ''
   status.value = '正在本机保存视频并读取 SRT 轨迹…'
   try {
-    const result = await createVideoSurvey(videoPath.value, srtPath.value)
-    localStorage.setItem(STORAGE_KEY, result.job_id)
+    const result = await createVideoSurvey(videoPath.value, srtPath.value, props.taskId)
+    localStorage.setItem(`${STORAGE_KEY}:${props.taskId}`, result.job_id)
     publishSurvey(result)
     status.value = result.has_gps
       ? `已导入 ${result.telemetry_points} 个带位置的 SRT 记录；视频只用于预览和定位，不会逐帧运行模型。`
@@ -130,6 +139,34 @@ async function importVideo() {
     status.value = ''
   } finally {
     loading.value = false
+  }
+}
+
+async function captureCurrentFrame() {
+  const video = videoElement.value
+  const point = currentPosition.value
+  if (!video || !point || !video.videoWidth || capturingFrame.value) return
+  capturingFrame.value = true
+  error.value = ''
+  try {
+    const canvas = document.createElement('canvas')
+    const scale = Math.min(1, 1920 / Math.max(video.videoWidth, video.videoHeight))
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale))
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale))
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error('浏览器无法读取视频画面。')
+    context.drawImage(video, 0, 0, canvas.width, canvas.height)
+    const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error('截取视频帧失败。')), 'image/jpeg', 0.92))
+    const totalSeconds = Math.max(0, Math.floor(currentTime.value))
+    const name = `frame-${String(Math.floor(totalSeconds / 60)).padStart(2, '0')}m${String(totalSeconds % 60).padStart(2, '0')}s.jpg`
+    const file = new File([blob], name, { type: 'image/jpeg' })
+    emit('frame-capture', { file, time_seconds: currentTime.value, latitude: point.latitude,
+      longitude: point.longitude, altitude_m: point.altitude_m })
+    status.value = `已把 ${formatVideoTime(currentTime.value)} 的画面加入当前任务分析队列。`
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : '截取视频帧失败。'
+  } finally {
+    capturingFrame.value = false
   }
 }
 
@@ -182,17 +219,27 @@ function seekTarget(target: VideoCaptureTarget) {
   updatePosition(target.time_seconds)
 }
 
-onMounted(async () => {
-  const jobId = localStorage.getItem(STORAGE_KEY)
+async function restoreTaskSurvey(taskId: string | null) {
+  videoPath.value = ''
+  srtPath.value = ''
+  publishSurvey(null)
+  if (!taskId) return
+  const jobId = localStorage.getItem(`${STORAGE_KEY}:${taskId}`)
   if (!jobId) return
   try {
     const restored = await fetchVideoSurvey(jobId)
+    if (restored.task_id !== taskId) return
     publishSurvey(restored)
-    status.value = '已恢复上次导入的视频轨迹和近拍点。'
+    videoPath.value = ''
+    srtPath.value = ''
+    status.value = '已恢复当前任务的视频轨迹和近拍点。'
   } catch {
-    localStorage.removeItem(STORAGE_KEY)
+    localStorage.removeItem(`${STORAGE_KEY}:${taskId}`)
   }
-})
+}
+
+onMounted(() => { void restoreTaskSurvey(props.taskId) })
+watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
 </script>
 
 <template>
@@ -208,19 +255,19 @@ onMounted(async () => {
     </header>
 
     <div class="video-survey-picker-row">
-      <button type="button" :disabled="loading" @click="openFileBrowser('video')">选择视频</button>
+      <button type="button" :disabled="loading || !taskId" @click="openFileBrowser('video')">选择视频</button>
       <span class="video-survey-file-name" :title="videoPath || survey?.video_name || ''">
         {{ videoSelectionName }}
       </span>
     </div>
     <div class="video-survey-picker-row">
-      <button type="button" :disabled="loading" @click="openFileBrowser('srt')">选择 SRT</button>
+      <button type="button" :disabled="loading || !taskId" @click="openFileBrowser('srt')">选择 SRT</button>
       <span class="video-survey-file-name" :title="srtPath || survey?.srt_name || ''">
         {{ srtSelectionName }}
       </span>
     </div>
     <button class="video-survey-import" type="button" :disabled="!canImport" @click="importVideo">
-      {{ loading ? '导入中…' : '导入视频与轨迹' }}
+      {{ !taskId ? '请先创建当前任务' : loading ? '导入中…' : '导入到当前任务' }}
     </button>
 
     <p v-if="survey" class="video-survey-note" role="status">{{ survey.message }}</p>
@@ -257,6 +304,9 @@ onMounted(async () => {
         <input v-model="targetLabel" type="text" maxlength="60" placeholder="近拍点名称（可选）" :disabled="!currentPosition || busyTarget" />
         <button type="button" :disabled="!currentPosition || busyTarget" @click="addTarget">加入近拍清单</button>
       </div>
+      <button class="video-survey-capture" type="button" :disabled="!canCaptureFrame" @click="captureCurrentFrame">
+        {{ capturingFrame ? '截取中…' : frameCount >= 30 ? '关键帧已达 30 张上限' : '截取当前画面用于分析' }}
+      </button>
 
       <ul v-if="survey.targets.length" class="video-survey-target-list">
         <li v-for="target in survey.targets" :key="target.id">
@@ -267,7 +317,7 @@ onMounted(async () => {
           <button class="video-survey-remove" type="button" :disabled="busyTarget" :aria-label="`删除${target.label}`" @click="removeTarget(target)">删除</button>
         </li>
       </ul>
-      <small class="video-survey-footnote">视频只用于回看和定位；模型只处理之后导入的近拍静态照片。地图坐标是无人机位置，不是像素对应的地面水坑坐标。</small>
+      <small class="video-survey-footnote">只对手动截取的关键帧运行模型；SRT 依据时间提供无人机位置，不会逐帧调用模型。地图点表示无人机位置，不是水坑地面坐标。</small>
     </div>
 
     <Teleport to="body">
@@ -316,12 +366,13 @@ onMounted(async () => {
 .video-survey-badge.is-ready { background: #e7f6ec; color: #16794c; }
 .video-survey-badge.is-warning { background: #fff4e5; color: #9a5b13; }
 .video-survey-picker-row { display: flex; min-width: 0; align-items: center; gap: 7px; margin: 5px 0; }
-.video-survey-picker-row button, .video-survey-target-entry button, .video-survey-target-list button, .video-survey-import { min-height: 28px; padding: 4px 8px; border: 1px solid #d7dfe8; border-radius: 6px; background: #fff; color: #34506c; font-size: 11px; white-space: nowrap; }
+.video-survey-picker-row button, .video-survey-target-entry button, .video-survey-target-list button, .video-survey-import, .video-survey-capture { min-height: 28px; padding: 4px 8px; border: 1px solid #d7dfe8; border-radius: 6px; background: #fff; color: #34506c; font-size: 11px; white-space: nowrap; }
 .video-survey-picker-row button:hover:not(:disabled), .video-survey-target-entry button:hover:not(:disabled), .video-survey-target-list button:hover:not(:disabled) { border-color: var(--ui-accent); color: var(--ui-accent); background: #eff6ff; }
-.video-survey-picker-row button:disabled, .video-survey-target-entry button:disabled, .video-survey-target-list button:disabled, .video-survey-import:disabled { opacity: .5; cursor: not-allowed; }
+.video-survey-picker-row button:disabled, .video-survey-target-entry button:disabled, .video-survey-target-list button:disabled, .video-survey-import:disabled, .video-survey-capture:disabled { opacity: .5; cursor: not-allowed; }
 .video-survey-file-name { min-width: 0; overflow: hidden; color: var(--ui-muted); text-overflow: ellipsis; white-space: nowrap; }
 .video-survey-import { width: 100%; margin-top: 4px; border-color: var(--ui-accent); background: var(--ui-accent); color: #fff; }
 .video-survey-import:hover:not(:disabled) { background: var(--ui-accent-hover); color: #fff; }
+.video-survey-capture { width: 100%; margin-top: 7px; border-color: var(--ui-accent); color: var(--ui-accent); }
 .video-survey-note, .video-survey-feedback { margin: 7px 0; padding: 6px 8px; border-radius: 6px; background: #eff6ff; color: #1d4ed8; line-height: 1.4; overflow-wrap: anywhere; }
 .video-survey-feedback.is-error { background: #fef2f2; color: #a4262c; }
 .video-survey-review { margin-top: 9px; }

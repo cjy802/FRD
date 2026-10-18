@@ -16,6 +16,7 @@ export type VideoCaptureTarget = VideoTelemetryPoint & {
 
 export type VideoSurvey = {
   job_id: string
+  task_id?: string | null
   created_at: string
   video_name: string
   srt_name: string
@@ -72,11 +73,11 @@ export function browseVideoSurveyFiles(kind: 'video' | 'srt', path?: string): Pr
   return request<VideoBrowserListing>(`${endpoint}/browse?${query.toString()}`)
 }
 
-export async function createVideoSurvey(videoPath: string, srtPath: string): Promise<VideoSurvey> {
+export async function createVideoSurvey(videoPath: string, srtPath: string, taskId: string): Promise<VideoSurvey> {
   return request<VideoSurvey>(`${endpoint}/import`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ video_path: videoPath, srt_path: srtPath }),
+    body: JSON.stringify({ video_path: videoPath, srt_path: srtPath, task_id: taskId }),
   })
 }
 

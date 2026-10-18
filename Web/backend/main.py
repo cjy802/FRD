@@ -7,13 +7,14 @@ airspace, 3D obstacles and unmodeled hazards remain independent checks.
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import os
 import re
 import time
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
@@ -37,13 +38,14 @@ from route_templates import (
     RouteTemplateStore, TemplateConflict, TemplateNotFound, TemplateTooLarge,
     TemplateUpdate, TemplateWrite,
 )
+from task_store import TaskError, tasks
 
 
 app = FastAPI(title="低空飞行决策工作台", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -147,6 +149,23 @@ class VideoCaptureTargetRequest(BaseModel):
 class VideoSurveyPathRequest(BaseModel):
     video_path: str = Field(min_length=1, max_length=2048)
     srt_path: str = Field(min_length=1, max_length=2048)
+    task_id: str = Field(min_length=23, max_length=23)
+
+
+class TaskCreateRequest(BaseModel):
+    route: dict[str, Any]
+    departure_time: str = Field(min_length=1, max_length=40)
+
+
+class TaskUpdateRequest(BaseModel):
+    status: Literal["planning", "ready", "in_flight", "completed"] | None = None
+    weather: dict[str, Any] | None = None
+    aircraft: dict[str, Any] | None = None
+    export_file_name: str | None = Field(default=None, max_length=128)
+    flight_started_at: str | None = Field(default=None, max_length=40)
+    video_survey_id: str | None = Field(default=None, max_length=40)
+    analysis_job_id: str | None = Field(default=None, max_length=40)
+    analysis_targets: list[dict[str, Any]] | None = Field(default=None, max_length=100)
 
 
 @lru_cache(maxsize=1)
@@ -171,6 +190,82 @@ def distance_km(a: Point, b: Point) -> float:
 @app.get("/api/health")
 def health():
     return {"status": "ok", "road_data": "jiangsu_pbf_index" if LOCAL_INDEX_FILE.is_file() else "campus_osm"}
+
+
+@app.post("/api/tasks", status_code=status.HTTP_201_CREATED)
+def create_task(request: Request, payload: TaskCreateRequest):
+    require_local_request(request, mutation=True, label="飞行任务")
+    try:
+        return tasks.create(payload.route, payload.departure_time)
+    except TaskError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+
+
+@app.get("/api/tasks/{task_id}")
+def get_task(request: Request, task_id: str):
+    require_local_request(request, label="飞行任务")
+    try:
+        return tasks.get(task_id)
+    except TaskError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+
+
+@app.patch("/api/tasks/{task_id}")
+def update_task(request: Request, task_id: str, payload: TaskUpdateRequest):
+    require_local_request(request, mutation=True, label="飞行任务")
+    try:
+        return tasks.update(task_id, payload.model_dump(exclude_unset=True))
+    except TaskError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+
+
+@app.get("/api/tasks/{task_id}/frames")
+def list_task_frames(request: Request, task_id: str):
+    require_local_request(request, label="任务关键帧")
+    try:
+        return {"frames": tasks.frames(task_id)}
+    except TaskError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+
+
+@app.post("/api/tasks/{task_id}/frames", status_code=status.HTTP_201_CREATED)
+async def save_task_frame(
+    request: Request,
+    task_id: str,
+    frame: UploadFile = File(...),
+    time_seconds: float = Form(ge=0),
+    latitude: float = Form(ge=-90, le=90),
+    longitude: float = Form(ge=-180, le=180),
+    altitude_m: float | None = Form(default=None),
+):
+    require_local_request(request, mutation=True, label="任务关键帧")
+    try:
+        return tasks.add_frame(task_id, frame.filename or "frame.jpg", await frame.read(),
+                               {"time_seconds": time_seconds, "latitude": latitude,
+                                "longitude": longitude, "altitude_m": altitude_m})
+    except TaskError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+
+
+@app.get("/api/tasks/{task_id}/frames/{frame_id}")
+def get_task_frame(request: Request, task_id: str, frame_id: str):
+    require_local_request(request, label="任务关键帧")
+    try:
+        path = tasks.frame_path(task_id, frame_id)
+    except TaskError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+    media_type = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}.get(path.suffix.lower())
+    return FileResponse(path, media_type=media_type)
+
+
+@app.delete("/api/tasks/{task_id}/frames/{frame_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_task_frame(request: Request, task_id: str, frame_id: str):
+    require_local_request(request, mutation=True, label="任务关键帧")
+    try:
+        tasks.remove_frame(task_id, frame_id)
+    except TaskError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @lru_cache(maxsize=1)
@@ -449,12 +544,23 @@ def plan_mission_route(route: MissionRouteRequest):
 
 
 @app.post("/api/routes/export-kmz")
-def export_dji_kmz(request: KmzExportRequest):
+def export_dji_kmz(request: KmzExportRequest, task_id: str | None = Query(default=None, min_length=23, max_length=23)):
     try:
         settings = [item.model_dump() for item in request.waypoint_settings] if request.waypoint_settings is not None else None
         payload = build_dji_kmz(request.coordinates, request.altitude_m, request.speed_kmh, request.drone_model, settings)
+        if task_id:
+            directory = tasks.directory(task_id) / "exports"
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "dji_waypoint_draft.kmz").write_bytes(payload)
+            aircraft = tasks.get(task_id).get("aircraft") or {}
+            aircraft["drone_model"] = request.drone_model
+            aircraft["waypoint_settings"] = [item.model_dump() for item in request.waypoint_settings] if request.waypoint_settings is not None else []
+            tasks.update(task_id, {"export_file_name": "dji_waypoint_draft.kmz", "status": "ready",
+                                   "aircraft": aircraft})
     except KmzExportError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+    except TaskError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
     return Response(
         content=payload,
         media_type="application/vnd.google-earth.kmz",
@@ -552,6 +658,8 @@ async def photo_analysis_submit(
     site_name: str = Form(default=""),
     note: str = Form(default=""),
     model_id: str = Form(default=""),
+    task_id: str = Form(default=""),
+    frame_metadata: str = Form(default="[]"),
 ):
     require_local_request(request, mutation=True, label="照片分析")
     if not photos:
@@ -560,9 +668,23 @@ async def photo_analysis_submit(
     for upload in photos:
         collected.append((upload.filename or "photo", await upload.read()))
     try:
-        job_id = photo_analysis.submit(collected, context={"site_name": site_name, "note": note},
-                                       model_id=model_id or None)
+        context = {"site_name": site_name, "note": note}
+        try:
+            parsed_frame_metadata = json.loads(frame_metadata)
+        except ValueError as error:
+            raise PhotoAnalysisError("视频截图位置信息格式无效。") from error
+        if not isinstance(parsed_frame_metadata, list) or len(parsed_frame_metadata) != len(collected):
+            raise PhotoAnalysisError("视频截图与位置信息数量不一致。")
+        context["frames"] = parsed_frame_metadata
+        if task_id:
+            tasks.get(task_id)
+        job_id = photo_analysis.submit(collected, context=context,
+                                       model_id=model_id or None, task_id=task_id or None)
+        if task_id:
+            tasks.update(task_id, {"analysis_job_id": job_id})
     except PhotoAnalysisError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+    except TaskError as error:
         raise HTTPException(status_code=error.http_status, detail=str(error)) from error
     return {"job_id": job_id, "job_url": f"/api/photo-analysis/jobs/{job_id}"}
 
@@ -611,8 +733,13 @@ def video_survey_browse(request: Request, kind: Literal["video", "srt"] = "video
 async def video_survey_import(request: Request, payload: VideoSurveyPathRequest):
     require_local_request(request, mutation=True, label="视频定位")
     try:
-        return await asyncio.to_thread(video_surveys.create_from_paths, payload.video_path, payload.srt_path)
+        tasks.get(payload.task_id)
+        result = await asyncio.to_thread(video_surveys.create_from_paths, payload.video_path, payload.srt_path, payload.task_id)
+        tasks.update(payload.task_id, {"video_survey_id": result["job_id"]})
+        return result
     except VideoSurveyError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+    except TaskError as error:
         raise HTTPException(status_code=error.http_status, detail=str(error)) from error
 
 
