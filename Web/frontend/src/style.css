@@ -82,10 +82,7 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .task-create-actions button { min-height: 32px; padding: 5px 10px; border: 1px solid #d7dfe8; border-radius: 6px; background: #fff; color: #34506c; font-size: 11px; }
 .task-create-actions .task-create-confirm { border-color: var(--ui-accent); background: var(--ui-accent); color: #fff; }
 .task-create-actions button:disabled { opacity: .55; cursor: default; }
-.task-finalize-card { display: grid; gap: 8px; margin: 0 0 12px; padding: 12px; border: 1px solid var(--ui-line); border-radius: 8px; background: #fff; }
-.task-finalize-card > div strong { color: #173b5c; font-size: 13px; }
-.task-finalize-card p { margin: 3px 0 0; color: var(--ui-muted); font-size: 11px; line-height: 1.5; }
-.task-finalize-card > small { color: var(--ui-muted); font-size: 10px; line-height: 1.45; }
+.task-create-footer { display: flex; justify-content: flex-end; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--ui-line); }
 .saved-task-list { display: grid; gap: 7px; margin: 0; padding: 12px; overflow-y: auto; list-style: none; }
 .saved-task-list li { min-width: 0; }
 .saved-task-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 6px; }

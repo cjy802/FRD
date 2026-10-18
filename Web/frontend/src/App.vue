@@ -52,7 +52,6 @@ function selectModule(module: ModuleKey) {
   } else {
     workspacePanel.value = 'overview'
   }
-  if (module === 'dji' && !taskRouteMatches.value) void openCreateTaskDialog()
 }
 type LandingCheck = {
   state: 'mapped_building' | 'road_nearby' | 'no_road'
@@ -2531,11 +2530,6 @@ onBeforeUnmount(() => {
         <div v-if="activeModule === 'status'" class="insights-header"><span class="eyebrow"><span class="svg-icon icon-square-check" aria-hidden="true"></span>第 2 步 · 查看天气</span><h2>检查当前航线天气</h2><p>天气阶段的结果会在最后创建任务时一并保存。</p></div>
         <div v-if="activeModule === 'dji'" class="insights-header"><span class="eyebrow"><span class="svg-icon icon-download" aria-hidden="true"></span>第 3 步 · 命名与机型导出</span><h2>导出本次任务航线</h2><p>先命名并创建任务，再导出归档到任务目录的航线文件。</p></div>
         <p v-if="taskError && (activeModule === 'status' || activeModule === 'dji')" class="form-error" role="alert">{{ taskError }}</p>
-        <section v-if="activeModule === 'dji'" class="task-finalize-card" aria-label="创建本次任务">
-          <div><strong>{{ activeTask && taskRouteMatches ? '当前路线已关联任务' : '确认并保存本次任务' }}</strong><p>{{ activeTask && taskRouteMatches ? `当前任务：${activeTask.name || activeTask.task_id}` : '路线和天气可以先反复调整，确认后再将本次方案保存到任务列表。' }}</p></div>
-          <button type="button" class="weather-refresh" :disabled="!canFinalizeTask" @click="openCreateTaskDialog">{{ activeTask && taskRouteMatches ? '新建任务' : '命名并创建任务' }}</button>
-          <small>创建时会保存当前路线、出发时间、已生成的天气结果和机型设置；原有任务会保留在列表中。</small>
-        </section>
         <section v-if="activeModule === 'status'" class="overview-hero" aria-label="天气结论概览">
         <div class="mission-facts"><div><span class="fact-label"><span class="svg-icon icon-route" aria-hidden="true"></span>路线长度</span><strong>{{ distance }}</strong></div><div><span class="fact-label"><span class="svg-icon icon-refresh" aria-hidden="true"></span>预计用时</span><strong>{{ elapsed }}</strong></div><div><span class="fact-label"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>计划出发</span><strong>{{ departureBeijing.replace('T', ' ') }}</strong><small>北京时间</small></div></div>
          <div class="decision" :class="decisionTone" aria-live="polite"><span class="decision-kicker"><span class="svg-icon icon-alert" aria-hidden="true"></span>气象初筛</span><strong>{{ decisionTitle }}</strong><p>{{ decisionDescription }}</p><small>这里只反映已覆盖的天气指标，不等于放飞许可。</small><details v-if="routeAssessment"><summary><span class="svg-icon icon-eye" aria-hidden="true"></span>查看判断依据</summary><div v-for="check in weatherChecks" :key="check.key" class="decision-check"><b>{{ check.label }}</b><span :class="check.state === 'ready' ? 'check-ready' : 'check-pending'">{{ check.state === 'ready' ? '资料已就绪' : check.state === 'no_trigger' ? '未触发当前阈值' : check.state === 'elevated' ? '较强提示' : check.state === 'attention' ? '需要留意' : '资料待补齐' }}</span><small>{{ check.detail }}</small></div></details></div>
@@ -2606,6 +2600,9 @@ onBeforeUnmount(() => {
           <p v-if="rc2Error" class="form-error" role="alert">{{ rc2Error }}</p>
           <small>此操作只适用于 DJI Fly / RC 2。导入完成后仍需在遥控器上打开航线，核对航点与动作。</small>
         </section>
+        <div v-if="activeModule === 'dji'" class="task-create-footer">
+          <fluent-button class="primary-button" appearance="primary" type="button" :disabled="!canFinalizeTask" @click="openCreateTaskDialog"><span class="svg-icon" :class="taskBusy ? 'icon-refresh is-spinning' : 'icon-square-check'" aria-hidden="true"></span><span>创建任务</span></fluent-button>
+        </div>
       </aside>
     </main>
   </div>
