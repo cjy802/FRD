@@ -1,12 +1,12 @@
-"""Post-flight photo analysis jobs: uploaded drone photos -> ONNX water segmentation.
+"""Post-flight photo analysis jobs: uploaded drone photos -> water segmentation.
 
 The web backend never imports the ML stack. Uploaded photos are stored under
-user_data/photo_analysis/<job id>/inputs and processed by scripts/run_water_onnx.py
-inside the waterseg conda environment (configured via WATER_ANALYSIS_PYTHON),
-mirroring the FuXi subprocess pattern in live_weather.py. Results (overlay PNGs,
-suspected masks, confidence maps, results.json) stay in the job directory and are
-served back through the API. Interpretation follows the waterwatch discipline:
-suspected pixels are leads for manual review, never depth/water-level conclusions.
+user_data/photo_analysis/<job id>/inputs and processed in a separate Python
+environment, mirroring the FuXi subprocess pattern in live_weather.py. Users can
+choose the semantic ONNX model or the YOLOv8-seg champion checkpoint. Results
+(overlay PNGs, suspected masks, confidence maps, results.json) stay in the job
+directory and are served back through the API. Suspected pixels are leads for
+manual review, never depth/water-level conclusions.
 """
 
 from __future__ import annotations
@@ -23,7 +23,12 @@ BACKEND_ROOT = Path(__file__).resolve().parent
 DEFAULT_STORAGE = BACKEND_ROOT / "user_data" / "photo_analysis"
 DEFAULT_PYTHON = Path("D:/anaconda/envs/waterseg/python.exe")
 DEFAULT_MODEL_DIR = BACKEND_ROOT.parents[1] / "model" / "artifacts" / "onnx"
+DEFAULT_YOLO_PYTHON = Path("D:/anaconda/envs/yolov8-env/python.exe")
+DEFAULT_YOLO_WEIGHTS = BACKEND_ROOT.parents[1] / "model" / "output" / "4090_champions" / "yoloj_mix4_best.pt"
 RUNNER = BACKEND_ROOT / "scripts" / "run_water_onnx.py"
+YOLO_RUNNER = BACKEND_ROOT / "scripts" / "run_water_yolo.py"
+ONNX_MODEL_ID = "abcd-local"
+YOLO_MODEL_ID = "yolo-champion"
 MAX_PHOTOS_PER_JOB = 200
 MAX_PHOTO_BYTES = 40 * 1024 * 1024
 ALLOWED_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
@@ -45,35 +50,71 @@ def _configured_path(env_name: str, default: Path) -> Path:
 
 class PhotoAnalysisManager:
     def __init__(self, *, storage_dir: Path = DEFAULT_STORAGE, python_path: Path | None = None,
-                 model_dir: Path | None = None, runner_path: Path | None = None) -> None:
+                 model_dir: Path | None = None, runner_path: Path | None = None,
+                 yolo_python_path: Path | None = None, yolo_model_path: Path | None = None,
+                 yolo_runner_path: Path | None = None) -> None:
         self.storage_dir = storage_dir
         self.python_path = python_path if python_path is not None else _configured_path("WATER_ANALYSIS_PYTHON", DEFAULT_PYTHON)
         self.model_dir = model_dir if model_dir is not None else _configured_path("WATER_ANALYSIS_MODEL_DIR", DEFAULT_MODEL_DIR)
         self.runner_path = runner_path if runner_path is not None else RUNNER
+        self.yolo_python_path = (yolo_python_path if yolo_python_path is not None
+                                 else _configured_path("WATER_ANALYSIS_YOLO_PYTHON", DEFAULT_YOLO_PYTHON))
+        if yolo_model_path is not None:
+            self.yolo_model_path = yolo_model_path
+        elif runner_path is not None:
+            # A custom ONNX runner is commonly injected by tests or callers; do
+            # not silently route those isolated jobs into the machine's YOLO model.
+            import os
+
+            configured_yolo = os.environ.get("WATER_ANALYSIS_YOLO_MODEL", "").strip()
+            self.yolo_model_path = Path(configured_yolo) if configured_yolo else None
+        else:
+            self.yolo_model_path = _configured_path("WATER_ANALYSIS_YOLO_MODEL", DEFAULT_YOLO_WEIGHTS)
+        self.yolo_runner_path = yolo_runner_path if yolo_runner_path is not None else YOLO_RUNNER
         self._lock = threading.Lock()
         self._jobs: dict[str, dict[str, Any]] = {}
+
+    def _model_options(self) -> list[dict[str, Any]]:
+        registry_path = self.model_dir / "registry.json"
+        registry_ok = registry_path.is_file()
+        onnx_model_ok = False
+        if registry_ok:
+            try:
+                registry = json.loads(registry_path.read_text(encoding="utf-8"))
+                model_name = registry.get("default_model", "")
+                onnx_model_ok = bool(model_name) and (self.model_dir / model_name).is_file()
+            except (OSError, ValueError, TypeError):
+                registry_ok = False
+        onnx_ready = self.python_path.is_file() and registry_ok and onnx_model_ok and self.runner_path.is_file()
+        onnx_message = "可用" if onnx_ready else "需要推理 Python、有效的 ONNX registry/权重和 runner"
+
+        yolo_model_ok = self.yolo_model_path is not None and self.yolo_model_path.is_file()
+        yolo_ready = (self.yolo_python_path.is_file() and yolo_model_ok and self.yolo_runner_path.is_file())
+        yolo_message = "可用" if yolo_ready else "需要 yolov8-env、冠军 .pt 权重和 YOLO runner"
+        return [
+            {"id": ONNX_MODEL_ID, "label": "ABCDWaveNet 本地混合模型", "description": "语义分割 · RGB 积水候选",
+             "available": onnx_ready, "message": onnx_message},
+            {"id": YOLO_MODEL_ID, "label": "YOLOv8n-seg 4090 混训冠军", "description": "实例分割 · Puddle/FRED/FloodNet/本地种子混训",
+             "available": yolo_ready, "message": yolo_message},
+        ]
 
     def health(self) -> dict[str, Any]:
         with self._lock:
             busy = any(job["state"] in ("pending", "running") for job in self._jobs.values())
-        python_ok = self.python_path.is_file()
-        registry = self.model_dir / "registry.json"
-        model_ok = registry.is_file()
-        runner_ok = self.runner_path.is_file()
-        message = (
-            "照片分析组件已就绪。"
-            if python_ok and model_ok and runner_ok
-            else "照片分析不可用："
-            + "；".join(part for part in (
-                None if python_ok else f"缺少推理 Python（{self.python_path}）",
-                None if model_ok else f"缺少模型 registry（{self.model_dir}）；先运行 waterwatch 导出 ONNX",
-                None if runner_ok else "缺少 scripts/run_water_onnx.py",
-            ) if part)
+        models = self._model_options()
+        available = any(model["available"] for model in models)
+        yolo_available = next((model["available"] for model in models if model["id"] == YOLO_MODEL_ID), False)
+        default_model_id = YOLO_MODEL_ID if yolo_available else ONNX_MODEL_ID
+        message = "照片分析组件已就绪。可选择本地混合模型或 YOLO 4090 冠军。" if available else (
+            "照片分析不可用：" + "；".join(model["message"] for model in models)
         )
-        return {"available": python_ok and model_ok and runner_ok, "busy": busy,
+        return {"available": available, "busy": busy, "models": models,
+                "default_model_id": default_model_id,
                 "python": str(self.python_path), "model_dir": str(self.model_dir),
                 "max_photos_per_job": MAX_PHOTOS_PER_JOB, "message": message}
-    def submit(self, photos: list[tuple[str, bytes]], context: dict[str, Any] | None = None) -> str:
+
+    def submit(self, photos: list[tuple[str, bytes]], context: dict[str, Any] | None = None,
+               model_id: str | None = None) -> str:
         if not photos:
             raise PhotoAnalysisError("没有收到照片文件。")
         if len(photos) > MAX_PHOTOS_PER_JOB:
@@ -81,6 +122,12 @@ class PhotoAnalysisManager:
         health = self.health()
         if not health["available"]:
             raise PhotoAnalysisError(health["message"], http_status=503)
+        selected_model_id = model_id or health["default_model_id"]
+        selected_model = next((model for model in health["models"] if model["id"] == selected_model_id), None)
+        if selected_model is None:
+            raise PhotoAnalysisError("无法识别所选照片分析模型。")
+        if not selected_model["available"]:
+            raise PhotoAnalysisError(f"所选模型未就绪：{selected_model['message']}", http_status=503)
         with self._lock:
             if any(job["state"] in ("pending", "running") for job in self._jobs.values()):
                 raise PhotoAnalysisError("已有分析任务在运行，请等待完成后再提交。", http_status=409)
@@ -106,6 +153,7 @@ class PhotoAnalysisManager:
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "finished_at": None,
                 "context": context or {},
+                "model_id": selected_model_id,
                 "inputs": saved,
                 "results": None,
                 "error": None,
@@ -118,12 +166,21 @@ class PhotoAnalysisManager:
     def _process(self, job_id: str) -> None:
         job_dir = self.storage_dir / job_id
         output_dir = job_dir / "outputs"
-        command = [
-            str(self.python_path), "-B", str(self.runner_path),
-            "--model-dir", str(self.model_dir),
-            "--input-dir", str(job_dir / "inputs"),
-            "--output-dir", str(output_dir),
-        ]
+        job = self.job(job_id)
+        if job["model_id"] == YOLO_MODEL_ID:
+            command = [
+                str(self.yolo_python_path), "-B", str(self.yolo_runner_path),
+                "--weights", str(self.yolo_model_path),
+                "--input-dir", str(job_dir / "inputs"),
+                "--output-dir", str(output_dir),
+            ]
+        else:
+            command = [
+                str(self.python_path), "-B", str(self.runner_path),
+                "--model-dir", str(self.model_dir),
+                "--input-dir", str(job_dir / "inputs"),
+                "--output-dir", str(output_dir),
+            ]
         try:
             with self._lock:
                 self._jobs[job_id]["state"] = "running"

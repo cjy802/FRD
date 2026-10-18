@@ -538,6 +538,7 @@ async def photo_analysis_submit(
     photos: list[UploadFile] = File(...),
     site_name: str = Form(default=""),
     note: str = Form(default=""),
+    model_id: str = Form(default=""),
 ):
     require_local_request(request, mutation=True, label="照片分析")
     if not photos:
@@ -546,7 +547,8 @@ async def photo_analysis_submit(
     for upload in photos:
         collected.append((upload.filename or "photo", await upload.read()))
     try:
-        job_id = photo_analysis.submit(collected, context={"site_name": site_name, "note": note})
+        job_id = photo_analysis.submit(collected, context={"site_name": site_name, "note": note},
+                                       model_id=model_id or None)
     except PhotoAnalysisError as error:
         raise HTTPException(status_code=error.http_status, detail=str(error)) from error
     return {"job_id": job_id, "job_url": f"/api/photo-analysis/jobs/{job_id}"}

@@ -11,6 +11,7 @@ import type { PhotoAnalysisHealth, PhotoAnalysisJob } from './photoAnalysis'
 
 const health = ref<PhotoAnalysisHealth | null>(null)
 const healthError = ref('')
+const selectedModel = ref('')
 const selectedFiles = ref<File[]>([])
 const siteName = ref('')
 const note = ref('')
@@ -21,12 +22,14 @@ const status = ref('')
 const viewMode = ref<'overlay' | 'original'>('overlay')
 let pollTimer: number | null = null
 
-const canSubmit = computed(() => Boolean(health.value?.available && selectedFiles.value.length && !busy.value))
+const selectedModelOption = computed(() => health.value?.models?.find(model => model.id === selectedModel.value) ?? null)
+const canSubmit = computed(() => Boolean(health.value?.available && selectedModelOption.value?.available
+  && selectedFiles.value.length && !busy.value))
 const interpretation = computed(() => job.value?.results?.interpretation ?? '')
 const modelSummary = computed(() => {
   const model = job.value?.results?.model
   if (!model) return ''
-  return `${model.default_model} · 输入 ${model.input_size}px · ${model.normalize}`
+  return `${model.display_name ?? model.default_model} · 输入 ${model.input_size}px`
 })
 
 function fractionPercent(value: number): string {
@@ -37,6 +40,7 @@ async function refreshHealth() {
   healthError.value = ''
   try {
     health.value = await fetchPhotoAnalysisHealth()
+    if (!selectedModelOption.value?.available) selectedModel.value = health.value.default_model_id
   } catch (cause) {
     health.value = null
     healthError.value = cause instanceof PhotoAnalysisApiError ? cause.message : '无法连接照片分析服务。'
@@ -62,7 +66,7 @@ async function submit() {
     const submitted = await submitPhotoAnalysis(selectedFiles.value, {
       site_name: siteName.value.trim() || undefined,
       note: note.value.trim() || undefined,
-    })
+    }, selectedModel.value)
     status.value = '已提交，正在分析…'
     pollJob(submitted.job_id)
   } catch (cause) {
@@ -135,6 +139,13 @@ onUnmounted(stopPolling)
       </div>
 
       <div class="photo-form">
+        <label for="photo-analysis-model">分割模型</label>
+        <select id="photo-analysis-model" v-model="selectedModel" class="photo-model-select" :disabled="busy || !health?.available">
+          <option v-for="model in health?.models ?? []" :key="model.id" :value="model.id" :disabled="!model.available">
+            {{ model.label }}{{ model.available ? '' : '（未就绪）' }}
+          </option>
+        </select>
+        <small v-if="selectedModelOption" class="photo-model-description">{{ selectedModelOption.description }}</small>
         <label for="photo-analysis-files">照片（可多选）</label>
         <input id="photo-analysis-files" type="file" accept="image/jpeg,image/png,image/webp,image/bmp" multiple :disabled="busy || !health?.available" @change="onFilesChanged" />
         <div class="photo-context">
@@ -191,6 +202,8 @@ onUnmounted(stopPolling)
 .photo-toolbar small { color: var(--ui-muted); line-height: 1.4; }
 .photo-form { padding: 4px 0 10px; }
 .photo-form > label { display: block; margin-bottom: 4px; color: #424242; font-weight: 600; }
+.photo-model-select { display: block; width: 100%; min-width: 0; height: 32px; margin: 0 0 4px; padding: 4px 7px; border: 1px solid #d1d5db; border-radius: 6px; background: #f9fafb; color: #27364a; font-size: var(--font-caption); }
+.photo-model-description { display: block; margin: 0 0 8px; color: var(--ui-muted); line-height: 1.4; }
 .photo-form input[type='text'] { width: 100%; min-width: 0; height: 30px; padding: 4px 7px; border: 1px solid #d1d5db; border-radius: 6px; background: #f9fafb; font-size: var(--font-caption); }
 .photo-context { display: grid; gap: 5px; margin-top: 6px; }
 .photo-count { margin: 5px 0 0; color: var(--ui-muted); }

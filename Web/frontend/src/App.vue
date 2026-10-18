@@ -2191,7 +2191,7 @@ onBeforeUnmount(() => {
           </div>
 
            <div class="settings-group" data-settings-page="photos" :class="{ 'settings-active': settingsPage === 'photos' }">
-          <p class="form-scope-note">飞行结束后把无人机照片上传到本机分析：自动输出疑似积水叠图与置信度，供人工复核；需要本机已训练并导出 ONNX 模型。</p>
+          <p class="form-scope-note">飞行结束后把无人机照片上传到本机分析：可选择本地混合模型或 YOLO 4090 冠军，查看疑似水体叠图并人工复核。</p>
           <PhotoAnalysisPanel />
           </div>
           </div>
