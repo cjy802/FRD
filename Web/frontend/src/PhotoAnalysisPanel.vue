@@ -175,7 +175,7 @@ onUnmounted(stopPolling)
         </select>
         <small v-if="selectedModelOption" class="photo-model-description">{{ selectedModelOption.description }}</small>
         <label for="photo-analysis-files">照片（可多选）</label>
-        <input id="photo-analysis-files" type="file" accept="image/jpeg,image/png,image/webp,image/bmp" multiple :disabled="busy || !health?.available" @change="onFilesChanged" />
+        <input id="photo-analysis-files" class="photo-file-input" type="file" accept="image/jpeg,image/png,image/webp,image/bmp" multiple :disabled="busy || !health?.available" @change="onFilesChanged" />
         <div class="photo-context">
           <input v-model="siteName" type="text" maxlength="60" autocomplete="off" placeholder="站点/地点（可选）" :disabled="busy" />
           <input v-model="note" type="text" maxlength="120" autocomplete="off" placeholder="备注（可选）" :disabled="busy" />
@@ -252,6 +252,11 @@ onUnmounted(stopPolling)
 .photo-form > label { display: block; margin-bottom: 4px; color: #424242; font-weight: 600; }
 .photo-model-select { display: block; width: 100%; min-width: 0; height: 32px; margin: 0 0 4px; padding: 4px 7px; border: 1px solid #d1d5db; border-radius: 6px; background: #f9fafb; color: #27364a; font-size: var(--font-caption); }
 .photo-model-description { display: block; margin: 0 0 8px; color: var(--ui-muted); line-height: 1.4; }
+.photo-file-input { display: block; width: 100%; min-width: 0; margin: 0 0 4px; padding: 4px 6px; border: 1px solid #d1d5db; border-radius: 6px; background: #f9fafb; color: #424242; font-size: var(--font-caption); }
+.photo-file-input::file-selector-button { min-height: 28px; margin-right: 8px; padding: 4px 9px; border: 1px solid #d7dfe8; border-radius: 5px; background: #fff; color: #34506c; font-size: inherit; cursor: pointer; }
+.photo-file-input:hover::file-selector-button { border-color: var(--ui-accent); color: var(--ui-accent); background: #eff6ff; }
+.photo-file-input:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 2px; }
+.photo-file-input:disabled { opacity: .55; cursor: not-allowed; }
 .photo-form input[type='text'] { width: 100%; min-width: 0; height: 30px; padding: 4px 7px; border: 1px solid #d1d5db; border-radius: 6px; background: #f9fafb; font-size: var(--font-caption); }
 .photo-context { display: grid; gap: 5px; margin-top: 6px; }
 .photo-count { margin: 5px 0 0; color: var(--ui-muted); }
