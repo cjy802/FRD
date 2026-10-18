@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import {
   addVideoCaptureTarget,
+  browseVideoSurveyFiles,
   createVideoSurvey,
   deleteVideoCaptureTarget,
   fetchVideoSurvey,
   interpolateVideoPosition,
 } from './videoSurvey'
-import type { VideoCaptureTarget, VideoSurvey, VideoTelemetryPoint } from './videoSurvey'
+import type { VideoBrowserEntry, VideoBrowserListing, VideoCaptureTarget, VideoSurvey, VideoTelemetryPoint } from './videoSurvey'
 
 const emit = defineEmits<{
   'track-change': [track: number[][]]
@@ -17,11 +18,15 @@ const emit = defineEmits<{
 
 const STORAGE_KEY = 'low-altitude-active-video-survey'
 const survey = ref<VideoSurvey | null>(null)
-const videoFile = ref<File | null>(null)
-const srtFile = ref<File | null>(null)
-const videoInput = ref<HTMLInputElement | null>(null)
-const srtInput = ref<HTMLInputElement | null>(null)
+const videoPath = ref('')
+const srtPath = ref('')
 const videoElement = ref<HTMLVideoElement | null>(null)
+const fileBrowserDialog = ref<HTMLElement | null>(null)
+const fileBrowserOpen = ref(false)
+const fileBrowserKind = ref<'video' | 'srt'>('video')
+const fileBrowser = ref<VideoBrowserListing | null>(null)
+const fileBrowserLoading = ref(false)
+const fileBrowserError = ref('')
 const currentPosition = ref<VideoTelemetryPoint | null>(null)
 const currentTime = ref(0)
 const videoDuration = ref(0)
@@ -31,12 +36,24 @@ const busyTarget = ref(false)
 const error = ref('')
 const status = ref('')
 
-const canImport = computed(() => Boolean(videoFile.value && srtFile.value && !loading.value))
+const canImport = computed(() => Boolean(videoPath.value && srtPath.value && !loading.value))
 const currentTimeLabel = computed(() => formatVideoTime(currentTime.value))
+const videoSelectionName = computed(() => videoPath.value ? pathBasename(videoPath.value) : survey.value?.video_name ?? '尚未选择视频')
+const srtSelectionName = computed(() => srtPath.value ? pathBasename(srtPath.value) : survey.value?.srt_name ?? '尚未选择 SRT')
 
 function formatVideoTime(seconds: number): string {
   const value = Math.max(0, Math.floor(seconds || 0))
   return `${String(Math.floor(value / 60)).padStart(2, '0')}:${String(value % 60).padStart(2, '0')}`
+}
+
+function pathBasename(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path
+}
+
+function formatFileSize(bytes = 0): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 function compactTrack(points: VideoTelemetryPoint[]): number[][] {
@@ -62,24 +79,46 @@ function updatePosition(time = videoElement.value?.currentTime ?? currentTime.va
   emit('position-change', currentPosition.value)
 }
 
-function onVideoChanged(event: Event) {
-  videoFile.value = (event.target as HTMLInputElement).files?.[0] ?? null
+async function openFileBrowser(kind: 'video' | 'srt') {
+  fileBrowserKind.value = kind
+  fileBrowserOpen.value = true
+  fileBrowserError.value = ''
+  await loadFileBrowser()
+  await nextTick()
+  fileBrowserDialog.value?.focus()
 }
 
-function onSrtChanged(event: Event) {
-  srtFile.value = (event.target as HTMLInputElement).files?.[0] ?? null
+async function loadFileBrowser(path?: string) {
+  fileBrowserLoading.value = true
+  fileBrowserError.value = ''
+  try {
+    fileBrowser.value = await browseVideoSurveyFiles(fileBrowserKind.value, path)
+  } catch (cause) {
+    fileBrowserError.value = cause instanceof Error ? cause.message : '无法读取这个文件夹。'
+  } finally {
+    fileBrowserLoading.value = false
+  }
 }
 
-function openVideoPicker() { videoInput.value?.click() }
-function openSrtPicker() { srtInput.value?.click() }
+function selectBrowserEntry(entry: VideoBrowserEntry) {
+  if (entry.is_directory) {
+    void loadFileBrowser(entry.path)
+    return
+  }
+  if (fileBrowserKind.value === 'video') videoPath.value = entry.path
+  else srtPath.value = entry.path
+  fileBrowserOpen.value = false
+}
+
+function closeFileBrowser() { fileBrowserOpen.value = false }
 
 async function importVideo() {
-  if (!videoFile.value || !srtFile.value || loading.value) return
+  if (!videoPath.value || !srtPath.value || loading.value) return
   loading.value = true
   error.value = ''
   status.value = '正在本机保存视频并读取 SRT 轨迹…'
   try {
-    const result = await createVideoSurvey(videoFile.value, srtFile.value)
+    const result = await createVideoSurvey(videoPath.value, srtPath.value)
     localStorage.setItem(STORAGE_KEY, result.job_id)
     publishSurvey(result)
     status.value = result.has_gps
@@ -169,17 +208,15 @@ onMounted(async () => {
     </header>
 
     <div class="video-survey-picker-row">
-      <input ref="videoInput" class="video-survey-native-input" type="file" accept="video/mp4,video/quicktime,video/x-m4v,.mp4,.mov,.m4v" @change="onVideoChanged" />
-      <button type="button" :disabled="loading" @click="openVideoPicker">选择视频</button>
-      <span class="video-survey-file-name" :title="videoFile?.name ?? survey?.video_name ?? ''">
-        {{ videoFile?.name ?? survey?.video_name ?? '尚未选择视频' }}
+      <button type="button" :disabled="loading" @click="openFileBrowser('video')">选择视频</button>
+      <span class="video-survey-file-name" :title="videoPath || survey?.video_name || ''">
+        {{ videoSelectionName }}
       </span>
     </div>
     <div class="video-survey-picker-row">
-      <input ref="srtInput" class="video-survey-native-input" type="file" accept=".srt,application/x-subrip,text/plain" @change="onSrtChanged" />
-      <button type="button" :disabled="loading" @click="openSrtPicker">选择 SRT</button>
-      <span class="video-survey-file-name" :title="srtFile?.name ?? survey?.srt_name ?? ''">
-        {{ srtFile?.name ?? survey?.srt_name ?? '尚未选择 SRT' }}
+      <button type="button" :disabled="loading" @click="openFileBrowser('srt')">选择 SRT</button>
+      <span class="video-survey-file-name" :title="srtPath || survey?.srt_name || ''">
+        {{ srtSelectionName }}
       </span>
     </div>
     <button class="video-survey-import" type="button" :disabled="!canImport" @click="importVideo">
@@ -232,6 +269,41 @@ onMounted(async () => {
       </ul>
       <small class="video-survey-footnote">视频只用于回看和定位；模型只处理之后导入的近拍静态照片。地图坐标是无人机位置，不是像素对应的地面水坑坐标。</small>
     </div>
+
+    <Teleport to="body">
+      <div v-if="fileBrowserOpen" class="video-file-browser-backdrop" @click.self="closeFileBrowser">
+        <section ref="fileBrowserDialog" class="video-file-browser" role="dialog" aria-modal="true" aria-labelledby="video-file-browser-title" tabindex="-1" @keydown.esc.stop.prevent="closeFileBrowser">
+          <header class="video-file-browser-header">
+            <div>
+              <h4 id="video-file-browser-title">选择{{ fileBrowserKind === 'video' ? '视频' : 'SRT 字幕' }}</h4>
+              <small>在网页内浏览本机文件夹</small>
+            </div>
+            <button type="button" aria-label="关闭文件选择器" @click="closeFileBrowser">关闭</button>
+          </header>
+          <nav v-if="fileBrowser" class="video-file-browser-roots" aria-label="常用位置和磁盘">
+            <button v-for="root in fileBrowser.roots" :key="root.path" type="button" :class="{ 'is-active': root.path === fileBrowser.root.path }" @click="loadFileBrowser(root.path)">{{ root.label }}</button>
+          </nav>
+          <div class="video-file-browser-path">
+            <button v-if="fileBrowser?.parent_path" type="button" @click="loadFileBrowser(fileBrowser.parent_path)">上一级</button>
+            <span :title="fileBrowser?.current_path">{{ fileBrowser?.current_path ?? '读取目录…' }}</span>
+          </div>
+          <p v-if="fileBrowserError" class="video-file-browser-message is-error" role="alert">{{ fileBrowserError }}</p>
+          <p v-else-if="fileBrowserLoading" class="video-file-browser-message" role="status">正在读取目录…</p>
+          <ul v-else-if="fileBrowser?.entries.length" class="video-file-browser-list">
+            <li v-for="entry in fileBrowser.entries" :key="entry.path">
+              <button type="button" :class="entry.is_directory ? 'is-directory' : 'is-file'" @click="selectBrowserEntry(entry)">
+                <span class="video-file-browser-entry-icon">{{ entry.is_directory ? '文件夹' : fileBrowserKind === 'video' ? '视频' : 'SRT' }}</span>
+                <span class="video-file-browser-entry-name">{{ entry.name }}</span>
+                <small v-if="!entry.is_directory">{{ formatFileSize(entry.size_bytes) }}</small>
+                <span v-else class="video-file-browser-chevron">›</span>
+              </button>
+            </li>
+          </ul>
+          <p v-else class="video-file-browser-message">此文件夹里没有{{ fileBrowserKind === 'video' ? '支持的视频' : 'SRT 文件' }}；可以进入子文件夹或切换磁盘。</p>
+          <small v-if="fileBrowser?.truncated" class="video-file-browser-truncated">文件较多，只显示前 2000 项，请继续进入子文件夹缩小范围。</small>
+        </section>
+      </div>
+    </Teleport>
   </section>
 </template>
 
@@ -244,7 +316,6 @@ onMounted(async () => {
 .video-survey-badge.is-ready { background: #e7f6ec; color: #16794c; }
 .video-survey-badge.is-warning { background: #fff4e5; color: #9a5b13; }
 .video-survey-picker-row { display: flex; min-width: 0; align-items: center; gap: 7px; margin: 5px 0; }
-.video-survey-native-input { display: none; }
 .video-survey-picker-row button, .video-survey-target-entry button, .video-survey-target-list button, .video-survey-import { min-height: 28px; padding: 4px 8px; border: 1px solid #d7dfe8; border-radius: 6px; background: #fff; color: #34506c; font-size: 11px; white-space: nowrap; }
 .video-survey-picker-row button:hover:not(:disabled), .video-survey-target-entry button:hover:not(:disabled), .video-survey-target-list button:hover:not(:disabled) { border-color: var(--ui-accent); color: var(--ui-accent); background: #eff6ff; }
 .video-survey-picker-row button:disabled, .video-survey-target-entry button:disabled, .video-survey-target-list button:disabled, .video-survey-import:disabled { opacity: .5; cursor: not-allowed; }
@@ -271,4 +342,26 @@ onMounted(async () => {
 .video-survey-target-summary small { color: var(--ui-muted); font-size: 10px; }
 .video-survey-target-list .video-survey-remove { flex: 0 0 auto; }
 .video-survey-footnote { display: block; margin-top: 8px; color: var(--ui-muted); line-height: 1.4; }
+.video-file-browser-backdrop { position: fixed; z-index: 10000; inset: 0; display: grid; place-items: center; padding: 18px; background: rgb(15 23 42 / .42); }
+.video-file-browser { display: flex; width: min(680px, 96vw); max-height: min(760px, 88vh); flex-direction: column; overflow: hidden; border: 1px solid var(--ui-line); border-radius: var(--ui-radius); background: #fff; color: #27364a; box-shadow: 0 12px 36px rgb(15 23 42 / .2); outline: none; }
+.video-file-browser-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--ui-line); }
+.video-file-browser-header h4 { margin: 0; font-size: 14px; }
+.video-file-browser-header small { display: block; margin-top: 3px; color: var(--ui-muted); }
+.video-file-browser button { min-height: 30px; padding: 5px 9px; border: 1px solid #d7dfe8; border-radius: 6px; background: #fff; color: #34506c; font-size: 12px; cursor: pointer; }
+.video-file-browser button:hover:not(:disabled) { border-color: var(--ui-accent); background: #eff6ff; color: var(--ui-accent); }
+.video-file-browser-roots { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px 0; }
+.video-file-browser-roots button.is-active { border-color: var(--ui-accent); background: #eff6ff; color: var(--ui-accent); }
+.video-file-browser-path { display: flex; min-width: 0; align-items: center; gap: 8px; padding: 9px 12px; }
+.video-file-browser-path span { overflow: hidden; color: var(--ui-muted); text-overflow: ellipsis; white-space: nowrap; }
+.video-file-browser-list { min-height: 120px; margin: 0 12px 12px; padding: 0; overflow: auto; border: 1px solid var(--ui-line); border-radius: 6px; list-style: none; }
+.video-file-browser-list li + li { border-top: 1px solid #edf0f3; }
+.video-file-browser-list li button { display: flex; width: 100%; align-items: center; gap: 9px; min-height: 40px; padding: 5px 9px; border: 0; border-radius: 0; text-align: left; }
+.video-file-browser-list li button:hover { background: #f3f7fb; }
+.video-file-browser-entry-icon { flex: 0 0 48px; color: var(--ui-muted); font-size: 10px; }
+.video-file-browser-entry-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.video-file-browser-list li button small { flex: 0 0 auto; color: var(--ui-muted); }
+.video-file-browser-chevron { color: var(--ui-muted); font-size: 18px; }
+.video-file-browser-message { margin: 0 12px 12px; padding: 10px; border-radius: 6px; background: #f3f6f9; color: var(--ui-muted); line-height: 1.4; }
+.video-file-browser-message.is-error { background: #fef2f2; color: #a4262c; }
+.video-file-browser-truncated { margin: 0 12px 12px; color: var(--ui-muted); }
 </style>

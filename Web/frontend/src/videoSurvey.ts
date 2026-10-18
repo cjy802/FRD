@@ -29,6 +29,18 @@ export type VideoSurvey = {
   video_url: string
 }
 
+export type VideoBrowserRoot = { label: string; path: string }
+export type VideoBrowserEntry = { name: string; path: string; is_directory: boolean; size_bytes?: number }
+export type VideoBrowserListing = {
+  kind: 'video' | 'srt'
+  roots: VideoBrowserRoot[]
+  root: VideoBrowserRoot
+  current_path: string
+  parent_path: string | null
+  entries: VideoBrowserEntry[]
+  truncated: boolean
+}
+
 export class VideoSurveyApiError extends Error {
   constructor(message: string, readonly status: number) {
     super(message)
@@ -54,11 +66,18 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return body as T
 }
 
-export async function createVideoSurvey(video: File, srt: File): Promise<VideoSurvey> {
-  const form = new FormData()
-  form.append('video', video, video.name)
-  form.append('srt', srt, srt.name)
-  return request<VideoSurvey>(endpoint, { method: 'POST', body: form })
+export function browseVideoSurveyFiles(kind: 'video' | 'srt', path?: string): Promise<VideoBrowserListing> {
+  const query = new URLSearchParams({ kind })
+  if (path) query.set('path', path)
+  return request<VideoBrowserListing>(`${endpoint}/browse?${query.toString()}`)
+}
+
+export async function createVideoSurvey(videoPath: string, srtPath: string): Promise<VideoSurvey> {
+  return request<VideoSurvey>(`${endpoint}/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ video_path: videoPath, srt_path: srtPath }),
+  })
 }
 
 export function fetchVideoSurvey(jobId: string): Promise<VideoSurvey> {

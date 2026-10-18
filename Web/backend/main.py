@@ -6,6 +6,7 @@ airspace, 3D obstacles and unmodeled hazards remain independent checks.
 
 from __future__ import annotations
 
+import asyncio
 import math
 import os
 import re
@@ -141,6 +142,11 @@ class Rc2ImportRequest(KmzExportRequest):
 class VideoCaptureTargetRequest(BaseModel):
     time_seconds: float = Field(ge=0, allow_inf_nan=False)
     label: str = Field(default="", max_length=60)
+
+
+class VideoSurveyPathRequest(BaseModel):
+    video_path: str = Field(min_length=1, max_length=2048)
+    srt_path: str = Field(min_length=1, max_length=2048)
 
 
 @lru_cache(maxsize=1)
@@ -588,6 +594,24 @@ async def video_survey_create(request: Request, video: UploadFile = File(...), s
     require_local_request(request, mutation=True, label="视频定位")
     try:
         return await video_surveys.create(video, srt)
+    except VideoSurveyError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+
+
+@app.get("/api/video-surveys/browse")
+def video_survey_browse(request: Request, kind: Literal["video", "srt"] = "video", path: str | None = Query(default=None)):
+    require_local_request(request, label="本机文件选择")
+    try:
+        return video_surveys.browse(path, kind)
+    except VideoSurveyError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+
+
+@app.post("/api/video-surveys/import", status_code=status.HTTP_201_CREATED)
+async def video_survey_import(request: Request, payload: VideoSurveyPathRequest):
+    require_local_request(request, mutation=True, label="视频定位")
+    try:
+        return await asyncio.to_thread(video_surveys.create_from_paths, payload.video_path, payload.srt_path)
     except VideoSurveyError as error:
         raise HTTPException(status_code=error.http_status, detail=str(error)) from error
 

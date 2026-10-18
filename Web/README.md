@@ -62,7 +62,7 @@ npm run dev
 - `POST /api/dji/rc2/import`、`GET /api/dji/rc2/jobs/{job_id}`：生成 DJI Fly KMZ 并异步写入所选占位航线，轮询返回生成文件、备份路径、传输和回读校验状态；单次只允许一个写入任务。
 - `GET /api/photo-analysis/health`：仅本机可用，检查 ONNX 与 YOLO 两种照片分析模型的运行环境、权重和 runner。
 - `POST /api/photo-analysis/jobs`（multipart，含可选 `model_id`）、`GET /api/photo-analysis/jobs/{job_id}`、`GET /api/photo-analysis/jobs/{job_id}/files/{name}`：上传无人机照片，选择本地 ABCDWaveNet ONNX 或 YOLOv8n-seg 4090 混训冠军，轮询任务并取回叠图/疑似掩膜/置信度图与逐图统计；单次最多 200 张，同时只跑一个任务。
-- `POST /api/video-surveys`（MP4/MOV/M4V + 配套 SRT）、`GET /api/video-surveys/{job_id}`、`GET /api/video-surveys/{job_id}/video`：本机保存视频和 SRT，浏览器按视频播放时间读取 SRT GPS；`POST/DELETE /api/video-surveys/{job_id}/targets` 管理近拍点。视频只用于预览与轨迹定位，不逐帧运行视觉模型。
+- `GET /api/video-surveys/browse?kind=video|srt&path=...`：网页内浏览桌面、下载、视频、文档及本机磁盘中的匹配文件；`POST /api/video-surveys/import` 根据选中文件的本机路径导入。`GET /api/video-surveys/{job_id}`、`GET /api/video-surveys/{job_id}/video`、`POST/DELETE /api/video-surveys/{job_id}/targets` 读取视频、轨迹和近拍点。视频只用于预览与轨迹定位，不逐帧运行视觉模型。
 - `POST /api/landing/check`：用本地索引对候选点做快速初筛，返回 `mapped_building`、`road_nearby` 或 `no_road`，以及 35 米接路半径和最近道路点。`landing_verified` 始终为 `false`。
 - `POST /api/routes/preview`：保留原有的两点直线基线接口
 
