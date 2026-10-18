@@ -28,7 +28,8 @@ def _python_path() -> Path:
 def select_frames(video_path: Path, telemetry: list[dict[str, Any]], output_dir: Path, *,
                   max_frames: int, scan_fps: float, straight_overlap_percent: float,
                   turn_overlap_percent: float, turn_angle_degrees: float,
-                  camera_change_degrees: float) -> dict[str, Any]:
+                  camera_change_degrees: float, blur_filter_enabled: bool,
+                  minimum_sharpness_percent: float) -> dict[str, Any]:
     python = _python_path()
     if not python.is_file():
         raise AdaptiveVideoError("找不到视频视觉分析 Python 环境。", http_status=503)
@@ -48,7 +49,10 @@ def select_frames(video_path: Path, telemetry: list[dict[str, Any]], output_dir:
         "--turn-overlap", str(turn_overlap_percent),
         "--turn-angle", str(turn_angle_degrees),
         "--camera-change", str(camera_change_degrees),
+        "--minimum-sharpness-percent", str(minimum_sharpness_percent),
     ]
+    if not blur_filter_enabled:
+        command.append("--disable-blur-filter")
     try:
         completed = subprocess.run(
             command, capture_output=True, text=True, encoding="utf-8", errors="replace",

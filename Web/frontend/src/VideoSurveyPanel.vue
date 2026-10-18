@@ -47,6 +47,8 @@ const turnOverlapPercent = ref(60)
 const scanFps = ref(2)
 const turnAngleDegrees = ref(18)
 const cameraChangeDegrees = ref(12)
+const blurFilterEnabled = ref(true)
+const minimumSharpnessPercent = ref(40)
 const error = ref('')
 const status = ref('')
 
@@ -192,12 +194,14 @@ async function selectAdaptiveFrames() {
       scan_fps: scanFps.value,
       turn_angle_degrees: turnAngleDegrees.value,
       camera_change_degrees: cameraChangeDegrees.value,
+      blur_filter_enabled: blurFilterEnabled.value,
+      minimum_sharpness_percent: minimumSharpnessPercent.value,
     })
     if (result.task_frames.length) emit('frames-added', result.task_frames.length)
     status.value = result.task_frames.length
-      ? `扫描 ${result.scanned_candidates} 个候选时刻，自动选出 ${result.task_frames.length} 张关键帧（总计 ${result.frame_count_after} 张）。`
+      ? `扫描 ${result.scanned_candidates} 个候选时刻，剔除 ${result.blurred_candidates_skipped} 张模糊帧，自动选出 ${result.task_frames.length} 张（总计 ${result.frame_count_after} 张）。`
         + (result.reached_limit ? '已达到任务关键帧上限。' : '')
-      : `扫描了 ${result.scanned_candidates} 个候选时刻；当前任务没有新增关键帧。`
+      : `扫描了 ${result.scanned_candidates} 个候选时刻，剔除 ${result.blurred_candidates_skipped} 张模糊帧；当前任务没有新增关键帧。`
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '自适应视频切帧失败。'
     status.value = ''
@@ -352,6 +356,8 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
           <label>画面扫描频率<select v-model.number="scanFps" :disabled="selectingFrames"><option :value="1">1 次 / 秒</option><option :value="2">2 次 / 秒</option><option :value="4">4 次 / 秒</option></select></label>
           <label>转弯识别角度 · °<input v-model.number="turnAngleDegrees" type="number" min="10" max="90" step="5" :disabled="selectingFrames" /></label>
           <label>镜头角度变化阈值 · °<input v-model.number="cameraChangeDegrees" type="number" min="5" max="45" step="1" :disabled="selectingFrames" /></label>
+          <label class="adaptive-blur-toggle"><input v-model="blurFilterEnabled" type="checkbox" :disabled="selectingFrames" />过滤明显模糊帧</label>
+          <label>最低清晰度 · 近期中位数 %<input v-model.number="minimumSharpnessPercent" type="number" min="0" max="100" step="5" :disabled="selectingFrames || !blurFilterEnabled" /></label>
         </div>
         <button class="adaptive-selector-action" type="button" :disabled="!canSelectAdaptiveFrames" @click="selectAdaptiveFrames">
           {{ selectingFrames ? '正在自适应筛帧…' : !survey?.has_gps ? '需要带 GPS 的 SRT' : frameCount >= 30 ? '关键帧已达 30 张上限' : '自动筛选并保存关键帧' }}
@@ -431,6 +437,8 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
 .adaptive-selector-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
 .adaptive-selector-fields label { display: grid; min-width: 0; gap: 3px; color: #526273; font-size: 10px; }
 .adaptive-selector-fields input, .adaptive-selector-fields select { width: 100%; min-width: 0; min-height: 28px; padding: 3px 5px; border: 1px solid #d7dfe8; border-radius: 5px; background: #fff; color: #27364a; font-size: 11px; }
+.adaptive-selector-fields .adaptive-blur-toggle { display: flex; align-items: center; gap: 6px; }
+.adaptive-selector-fields .adaptive-blur-toggle input { width: 15px; min-height: 15px; margin: 0; accent-color: var(--ui-accent); }
 .adaptive-selector-action { width: 100%; border-color: var(--ui-accent) !important; background: var(--ui-accent) !important; color: #fff !important; }
 .adaptive-selector-action:hover:not(:disabled) { background: var(--ui-accent-hover) !important; }
 .adaptive-selector-action:disabled { opacity: .5; cursor: not-allowed; }

@@ -161,6 +161,8 @@ class AdaptiveFrameSelectionRequest(BaseModel):
     scan_fps: float = Field(default=2, gt=0, le=5, allow_inf_nan=False)
     turn_angle_degrees: float = Field(default=18, ge=10, le=90, allow_inf_nan=False)
     camera_change_degrees: float = Field(default=12, ge=5, le=45, allow_inf_nan=False)
+    blur_filter_enabled: bool = True
+    minimum_sharpness_percent: float = Field(default=40, ge=0, le=100, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def validate_overlap_targets(self):
@@ -332,6 +334,8 @@ async def select_task_video_frames(request: Request, task_id: str, payload: Adap
                 turn_overlap_percent=payload.turn_overlap_percent,
                 turn_angle_degrees=payload.turn_angle_degrees,
                 camera_change_degrees=payload.camera_change_degrees,
+                blur_filter_enabled=payload.blur_filter_enabled,
+                minimum_sharpness_percent=payload.minimum_sharpness_percent,
             )
             stored_frames = []
             for item in selection["selected_frames"]:
@@ -348,6 +352,8 @@ async def select_task_video_frames(request: Request, task_id: str, payload: Adap
                      "selection_reason": item.get("selection_reason"),
                      "estimated_overlap_percent": item.get("estimated_overlap_percent"),
                      "turn_angle_deg": item.get("turn_angle_deg"),
+                     "sharpness_score": item.get("sharpness_score"),
+                     "sharpness_ratio_percent": item.get("sharpness_ratio_percent"),
                      "source_frame_index": item.get("source_frame_index"),
                      "source_video_time": item.get("time_seconds")},
                 ))

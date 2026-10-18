@@ -62,7 +62,7 @@ npm run dev
 - `POST /api/dji/rc2/import`、`GET /api/dji/rc2/jobs/{job_id}`：生成 DJI Fly KMZ 并异步写入所选占位航线，轮询返回生成文件、备份路径、传输和回读校验状态；单次只允许一个写入任务。
 - `POST /api/tasks`、`GET/PATCH /api/tasks/{task_id}`：保存一次飞行任务的路线快照、天气结论、机型模板、KMZ 导出状态、飞行开始状态和视频关联。任务目录位于 `backend/user_data/tasks/<task_id>/`。
 - `POST/GET /api/tasks/{task_id}/frames`、`GET /api/tasks/{task_id}/frames/{frame_id}`：把从当前任务视频手动截取的关键帧和 SRT 定位信息保存在任务目录中。
-- `POST /api/tasks/{task_id}/adaptive-frames`：低频扫描任务视频候选帧，用 ORB 特征匹配/单应变换估算画面重叠，并从 SRT 轨迹推断转弯；直线重叠上限、转弯重叠目标、扫描频率和转弯角度均可由页面调整。只将筛出的关键帧存入任务，扫描阶段不运行水坑分割模型。
+- `POST /api/tasks/{task_id}/adaptive-frames`：低频扫描任务视频候选帧，用 ORB 特征匹配/单应变换估算画面重叠，并从 SRT 轨迹推断转弯；直线重叠上限、转弯重叠目标、扫描频率、转弯角度和模糊帧过滤灵敏度均可由页面调整。清晰度以候选帧近期中位值归一化；明显模糊的帧会跳过，不会触发水坑模型。
 - `GET /api/photo-analysis/health`：检查 ONNX、YOLO 和远程 GLM 测试模型的配置状态。
 - `POST /api/photo-analysis/jobs`（multipart，含 `task_id`、`frame_metadata` 和可选 `model_id`）、`GET /api/photo-analysis/jobs/{job_id}`、`GET /api/photo-analysis/jobs/{job_id}/files/{name}`：对任务关键帧运行所选模型，轮询任务并取回叠图/疑似掩膜/置信度图与逐图统计；单次最多 200 张，同时只跑一个任务。任务分析文件保存在该任务目录。
 - `GET /api/video-surveys/browse?kind=video|srt&path=...`：网页内浏览桌面、下载、视频、文档及本机磁盘中的匹配文件；`POST /api/video-surveys/import` 需带 `task_id`，按选中的本机路径把视频和 SRT 归档到该任务目录。`GET /api/video-surveys/{job_id}`、`GET /api/video-surveys/{job_id}/video`、`POST/DELETE /api/video-surveys/{job_id}/targets` 读取视频、轨迹和近拍点。视频只用于预览与轨迹定位；用户手动截取关键帧后才会调用分割模型。
@@ -87,7 +87,7 @@ npm run dev
 
 ### 视频与 SRT 轨迹定位
 
-“视频轨迹定位”页在当前任务内选择本机视频和配套 SRT，后端保存到 `backend/user_data/tasks/<任务 ID>/media/video-surveys/` 并解析带时间戳的 GPS、高度、航向和云台俯仰。播放或拖动视频时，地图显示实际轨迹和当前时刻无人机位置；用户可手动截帧，也可调整直线与转弯的重叠目标后运行自适应筛帧。程序扫描低分辨率候选图，使用特征匹配估算相邻覆盖，再结合 SRT 轨迹和云台角度选择输出帧；扫描本身不运行水坑模型。分析后排名靠前的候选会在地图上标出对应时刻的无人机位置。该坐标不是水坑像素投影到地面的坐标。SRT 没有可识别的经纬度时仍可预览视频，但不能运行按轨迹转弯自适应的筛选。
+“视频轨迹定位”页在当前任务内选择本机视频和配套 SRT，后端保存到 `backend/user_data/tasks/<任务 ID>/media/video-surveys/` 并解析带时间戳的 GPS、高度、航向和云台俯仰。播放或拖动视频时，地图显示实际轨迹和当前时刻无人机位置；用户可手动截帧，也可调整直线与转弯的重叠目标后运行自适应筛帧。程序扫描低分辨率候选图，使用特征匹配估算相邻覆盖，再结合 SRT 轨迹和云台角度选择输出帧；低清晰度候选可按近期画面质量过滤。扫描本身不运行水坑模型。分析后排名靠前的候选会在地图上标出对应时刻的无人机位置。该坐标不是水坑像素投影到地面的坐标。SRT 没有可识别的经纬度时仍可预览视频，但不能运行按轨迹转弯自适应的筛选。
 
 上线模型默认读取 `Web/mode/output_production/corrector_ridge.npz`，它由两份表去重后的全部可用样本拟合（目前 3893 条，包含 2024、2025、2026 年），使用已验证方案的公共 8 特征。在训练点及训练覆盖的原生提前量上，温度、U 风、6 小时降水采用订正结果，V 风和海平面气压严格保留 FuXi 原值；其他坐标/高度/时次遵循下述适用范围限制。派生风速、风向以及单点提示均使用最终值。全量拟合不再留测试集，也不产生新的独立测试指标；此前 `output_year_transfer_2026` 验证结果保留不变。
 

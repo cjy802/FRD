@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import bisect
+from collections import deque
 import json
 import math
 import time
@@ -110,6 +111,14 @@ def _features(image: np.ndarray, orb: cv2.ORB) -> tuple[np.ndarray, list]:
     return descriptors, keypoints
 
 
+def _sharpness_score(image: np.ndarray) -> float:
+    height, width = image.shape[:2]
+    scale = min(640 / width, 360 / height)
+    reduced = cv2.resize(image, (max(1, round(width * scale)), max(1, round(height * scale))), interpolation=cv2.INTER_AREA)
+    gray = cv2.cvtColor(reduced, cv2.COLOR_BGR2GRAY)
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+
 def _save_frame(frame: np.ndarray, output_dir: Path, index: int, seconds: float) -> str:
     height, width = frame.shape[:2]
     scale = min(1.0, 1920 / max(width, height))
@@ -134,6 +143,8 @@ def main() -> int:
     parser.add_argument("--turn-overlap", type=float, default=60.0)
     parser.add_argument("--turn-angle", type=float, default=18.0)
     parser.add_argument("--camera-change", type=float, default=12.0)
+    parser.add_argument("--minimum-sharpness-percent", type=float, default=40.0)
+    parser.add_argument("--disable-blur-filter", action="store_true")
     args = parser.parse_args()
     if not args.video.is_file() or args.max_frames < 1 or args.scan_fps <= 0:
         print(json.dumps({"error": "视频、帧数上限或扫描频率无效。"}, ensure_ascii=False))
@@ -163,6 +174,8 @@ def main() -> int:
     previous_features = None
     anchor_to_previous = np.eye(3, dtype=np.float64)
     anchor_telemetry = None
+    sharpness_history: deque[float] = deque(maxlen=9)
+    blurred_skipped = 0
     scanned = 0
     frame_index = 0
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -175,8 +188,18 @@ def main() -> int:
             seconds = frame_index / fps
             position = _interpolate(telemetry, times, seconds)
             if position is not None:
-                current_features = _features(frame, orb)
                 scanned += 1
+                sharpness = _sharpness_score(frame)
+                baseline = float(np.median(sharpness_history)) if sharpness_history else sharpness
+                sharpness_ratio = sharpness / max(baseline, 1e-6) * 100
+                is_blurry = (not args.disable_blur_filter and bool(sharpness_history)
+                             and sharpness_ratio < args.minimum_sharpness_percent)
+                sharpness_history.append(sharpness)
+                if is_blurry:
+                    blurred_skipped += 1
+                    frame_index += 1
+                    continue
+                current_features = _features(frame, orb)
                 if previous_features is None:
                     reason = "首帧建立覆盖基线"
                     overlap = None
@@ -214,6 +237,8 @@ def main() -> int:
                         "gimbal_pitch_deg": position.get("gimbal_pitch_deg"),
                         "estimated_overlap_percent": round(overlap, 1) if overlap is not None else None,
                         "turn_angle_deg": round(turn_change, 1) if turn_change is not None else None,
+                        "sharpness_score": round(sharpness, 1),
+                        "sharpness_ratio_percent": round(sharpness_ratio, 1),
                         "selection_reason": reason,
                     })
                     anchor_telemetry = position
@@ -228,6 +253,9 @@ def main() -> int:
         "video_frames": frame_index,
         "duration_seconds": round(frame_index / fps, 2),
         "scan_fps": args.scan_fps,
+        "blur_filter_enabled": not args.disable_blur_filter,
+        "minimum_sharpness_percent": args.minimum_sharpness_percent,
+        "blurred_candidates_skipped": blurred_skipped,
         "scanned_candidates": scanned,
         "selected_frames": selected,
         "reached_limit": len(selected) >= args.max_frames and frame_index < expected_frame_count,

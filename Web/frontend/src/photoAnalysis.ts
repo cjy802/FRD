@@ -27,6 +27,8 @@ export type TaskVideoFrame = {
   selection_reason?: string | null
   estimated_overlap_percent?: number | null
   turn_angle_deg?: number | null
+  sharpness_score?: number | null
+  sharpness_ratio_percent?: number | null
   source_frame_index?: number | null
   source_video_time?: number | null
 }

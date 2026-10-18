@@ -48,6 +48,8 @@ export type AdaptiveFrameSelectionOptions = {
   scan_fps: number
   turn_angle_degrees: number
   camera_change_degrees: number
+  blur_filter_enabled: boolean
+  minimum_sharpness_percent: number
 }
 
 export type AdaptiveFrameSelectionResult = {
@@ -55,6 +57,9 @@ export type AdaptiveFrameSelectionResult = {
   video_frames: number
   duration_seconds: number
   scan_fps: number
+  blur_filter_enabled: boolean
+  minimum_sharpness_percent: number
+  blurred_candidates_skipped: number
   scanned_candidates: number
   reached_limit: boolean
   elapsed_seconds: number
@@ -71,6 +76,8 @@ export type AdaptiveFrameSelectionResult = {
     selection_reason?: string
     estimated_overlap_percent?: number | null
     turn_angle_deg?: number | null
+    sharpness_score?: number | null
+    sharpness_ratio_percent?: number | null
   }>
 }
 
