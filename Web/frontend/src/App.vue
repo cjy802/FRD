@@ -9,6 +9,8 @@ import PlaceSearch from './PlaceSearch.vue'
 import BaiduCameraPreview from './BaiduCameraPreview.vue'
 import RouteTemplatePanel from './RouteTemplatePanel.vue'
 import PhotoAnalysisPanel from './PhotoAnalysisPanel.vue'
+import VideoSurveyPanel from './VideoSurveyPanel.vue'
+import type { VideoCaptureTarget, VideoTelemetryPoint } from './videoSurvey'
 import type { CameraPose } from './baiduScene'
 import type { RouteAssessment, WeatherLimits } from './weatherTypes'
 import { weatherOnlyChecks } from './weatherPresentation'
@@ -216,6 +218,12 @@ const baseMap = ref<'current' | 'earth'>('current')
 const earthMapRef = ref<InstanceType<typeof EarthMap> | null>(null)
 const mapViewMode = ref<'2d' | '3d'>('3d')
 const mapEditMode = ref<'route' | 'node'>('route')
+const videoTelemetryTrack = ref<number[][]>([])
+const videoTelemetryPosition = ref<VideoTelemetryPoint | null>(null)
+const videoCaptureTargets = ref<VideoCaptureTarget[]>([])
+function setVideoTelemetryTrack(track: number[][]) { videoTelemetryTrack.value = track }
+function setVideoTelemetryPosition(position: VideoTelemetryPoint | null) { videoTelemetryPosition.value = position }
+function setVideoCaptureTargets(targets: VideoCaptureTarget[]) { videoCaptureTargets.value = targets }
 const mapAnchorPicker = ref<HTMLElement | null>(null)
 const mapAnchorPickerButton = ref<HTMLButtonElement | null>(null)
 const mapAnchorMenuOpen = ref(false)
@@ -2191,7 +2199,9 @@ onBeforeUnmount(() => {
           </div>
 
            <div class="settings-group" data-settings-page="photos" :class="{ 'settings-active': settingsPage === 'photos' }">
-          <p class="form-scope-note">飞行结束后把无人机照片上传到本机分析：可选择本地混合模型或 YOLO 4090 冠军，查看疑似水体叠图并人工复核。</p>
+          <p class="form-scope-note">先导入视频和 SRT 查看轨迹、标记需要近拍的位置；模型只分析之后拍摄的静态照片。</p>
+          <VideoSurveyPanel @track-change="setVideoTelemetryTrack" @position-change="setVideoTelemetryPosition" @targets-change="setVideoCaptureTargets" />
+          <p class="form-scope-note">导入近拍照片后，选择本地混合模型或 YOLO 4090 冠军分析疑似水体，结果供人工复核。</p>
           <PhotoAnalysisPanel />
           </div>
           </div>
@@ -2202,7 +2212,7 @@ onBeforeUnmount(() => {
 
       <section id="route-map" class="map-panel" :class="{ 'panel-active': workspacePanel === 'map' }" aria-label="航线地图">
         <div ref="mapElement" class="cesium-map" aria-hidden="true"></div>
-        <EarthMap ref="earthMapRef" :active="true" :provider="baseMap === 'earth' ? 'baidu' : 'osm'" :view-mode="mapViewMode" :start="form.start" :end="form.end" :anchors="mapAnchors" :route="earthRoute" :selected-index="selectedWaypointIndex" :edit-mode="mapEditMode" :footprint="earthFootprint" :flight-pose="mapFlightPose" :flight-footprint="flightFootprint" :weather-segments="routeAssessment?.weather_risk.segments ?? []" :show-start-range="showStartRange" :show-end-range="showEndRange" :range-meters="landingSearchRadiusM" @select-waypoint="selectWaypoint" @choose-point="chooseMapPoint" @rotate-waypoint="setSelectedWaypointOrientation($event, undefined, true)" />
+        <EarthMap ref="earthMapRef" :active="true" :provider="baseMap === 'earth' ? 'baidu' : 'osm'" :view-mode="mapViewMode" :start="form.start" :end="form.end" :anchors="mapAnchors" :route="earthRoute" :selected-index="selectedWaypointIndex" :edit-mode="mapEditMode" :footprint="earthFootprint" :flight-pose="mapFlightPose" :flight-footprint="flightFootprint" :weather-segments="routeAssessment?.weather_risk.segments ?? []" :show-start-range="showStartRange" :show-end-range="showEndRange" :range-meters="landingSearchRadiusM" :video-track="activeModule === 'photos' ? videoTelemetryTrack : []" :video-position="activeModule === 'photos' ? videoTelemetryPosition : null" :capture-targets="activeModule === 'photos' ? videoCaptureTargets : []" @select-waypoint="selectWaypoint" @choose-point="chooseMapPoint" @rotate-waypoint="setSelectedWaypointOrientation($event, undefined, true)" />
         <div class="map-top">
           <div v-if="!flightActive" class="map-title-group"><span class="map-badge"><span class="svg-icon icon-layers" aria-hidden="true"></span>{{ (baseMap === 'earth' ? '地球模式' : '当前底图') + (mapViewMode === '3d' ? ' · 3D 航线' : ' · 2D 平面') }}</span><span class="map-mode-chip">{{ form.altitude_m }} m AGL</span><div class="map-source-switch base-map-switch" aria-label="底图"><button type="button" :class="{ active: baseMap === 'current' }" :aria-pressed="baseMap === 'current'" @click="chooseBaseMap('current')">当前底图</button><button type="button" :class="{ active: baseMap === 'earth' }" :aria-pressed="baseMap === 'earth'" @click="chooseBaseMap('earth')">地球模式</button></div><div class="map-edit-switch" aria-label="编辑对象"><button type="button" :class="{ active: mapEditMode === 'route' }" :aria-pressed="mapEditMode === 'route'" @click="mapEditMode = 'route'">路径 / 主点</button><button type="button" :class="{ active: mapEditMode === 'node' }" :aria-pressed="mapEditMode === 'node'" @click="mapEditMode = 'node'">节点 / 视角</button></div></div>
           <button v-if="!flightActive" class="flight-entry" type="button" :disabled="!flightTimeline" aria-label="开始模拟飞行" title="模拟飞行" @click="toggleFlight"><span class="svg-icon icon-drone" aria-hidden="true"></span></button>

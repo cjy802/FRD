@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import time
 from functools import lru_cache
 from pathlib import Path
@@ -15,7 +16,7 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, model_validator
 
@@ -29,6 +30,7 @@ from dji_kmz import KmzExportError, build_dji_kmz
 from dji_rc2 import Rc2Error, rc2_imports
 from place_search import PlaceSearchError, reverse_geocode, search_nearby_places, search_places
 from photo_analysis import PhotoAnalysisError, photo_analysis
+from video_survey import VideoSurveyError, video_surveys
 from mission_routes import MAX_MISSION_ANCHORS, MissionRouteError, MissionRouteLimitError, combine_mission_segments
 from route_templates import (
     RouteTemplateStore, TemplateConflict, TemplateNotFound, TemplateTooLarge,
@@ -134,6 +136,11 @@ class KmzExportRequest(BaseModel):
 class Rc2ImportRequest(KmzExportRequest):
     drone_model: Literal["fly"] = "fly"
     target_file_name: str = Field(min_length=5, max_length=128)
+
+
+class VideoCaptureTargetRequest(BaseModel):
+    time_seconds: float = Field(ge=0, allow_inf_nan=False)
+    label: str = Field(default="", max_length=60)
 
 
 @lru_cache(maxsize=1)
@@ -574,6 +581,88 @@ def photo_analysis_file(request: Request, job_id: str, file_name: str):
     except PhotoAnalysisError as error:
         raise HTTPException(status_code=error.http_status, detail=str(error)) from error
     return FileResponse(target, media_type=_PHOTO_MEDIA_TYPES.get(target.suffix.lower(), "application/octet-stream"))
+
+
+@app.post("/api/video-surveys", status_code=status.HTTP_201_CREATED)
+async def video_survey_create(request: Request, video: UploadFile = File(...), srt: UploadFile = File(...)):
+    require_local_request(request, mutation=True, label="视频定位")
+    try:
+        return await video_surveys.create(video, srt)
+    except VideoSurveyError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+
+
+@app.get("/api/video-surveys/{job_id}")
+def video_survey_job(request: Request, job_id: str):
+    require_local_request(request, label="视频定位")
+    try:
+        return video_surveys.job(job_id)
+    except VideoSurveyError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+
+
+def _file_range(path: Path, range_header: str | None):
+    size = path.stat().st_size
+    start, end, partial = 0, max(size - 1, 0), False
+    if range_header:
+        match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header.strip())
+        if not match or (not match.group(1) and not match.group(2)):
+            raise HTTPException(status_code=416, detail="不支持的视频字节范围。", headers={"Content-Range": f"bytes */{size}"})
+        if match.group(1):
+            start = int(match.group(1))
+            end = min(int(match.group(2)), size - 1) if match.group(2) else size - 1
+        else:
+            suffix = int(match.group(2))
+            start = max(0, size - suffix)
+        if start >= size or end < start:
+            raise HTTPException(status_code=416, detail="视频字节范围超出文件大小。", headers={"Content-Range": f"bytes */{size}"})
+        partial = True
+
+    def chunks():
+        remaining = end - start + 1
+        with path.open("rb") as stream:
+            stream.seek(start)
+            while remaining:
+                chunk = stream.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    headers = {"Accept-Ranges": "bytes", "Content-Length": str(end - start + 1), "Cache-Control": "no-store"}
+    status_code = 206 if partial else 200
+    if partial:
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+    media_type = {".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime"}.get(path.suffix.lower(), "application/octet-stream")
+    return StreamingResponse(chunks(), status_code=status_code, media_type=media_type, headers=headers)
+
+
+@app.get("/api/video-surveys/{job_id}/video")
+def video_survey_video(request: Request, job_id: str):
+    require_local_request(request, label="视频定位")
+    try:
+        path = video_surveys.video_path(job_id)
+    except VideoSurveyError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+    return _file_range(path, request.headers.get("range"))
+
+
+@app.post("/api/video-surveys/{job_id}/targets", status_code=status.HTTP_201_CREATED)
+def video_survey_add_target(request: Request, job_id: str, payload: VideoCaptureTargetRequest):
+    require_local_request(request, mutation=True, label="近拍点")
+    try:
+        return video_surveys.add_target(job_id, payload.time_seconds, payload.label)
+    except VideoSurveyError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+
+
+@app.delete("/api/video-surveys/{job_id}/targets/{target_id}")
+def video_survey_delete_target(request: Request, job_id: str, target_id: str):
+    require_local_request(request, mutation=True, label="近拍点")
+    try:
+        return {"targets": video_surveys.remove_target(job_id, target_id)}
+    except VideoSurveyError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
 
 
 def route_response(route, result):

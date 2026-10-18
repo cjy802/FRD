@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { createMapScene, type BaiduScene, type CameraPose, type MapProvider, type SceneView } from './baiduScene'
+import type { VideoCaptureTarget, VideoTelemetryPoint } from './videoSurvey'
 
 type Point = { longitude: number; latitude: number }
 type AnchorRole = 'start' | 'middle' | 'end'
@@ -14,6 +15,9 @@ const props = defineProps<{
   showStartRange: boolean; showEndRange: boolean; rangeMeters: number
   flightPose?: (CameraPose & { follow?: boolean; playing?: boolean }) | null
   flightFootprint?: number[][]
+  videoTrack?: number[][]
+  videoPosition?: VideoTelemetryPoint | null
+  captureTargets?: VideoCaptureTarget[]
 }>()
 const emit = defineEmits<{ 'select-waypoint': [index: number]; 'choose-point': [point: Point]; 'rotate-waypoint': [heading: number] }>()
 const earthElement = ref<HTMLElement | null>(null)
@@ -26,6 +30,8 @@ const overlay = reactive({
   anchors: [] as { id: string; x: number; y: number; label: string; role: 'start' | 'middle' | 'end' }[],
   autoNodes: [] as { index: number; x: number; y: number }[],
   drone: null as { x: number; y: number; angle: number } | null,
+  videoPosition: null as { x: number; y: number; time_seconds: number; altitude_m: number | null } | null,
+  captureTargets: [] as { id: string; x: number; y: number; label: string; time_seconds: number }[],
 })
 let scene: BaiduScene | null = null
 let resizeObserver: ResizeObserver | null = null
@@ -50,6 +56,11 @@ function sameOverlayPoints(first: OverlayPoint[], second: OverlayPoint[]) {
 
 function sameDrone(first: { x: number; y: number; angle: number } | null, second: { x: number; y: number; angle: number } | null) {
   return first === second || (!!first && !!second && first.x === second.x && first.y === second.y && first.angle === second.angle)
+}
+
+function sameVideoPosition(first: typeof overlay.videoPosition, second: typeof overlay.videoPosition) {
+  return first === second || (!!first && !!second && first.x === second.x && first.y === second.y
+    && first.time_seconds === second.time_seconds && first.altitude_m === second.altitude_m)
 }
 
 function anchorPoints(): Anchor[] {
@@ -117,12 +128,25 @@ function renderOverlay() {
     const pixel = scene!.project([point[0], point[1], 1])
     return pixel ? [{ ...pixel, index }] : []
   }) : []
+  const position = props.videoPosition && Number.isFinite(props.videoPosition.longitude) && Number.isFinite(props.videoPosition.latitude)
+    ? scene.project([props.videoPosition.longitude, props.videoPosition.latitude,
+      props.viewMode === '2d' ? 2 : (props.videoPosition.altitude_m ?? 2)])
+    : null
+  const videoPosition = position && props.videoPosition
+    ? { ...position, time_seconds: props.videoPosition.time_seconds, altitude_m: props.videoPosition.altitude_m }
+    : null
+  const captureTargets = (props.captureTargets ?? []).flatMap((target, index) => {
+    const pixel = scene!.project([target.longitude, target.latitude, props.viewMode === '2d' ? 2 : (target.altitude_m ?? 2)])
+    return pixel ? [{ ...pixel, id: target.id, label: target.label || `近拍点 ${index + 1}`, time_seconds: target.time_seconds }] : []
+  })
   if (!sameOverlayPoints(nodes, overlay.nodes)) overlay.nodes = nodes
   if (!sameOverlayPoints(groundNodes, overlay.groundNodes)) overlay.groundNodes = groundNodes
   if (!sameOverlayPoints(anchors, overlay.anchors)) overlay.anchors = anchors
   if (!sameOverlayPoints(autoNodes, overlay.autoNodes)) overlay.autoNodes = autoNodes
   const drone = projectedDrone()
   if (!sameDrone(drone, overlay.drone)) overlay.drone = drone
+  if (!sameVideoPosition(videoPosition, overlay.videoPosition)) overlay.videoPosition = videoPosition
+  if (!sameOverlayPoints(captureTargets, overlay.captureTargets)) overlay.captureTargets = captureTargets
 }
 function refreshRoute() {
   if (!scene) return
@@ -155,10 +179,20 @@ function refreshFootprint() {
   if (!wait) apply()
   else footprintTimer = setTimeout(apply, wait)
 }
+function refreshVideoTrack() {
+  if (!scene) return
+  const track = (props.videoTrack ?? []).filter(point => point.length >= 2
+    && Number.isFinite(point[0]) && Number.isFinite(point[1])
+    && Math.abs(point[0]) <= 180 && Math.abs(point[1]) <= 90)
+  scene.setTelemetryTrack(track)
+  if (track.length > 1) scene.fit(track, props.viewMode)
+  renderOverlay()
+}
 function applyViewMode() {
   scene?.setView(props.viewMode, coordinates())
   tilt.value = props.viewMode === '2d' ? 0 : 52
   refreshRoute()
+  refreshVideoTrack()
   if (props.flightPose?.follow) scene?.followAt(props.flightPose, props.viewMode)
   renderOverlay()
 }
@@ -280,6 +314,8 @@ watch(() => props.provider, async () => {
 })
 watch(() => [props.route, props.start, props.end, props.anchors, props.weatherSegments, props.showStartRange, props.showEndRange, props.rangeMeters], refreshRoute, { deep: true })
 watch(() => [props.footprint, props.selectedIndex, props.editMode], () => { refreshFootprint(); renderOverlay() }, { deep: true, flush: 'sync' })
+watch(() => props.videoTrack, refreshVideoTrack, { deep: true })
+watch(() => [props.videoPosition, props.captureTargets], renderOverlay, { deep: true, flush: 'sync' })
 watch(() => props.flightPose, (pose, previous) => {
   if (pose?.playing) { finishDrag(); finishCtrlRotate() }
   scene?.setInputs(props.active && !pose?.playing)
@@ -302,10 +338,13 @@ onBeforeUnmount(() => {
   <div class="earth-map" :class="{ active }" :aria-label="provider === 'baidu' ? '百度地图地球模式' : 'OpenStreetMap 地图模式'" :data-view-mode="viewMode" @pointerdown.capture="onCtrlRotateDown" @mousedown.capture="onCtrlMouseDown">
     <div ref="earthElement" class="earth-map-canvas" @pointerdown="onMapPointerDown" @pointermove="onMapPointerMove" @click="onMapClick"></div>
     <div class="earth-map-overlay">
+      <div v-if="videoTrack?.length" class="earth-video-legend" aria-label="视频轨迹图例"><span><i class="track-key"></i>SRT 轨迹</span><span><i class="position-key">V</i>当前画面</span><span><i class="target-key">拍</i>近拍点</span></div>
       <span v-for="anchor in overlay.anchors" :key="anchor.id" class="earth-endpoint" :class="anchor.role" :style="{ left: `${anchor.x}px`, top: `${anchor.y}px` }">{{ anchor.label }}</span>
+      <span v-for="target in overlay.captureTargets" :key="`video-target-${target.id}`" class="earth-capture-target" :title="`${target.label} · ${Math.floor(target.time_seconds / 60)}:${String(Math.floor(target.time_seconds % 60)).padStart(2, '0')}`" :aria-label="`${target.label} 拍摄位置`" :style="{ left: `${target.x}px`, top: `${target.y}px` }">{{ target.label.replace(/[^0-9]/g, '') || '拍' }}</span>
       <span v-for="node in overlay.autoNodes" :key="`auto-${node.index}`" class="earth-auto-node" aria-hidden="true" :style="{ left: `${node.x}px`, top: `${node.y}px` }"></span>
       <span v-for="node in overlay.groundNodes" :key="`ground-${node.index}`" class="earth-ground-node" aria-hidden="true" :style="{ left: `${node.x}px`, top: `${node.y}px` }"><span></span></span>
       <button v-for="node in overlay.nodes" :key="node.index" type="button" class="earth-node" :class="{ selected: node.index === selectedIndex }" :aria-label="`选择航点 ${node.index + 1}`" :aria-pressed="node.index === selectedIndex" :data-waypoint-index="node.index" :disabled="flightPose?.playing" :style="{ left: `${node.x}px`, top: `${node.y}px` }" @pointerdown="onNodeDown($event, node.index)" @pointermove="onNodeMove" @pointerup="onNodeUp" @pointercancel="onNodeUp" @lostpointercapture="onNodeUp" @click.stop="onNodeClick(node.index)"><span></span></button>
+      <span v-if="overlay.videoPosition" class="earth-video-position" role="img" :aria-label="`视频当前位置，${overlay.videoPosition.time_seconds.toFixed(1)} 秒`" :title="`视频当前位置 · ${overlay.videoPosition.time_seconds.toFixed(1)} 秒${overlay.videoPosition.altitude_m !== null ? ` · ${overlay.videoPosition.altitude_m.toFixed(1)} m` : ''}`" :style="{ left: `${overlay.videoPosition.x}px`, top: `${overlay.videoPosition.y}px` }">V</span>
       <span v-if="overlay.drone" class="earth-flight-drone" role="img" aria-label="模拟无人机位置" :style="{ left: `${overlay.drone.x}px`, top: `${overlay.drone.y}px`, transform: `translate(-50%, -50%) rotate(${overlay.drone.angle}deg)` }"><img src="/svg/jiantou.svg" alt="" /></span>
     </div>
     <label v-if="viewMode === '3d' && !status" class="earth-tilt-control">观察角度 <input aria-label="地球 3D 观察角度" type="range" min="0" max="75" :value="tilt" @input="changeTilt" /><span>{{ tilt }}°</span></label>
@@ -320,11 +359,19 @@ onBeforeUnmount(() => {
 .earth-map-canvas, .earth-map-overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
 .earth-map-canvas { z-index: 0; }
 .earth-map-overlay { z-index: 1; pointer-events: none; overflow: hidden; }
+.earth-video-legend { position: absolute; z-index: 4; top: 12px; left: 12px; display: flex; flex-wrap: wrap; gap: 9px; padding: 6px 8px; border: 1px solid #d8e0e7; border-radius: 6px; background: rgb(255 255 255 / .94); color: #344455; font-size: 11px; }
+.earth-video-legend span { display: inline-flex; align-items: center; gap: 4px; }
+.earth-video-legend i { display: inline-grid; width: 14px; height: 14px; place-items: center; border-radius: 50%; color: #fff; font-size: 8px; font-style: normal; font-weight: 700; }
+.earth-video-legend .track-key { width: 16px; height: 3px; border-radius: 0; background: #d97706; }
+.earth-video-legend .position-key { background: #0f6cbd; }
+.earth-video-legend .target-key { background: #d97706; }
 .earth-node { position: absolute; width: 32px; height: 32px; transform: translate(-50%, -50%); display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: transparent; pointer-events: auto; cursor: pointer; touch-action: none; }
 .earth-node:hover:not(:disabled), .earth-node:active:not(:disabled) { transform: translate(-50%, -50%); box-shadow: none; }
 .earth-node span { width: 12px; height: 12px; border: 2px solid #fff; border-radius: 50%; background: #00e5a8; box-shadow: 0 1px 5px #12343b; }
 .earth-node.selected span { width: 18px; height: 18px; background: #ffb547; }
 .earth-node:focus-visible { outline: 2px solid #ffb547; }
+.earth-video-position { position: absolute; z-index: 3; display: grid; width: 26px; height: 26px; transform: translate(-50%, -50%); place-items: center; border: 2px solid #fff; border-radius: 50%; background: #0f6cbd; box-shadow: 0 1px 5px rgb(18 52 59 / .45); color: #fff; font-size: 11px; font-weight: 700; pointer-events: none; }
+.earth-capture-target { position: absolute; z-index: 2; display: grid; width: 24px; height: 24px; transform: translate(-50%, -50%); place-items: center; border: 2px solid #fff; border-radius: 50%; background: #d97706; box-shadow: 0 1px 5px rgb(18 52 59 / .4); color: #fff; font-size: 10px; font-weight: 700; pointer-events: none; }
 .earth-ground-node { position: absolute; width: 14px; height: 14px; transform: translate(-50%, -50%); display: grid; place-items: center; pointer-events: none; }
 .earth-ground-node span { width: 8px; height: 8px; border: 2px solid #fff; border-radius: 50%; background: #36dfba; box-shadow: 0 1px 4px #12343b; }
 .earth-endpoint { position: absolute; transform: translate(-50%, -100%); padding: 3px 6px; border-radius: 4px; color: #fff; font-size: 12px; font-weight: 700; }

@@ -47,6 +47,7 @@ export async function createBaiduScene(element: HTMLElement, center: Coordinate,
 
 export class BaiduScene {
   private routeLayers: any[] = []
+  private telemetryLayers: any[] = []
   private viewLayers: any[] = []
   private viewMeshes: Mesh<BufferGeometry, MeshBasicMaterial>[] = []
   private frameListeners = new Set<() => void>()
@@ -145,6 +146,15 @@ export class BaiduScene {
       this.polygon(this.routeLayers, ring, index ? '#5b5fc7' : '#0f6cbd', .12)
       this.line(this.routeLayers, [...ring, ring[0]], index ? '#5b5fc7' : '#0f6cbd', 1)
     })
+    this.engine.requestRender()
+  }
+
+  setTelemetryTrack(track: Coordinate[]) {
+    this.clear(this.telemetryLayers)
+    const groundTrack = track
+      .filter(point => point.length >= 2 && Number.isFinite(point[0]) && Number.isFinite(point[1]))
+      .map(([longitude, latitude]) => [longitude, latitude, 2])
+    if (groundTrack.length > 1) this.line(this.telemetryLayers, groundTrack, '#d97706', 4, .95)
     this.engine.requestRender()
   }
 
@@ -296,6 +306,7 @@ export class BaiduScene {
     this.engine.removeBeforeRenderListener(this.beforeRender)
     this.frameListeners.clear()
     this.clear(this.routeLayers)
+    this.clear(this.telemetryLayers)
     this.clear(this.viewLayers)
     this.clearViewMeshes()
     this.engine.dispose()
