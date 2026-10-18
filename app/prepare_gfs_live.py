@@ -12,10 +12,13 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import shutil
+import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -83,15 +86,52 @@ def select_records(records: list[dict], kind: str) -> list[dict]:
     return sorted(result.values(), key=lambda record: record["start"])
 
 
-def native_nc_path(path: Path) -> str:
-    """Use an existing, verified ASCII junction for this Windows NetCDF library."""
+def _ensure_runtime_alias() -> Path:
+    """Create and verify the ASCII junction required by Windows NetCDF4/HDF5."""
     alias = Path("D:/DATASET/FuXi_RuntimeLinks/FuXiApp")
+    target = APP_ROOT.resolve()
+    try:
+        if alias.is_dir() and alias.resolve() == target:
+            return alias
+        if alias.exists() or alias.is_symlink():
+            raise RuntimeError(f"NetCDF runtime link exists but points somewhere unexpected: {alias}")
+        alias.parent.mkdir(parents=True, exist_ok=True)
+        environment = os.environ.copy()
+        environment["LOWALT_FUXI_ALIAS_PATH"] = str(alias)
+        environment["LOWALT_FUXI_ALIAS_TARGET"] = str(target)
+        command = (
+            "New-Item -ItemType Junction -Path $env:LOWALT_FUXI_ALIAS_PATH "
+            "-Target $env:LOWALT_FUXI_ALIAS_TARGET | Out-Null"
+        )
+        completed = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), env=environment,
+        )
+        # Another local server process may have created the same junction while
+        # this one was starting. Accept it only after verifying the target.
+        if alias.is_dir() and alias.resolve() == target:
+            return alias
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise RuntimeError(
+            "无法创建 NetCDF 所需的英文目录联接 "
+            f"{alias} -> {target}。请检查 D:\\DATASET 写权限"
+            + (f"；PowerShell: {detail[-600:]}" if detail else "。")
+        )
+    except RuntimeError:
+        raise
+    except Exception as error:
+        raise RuntimeError(f"无法准备 NetCDF 英文目录联接 {alias}: {error}") from error
+
+
+def native_nc_path(path: Path) -> str:
+    """Use an automatically verified ASCII junction for Windows NetCDF4/HDF5."""
     try:
         relative = path.resolve().relative_to(APP_ROOT.resolve())
-        if alias.is_dir() and alias.resolve() == APP_ROOT.resolve():
-            return str(alias / relative)
     except ValueError:
-        pass
+        return str(path)
+    if os.name == "nt":
+        return str(_ensure_runtime_alias() / relative)
     return str(path)
 
 
@@ -309,32 +349,52 @@ def prepare_input(output: Path, cache: Path, now: datetime | None = None) -> dic
         paths.append((valid, state, rain))
         sources.append({"valid_time_utc": valid.isoformat(), "state_cycle_utc": cycle.isoformat(), "state_forecast_hours": hour,
                         "precipitation_cycle_utc": rain_cycle.isoformat(), "precipitation_forecast_hours": 6})
-    pending = output.with_name(output.stem + ".pending.nc")
-    with nc.Dataset(native_nc_path(pending), "w", format="NETCDF4") as data:
-        for name, size in (("time", 2), ("level", 70), ("lat", 721), ("lon", 1440)):
-            data.createDimension(name, size)
-        time_var = data.createVariable("time", "i8", ("time",))
-        time_var.units = "seconds since 1970-01-01 00:00:00"
-        time_var.calendar = "proleptic_gregorian"
-        time_var[:] = [int(previous.timestamp()), int(init.timestamp())]
-        data.createVariable("level", str, ("level",))[:] = np.asarray(CHANNELS, dtype=object)
-        data.createVariable("lat", "f8", ("lat",))[:] = np.linspace(90, -90, 721)
-        data.createVariable("lon", "f8", ("lon",))[:] = np.arange(1440) * .25
-        values = data.createVariable("data", "f4", ("time", "level", "lat", "lon"), zlib=True, complevel=1, chunksizes=(1, 1, 721, 1440))
-        data.setncattr("init_time_utc", init.isoformat())
-        data.setncattr("initialization_source", "NOAA GFS analysis/short-range background")
-        data.setncattr("source_frames", json.dumps(sources))
-        for index, (valid, state, rain) in enumerate(paths):
-            written = set()
-            for file, kind in ((state, "state"), (rain, "rain")):
-                for channel, grid in grib_arrays(file, valid, kind):
-                    if channel in written:
-                        raise ValueError(f"Duplicate channel {channel}")
-                    values[index, CHANNELS.index(channel)] = grid
-                    written.add(channel)
-            if written != set(CHANNELS):
-                raise ValueError("Incomplete 70-channel GFS input")
-    pending.replace(output)
+    pending = output.with_name(f"{output.stem}.{os.getpid()}.{uuid.uuid4().hex}.pending.nc")
+    pending_nc = Path(native_nc_path(pending))
+    output_nc = Path(native_nc_path(output))
+    try:
+        with nc.Dataset(str(pending_nc), "w", format="NETCDF4") as data:
+            for name, size in (("time", 2), ("level", 70), ("lat", 721), ("lon", 1440)):
+                data.createDimension(name, size)
+            time_var = data.createVariable("time", "i8", ("time",))
+            time_var.units = "seconds since 1970-01-01 00:00:00"
+            time_var.calendar = "proleptic_gregorian"
+            time_var[:] = [int(previous.timestamp()), int(init.timestamp())]
+            data.createVariable("level", str, ("level",))[:] = np.asarray(CHANNELS, dtype=object)
+            data.createVariable("lat", "f8", ("lat",))[:] = np.linspace(90, -90, 721)
+            data.createVariable("lon", "f8", ("lon",))[:] = np.arange(1440) * .25
+            values = data.createVariable("data", "f4", ("time", "level", "lat", "lon"), zlib=True, complevel=1, chunksizes=(1, 1, 721, 1440))
+            data.setncattr("init_time_utc", init.isoformat())
+            data.setncattr("initialization_source", "NOAA GFS analysis/short-range background")
+            data.setncattr("source_frames", json.dumps(sources))
+            for index, (valid, state, rain) in enumerate(paths):
+                written = set()
+                for file, kind in ((state, "state"), (rain, "rain")):
+                    for channel, grid in grib_arrays(file, valid, kind):
+                        if channel in written:
+                            raise ValueError(f"Duplicate channel {channel}")
+                        values[index, CHANNELS.index(channel)] = grid
+                        written.add(channel)
+                if written != set(CHANNELS):
+                    raise ValueError("Incomplete 70-channel GFS input")
+
+        # Use the ASCII junction for both paths, and retry transient Windows
+        # sharing violations before returning a clear error to the weather job.
+        for attempt in range(8):
+            try:
+                os.replace(str(pending_nc), str(output_nc))
+                break
+            except PermissionError as error:
+                if attempt == 7:
+                    raise PermissionError(
+                        f"无法更新实时天气文件 {output}；另一个进程可能仍在读取旧文件。"
+                    ) from error
+                time.sleep(.25 * (attempt + 1))
+    finally:
+        try:
+            pending_nc.unlink(missing_ok=True)
+        except OSError:
+            pass
     downloader.prune_old_cache(now)
     return {"input_path": native_nc_path(output), "init_time_utc": init.isoformat(), "cached": False, "source_frames": sources}
 

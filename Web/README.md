@@ -133,7 +133,7 @@ npm run build
 & 'D:\anaconda\envs\fuxi_onnx\python.exe' -m pip install -r 'D:\低空经济\app\requirements-live.txt'
 ```
 
-本机依赖已安装并通过实际 GPU 推理。`FUXI_LIVE_INPUT` 仅用于手动覆盖自动来源；通常不需要设置。可用 `FUXI_PYTHON` 设置 ONNX 环境 Python，`FUXI_MODEL_DIR` 设置权重目录，`WEATHER_CORRECTOR_PATH` 设置订正模型。自动生成的 `app/prepared/latest.nc` 通过本机已有英文目录链接访问，避开 Windows NetCDF 的中文路径限制。输入网络下载失败、已过期或模型不可用时返回明确原因，不使用历史 CSV 伪装未来天气。新页面进入会重新运行 FuXi；只有同时进行中的任务共享一次 GPU 推理。
+本机依赖已安装并通过实际 GPU 推理。`FUXI_LIVE_INPUT` 仅用于手动覆盖自动来源；通常不需要设置。可用 `FUXI_PYTHON` 设置 ONNX 环境 Python，`FUXI_MODEL_DIR` 设置权重目录，`WEATHER_CORRECTOR_PATH` 设置订正模型。自动获取脚本会校验并在缺失时创建 `D:\DATASET\FuXi_RuntimeLinks\FuXiApp` 英文目录联接，NetCDF4 通过该路径读写 `app/prepared/latest.nc`，避开 Windows NetCDF 的中文路径限制；若当前用户无权创建联接，错误会提示运行 `app/run_fuxi_pairs.ps1` 初始化。临时 NetCDF 文件使用唯一名称，成功替换后清理。输入网络下载失败、已过期或模型不可用时返回明确原因，不使用历史 CSV 伪装未来天气。新页面进入会重新运行 FuXi；只有同时进行中的任务共享一次 GPU 推理。
 
 旧的 `/status`、`/forecast`、`/risk` 接口仅供历史记录诊断，仍可通过 `WEATHER_PAIRS_PATH` 和 `WEATHER_ARCHIVE_YEAR` 配置；页面未来预报流程不调用它们。所有相对路径以项目根目录为基准，模型与数据不纳入 Git。全量重训命令：
 
