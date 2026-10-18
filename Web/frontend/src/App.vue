@@ -31,7 +31,7 @@ const activeModule = ref<ModuleKey>('route')
 
 function selectModule(module: ModuleKey) {
   if (module !== 'route' && !taskRouteMatches.value) {
-    taskError.value = activeTask.value ? '路线参数已变化，请先在“选定航线”中创建新的当前任务。' : '请先计算路线，再将它设为当前任务。'
+    taskError.value = activeTask.value ? '路线参数已变化，请在下方创建任务或替换当前任务。' : '请先选定并生成航线，再创建任务。'
     activeModule.value = 'route'
     workspacePanel.value = 'settings'
     settingsPage.value = 'points'
@@ -247,7 +247,7 @@ function setVideoCaptureTargets(targets: VideoCaptureTarget[]) { videoCaptureTar
 const mapCaptureTargets = computed(() => [...videoCaptureTargets.value, ...analysisMapTargets.value])
 
 async function createCurrentTask() {
-  if (!preview.value || previewKey.value !== routeKey.value || taskBusy.value) return
+  if (!preview.value || previewKey.value !== routeKey.value || taskBusy.value || loading.value) return
   taskBusy.value = true
   taskError.value = ''
   try {
@@ -265,6 +265,11 @@ async function createCurrentTask() {
   } finally {
     taskBusy.value = false
   }
+}
+
+async function replaceCurrentTask() {
+  if (!activeTask.value || !preview.value || previewKey.value !== routeKey.value || taskBusy.value || loading.value) return
+  await createCurrentTask()
 }
 
 async function persistTask(changes: Parameters<typeof updateMissionTask>[1]) {
@@ -585,6 +590,10 @@ const taskRouteMatches = computed(() => {
     return false
   }
 })
+const canCreateTask = computed(() => Boolean(!activeTask.value && preview.value
+  && previewKey.value === routeKey.value && !taskBusy.value && !loading.value && !checkingPoint.value && locatingPoint.value === null))
+const canReplaceTask = computed(() => Boolean(activeTask.value && preview.value
+  && previewKey.value === routeKey.value && !taskBusy.value && !loading.value && !checkingPoint.value && locatingPoint.value === null))
 const taskStatusLabel = computed(() => activeTask.value?.status === 'in_flight' ? '飞行中'
   : activeTask.value?.status === 'ready' ? '已准备' : '规划中')
 const weatherCoordinates = computed(() => preview.value && previewKey.value === routeKey.value ? preview.value.geometry.coordinates : null)
@@ -2355,7 +2364,7 @@ onBeforeUnmount(() => {
             </header>
             <p v-if="taskListError" class="task-list-feedback is-error" role="alert">{{ taskListError }}</p>
             <p v-else-if="taskListLoading && !savedTasks.length" class="task-list-feedback" role="status">正在读取已保存的任务…</p>
-            <p v-else-if="!savedTasks.length" class="task-list-feedback">还没有保存的任务。先规划航线，再点击“设为当前任务”。</p>
+            <p v-else-if="!savedTasks.length" class="task-list-feedback">还没有保存的任务。先选定航线，再点击“创建任务”。</p>
             <ul v-else class="saved-task-list">
               <li v-for="task in savedTasks" :key="task.task_id">
                 <div class="saved-task-row">
@@ -2381,12 +2390,12 @@ onBeforeUnmount(() => {
         <div v-if="activeModule === 'route'" class="section-heading"><span class="eyebrow"><span class="svg-icon icon-route" aria-hidden="true"></span>第 1 步 · 选定航线</span><h1>规划本次飞行</h1><PlaceSearch :disabled="loading || checkingPoint" :targets="anchorChoices" :selection-feedback="placeSelectionFeedback" @choose-point="chooseSearchedPoint" @clear-selection-feedback="placeSelectionFeedback = null" /></div>
 
         <section v-if="activeModule === 'route'" class="task-current-card" aria-label="当前飞行任务">
-          <div><strong>{{ activeTask && taskRouteMatches ? '当前任务' : '把路线设为一次任务' }}</strong><span v-if="activeTask">{{ taskRouteMatches ? `任务 ${activeTask.task_id}` : '路线或飞行参数已变化，请创建新任务' }}</span><span v-else>后续天气、机型导出、视频和关键帧会归档在任务中。</span><small v-if="taskSurveyStatus">已关联：{{ taskSurveyStatus }}</small></div>
-          <button type="button" :disabled="!preview || previewKey !== routeKey || taskBusy" @click="createCurrentTask">{{ taskBusy ? '保存中…' : activeTask && taskRouteMatches ? '创建新任务' : '设为当前任务' }}</button>
+          <div><strong>{{ activeTask && taskRouteMatches ? '当前任务' : '创建本次任务' }}</strong><span v-if="activeTask">{{ taskRouteMatches ? `任务 ${activeTask.task_id}` : '路线或飞行参数已变化，将以当前路线替换当前任务' }}</span><span v-else>创建后，天气、机型导出、视频和关键帧会归档到同一任务。</span><small v-if="taskSurveyStatus">已关联：{{ taskSurveyStatus }}</small><small v-if="activeTask">替换会新建当前任务，原任务保留在任务列表中。</small></div>
+          <button v-if="activeTask" type="button" :disabled="!canReplaceTask" @click="replaceCurrentTask">{{ taskBusy ? '替换中…' : '替换当前任务' }}</button>
           <p v-if="taskError" class="form-error" role="alert">{{ taskError }}</p>
         </section>
 
-        <form class="route-form" @submit.prevent="calculate" @invalid.capture="revealInvalidSetting">
+        <form class="route-form" @submit.prevent="createCurrentTask" @invalid.capture="revealInvalidSetting">
           <nav v-if="activeModule === 'route'" class="settings-pages" aria-label="航线设置分组"><button type="button" :aria-pressed="settingsPage === 'points'" @click="settingsPage = 'points'">主点与坐标</button><button type="button" :aria-pressed="settingsPage === 'mission'" @click="settingsPage = 'mission'">飞行参数</button></nav>
           <div class="settings-fields">
           <div class="settings-group" data-settings-page="points" :class="{ 'settings-active': settingsPage === 'points' }">
@@ -2432,7 +2441,7 @@ onBeforeUnmount(() => {
           <PhotoAnalysisPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frames="taskFrames" @remove-frame="removeTaskFrame" @analysis-complete="recordTaskAnalysis" />
           </div>
           </div>
-            <fluent-button v-if="activeModule === 'route'" class="primary-button" appearance="primary" type="submit" :disabled="loading || locatingPoint !== null"><span class="svg-icon" :class="loading ? 'icon-refresh is-spinning' : 'icon-route'" aria-hidden="true"></span><span>{{ loading ? '计算中…' : '计算道路路线' }}</span></fluent-button>
+            <fluent-button v-if="activeModule === 'route'" class="primary-button" appearance="primary" type="submit" :disabled="!canCreateTask" :title="activeTask ? '当前已有任务，请使用上方“替换当前任务”操作。' : undefined"><span class="svg-icon" :class="taskBusy ? 'icon-refresh is-spinning' : 'icon-square-check'" aria-hidden="true"></span><span>{{ taskBusy ? '创建中…' : '创建任务' }}</span></fluent-button>
            <p v-if="error && activeModule === 'route' && !locationFeedback?.error && !placeSelectionFeedback?.error" class="form-error" role="alert">{{ error }}</p>
         </form>
       </aside>
