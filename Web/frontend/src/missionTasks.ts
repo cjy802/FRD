@@ -75,6 +75,15 @@ export async function listMissionTasks(): Promise<MissionTaskSummary[]> {
   return response.tasks
 }
 
+export async function deleteMissionTask(taskId: string): Promise<void> {
+  const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' })
+  if (!response.ok) {
+    const payload: unknown = await response.json().catch(() => null)
+    const detail = payload && typeof payload === 'object' && 'detail' in payload ? payload.detail : null
+    throw new MissionTaskError(typeof detail === 'string' ? detail : '无法删除这个任务。', response.status)
+  }
+}
+
 export function updateMissionTask(taskId: string, changes: Partial<Pick<MissionTask,
   'status' | 'weather' | 'aircraft' | 'export_file_name' | 'flight_started_at' | 'video_survey_id' | 'analysis_targets' | 'departure_time' | 'departure_auto_managed'>> & { analysis_job_id?: string }): Promise<MissionTask> {
   return request<MissionTask>(`/api/tasks/${encodeURIComponent(taskId)}`, {

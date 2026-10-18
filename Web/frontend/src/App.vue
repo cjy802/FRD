@@ -15,7 +15,7 @@ import type { RouteAssessment, WeatherLimits } from './weatherTypes'
 import { weatherOnlyChecks } from './weatherPresentation'
 import type { RoadPreview as Preview } from './routeTypes'
 import { createFlightTimeline, sampleFlight, type FlightSample } from './flightPlayback'
-import { createMissionTask, deleteMissionTaskFrame, fetchMissionTask, fetchMissionTaskFrameFile, fetchMissionTaskFrames, saveMissionTaskFrame,
+import { createMissionTask, deleteMissionTask, deleteMissionTaskFrame, fetchMissionTask, fetchMissionTaskFrameFile, fetchMissionTaskFrames, saveMissionTaskFrame,
   listMissionTasks, updateMissionTask, type MissionTask, type MissionTaskSummary, type StoredMissionFrame } from './missionTasks'
 import type { PhotoAnalysisJob, TaskVideoFrame } from './photoAnalysis'
 import { fetchLocationAddress, placeToPoint, type PlaceResult } from './placeSearch'
@@ -165,6 +165,8 @@ const savedTasks = ref<MissionTaskSummary[]>([])
 const taskListOpen = ref(false)
 const taskListLoading = ref(false)
 const taskListError = ref('')
+const pendingDeleteTaskId = ref('')
+const deletingTaskId = ref('')
 const taskSurveyStatus = ref('')
 const ACTIVE_TASK_STORAGE_KEY = 'low-altitude-current-mission-task'
 type Rc2Status = {
@@ -411,6 +413,35 @@ function toggleTaskList() {
 }
 
 function closeTaskList() { taskListOpen.value = false }
+
+function requestDeleteMissionTask(taskId: string) {
+  pendingDeleteTaskId.value = pendingDeleteTaskId.value === taskId ? '' : taskId
+  taskListError.value = ''
+}
+
+async function deleteSavedMissionTask(task: MissionTaskSummary) {
+  if (pendingDeleteTaskId.value !== task.task_id || deletingTaskId.value) return
+  deletingTaskId.value = task.task_id
+  taskListError.value = ''
+  try {
+    await deleteMissionTask(task.task_id)
+    savedTasks.value = savedTasks.value.filter((item) => item.task_id !== task.task_id)
+    pendingDeleteTaskId.value = ''
+    if (activeTask.value?.task_id === task.task_id) {
+      localStorage.removeItem(ACTIVE_TASK_STORAGE_KEY)
+      activeTask.value = null
+      taskFrames.value = []
+      analysisMapTargets.value = []
+      taskSurveyStatus.value = ''
+      routeAssessment.value = null
+      selectModule('route')
+    }
+  } catch (cause) {
+    taskListError.value = cause instanceof Error ? cause.message : '删除任务失败。'
+  } finally {
+    deletingTaskId.value = ''
+  }
+}
 
 function taskStatusText(status: MissionTaskSummary['status']) {
   return ({ planning: '规划中', ready: '已准备', in_flight: '已开始', completed: '已完成' } as Record<string, string>)[status] ?? status
@@ -2309,12 +2340,19 @@ onBeforeUnmount(() => {
             <p v-else-if="!savedTasks.length" class="task-list-feedback">还没有保存的任务。先规划航线，再点击“设为当前任务”。</p>
             <ul v-else class="saved-task-list">
               <li v-for="task in savedTasks" :key="task.task_id">
-                <button type="button" class="saved-task-entry" :class="{ 'is-current': activeTask?.task_id === task.task_id }" :disabled="taskBusy" @click="selectSavedTask(task.task_id)">
-                  <span class="saved-task-entry-title"><strong>{{ task.route_summary }}</strong><b>{{ activeTask?.task_id === task.task_id ? '当前' : taskStatusText(task.status) }}</b></span>
-                  <small>{{ taskDateText(task.created_at) }} · {{ task.distance_km === null ? '距离待算' : `${task.distance_km.toFixed(2)} km` }}</small>
-                  <small v-if="task.max_wind_m_s !== null || task.max_rain_6h_mm !== null">天气：{{ task.max_wind_m_s === null ? '风缺测' : `最大风 ${task.max_wind_m_s.toFixed(1)} m/s` }} · {{ task.max_rain_6h_mm === null ? '雨缺测' : `六小时雨 ${task.max_rain_6h_mm.toFixed(1)} mm` }}</small>
-                  <small>机型 {{ task.drone_model ?? '未选' }} · 关键帧 {{ task.frame_count }} 张{{ task.video_survey_id ? ' · 已导入视频/SRT' : '' }}</small>
-                </button>
+                <div class="saved-task-row">
+                  <button type="button" class="saved-task-entry" :class="{ 'is-current': activeTask?.task_id === task.task_id }" :disabled="taskBusy || !!deletingTaskId" @click="selectSavedTask(task.task_id)">
+                    <span class="saved-task-entry-title"><strong>{{ task.route_summary }}</strong><b>{{ activeTask?.task_id === task.task_id ? '当前' : taskStatusText(task.status) }}</b></span>
+                    <small>{{ taskDateText(task.created_at) }} · {{ task.distance_km === null ? '距离待算' : `${task.distance_km.toFixed(2)} km` }}</small>
+                    <small v-if="task.max_wind_m_s !== null || task.max_rain_6h_mm !== null">天气：{{ task.max_wind_m_s === null ? '风缺测' : `最大风 ${task.max_wind_m_s.toFixed(1)} m/s` }} · {{ task.max_rain_6h_mm === null ? '雨缺测' : `六小时雨 ${task.max_rain_6h_mm.toFixed(1)} mm` }}</small>
+                    <small>机型 {{ task.drone_model ?? '未选' }} · 关键帧 {{ task.frame_count }} 张{{ task.video_survey_id ? ' · 已导入视频/SRT' : '' }}</small>
+                  </button>
+                  <button type="button" class="saved-task-delete" :disabled="taskBusy || !!deletingTaskId" :aria-label="`删除任务：${task.route_summary}`" @click="requestDeleteMissionTask(task.task_id)">{{ deletingTaskId === task.task_id ? '删除中…' : pendingDeleteTaskId === task.task_id ? '取消' : '删除' }}</button>
+                  <div v-if="pendingDeleteTaskId === task.task_id" class="saved-task-confirm" role="group" :aria-label="`确认删除任务：${task.route_summary}`">
+                    <span>将永久删除该任务及其视频、关键帧、分析结果和导出文件。</span>
+                    <button type="button" class="saved-task-confirm-button" :disabled="!!deletingTaskId" @click="deleteSavedMissionTask(task)">{{ deletingTaskId === task.task_id ? '正在删除…' : '确认删除' }}</button>
+                  </div>
+                </div>
               </li>
             </ul>
           </section>

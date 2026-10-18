@@ -236,6 +236,16 @@ def get_task(request: Request, task_id: str):
         raise HTTPException(status_code=error.http_status, detail=str(error)) from error
 
 
+@app.delete("/api/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_task(request: Request, task_id: str):
+    require_local_request(request, mutation=True, label="飞行任务")
+    try:
+        tasks.delete(task_id)
+    except TaskError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @app.patch("/api/tasks/{task_id}")
 def update_task(request: Request, task_id: str, payload: TaskUpdateRequest):
     require_local_request(request, mutation=True, label="飞行任务")

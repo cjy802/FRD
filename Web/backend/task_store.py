@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import os
+import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -109,6 +110,17 @@ class TaskStore:
                 continue
         summaries.sort(key=lambda item: (item.get("updated_at") or item.get("created_at") or ""), reverse=True)
         return summaries
+
+    def delete(self, task_id: str) -> None:
+        directory = self._directory(task_id)
+        root = self.storage_dir.resolve(strict=True)
+        target = directory.resolve(strict=True)
+        if directory.is_symlink() or target == root or target.parent != root:
+            raise TaskError("任务目录位置无效，无法删除。", http_status=400)
+        try:
+            shutil.rmtree(target)
+        except OSError as error:
+            raise TaskError(f"删除任务失败：{error}", http_status=500) from error
 
     def update(self, task_id: str, changes: dict[str, Any]) -> dict[str, Any]:
         directory = self._directory(task_id)
