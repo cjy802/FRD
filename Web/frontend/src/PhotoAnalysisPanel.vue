@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onUnmounted, ref } from 'vue'
 import {
   PhotoAnalysisApiError,
   fetchPhotoAnalysisHealth,
@@ -7,7 +7,7 @@ import {
   photoAnalysisFileUrl,
   submitPhotoAnalysis,
 } from './photoAnalysis'
-import type { PhotoAnalysisHealth, PhotoAnalysisJob } from './photoAnalysis'
+import type { PhotoAnalysisHealth, PhotoAnalysisJob, PhotoAnalysisResultImage } from './photoAnalysis'
 
 const health = ref<PhotoAnalysisHealth | null>(null)
 const healthError = ref('')
@@ -20,12 +20,20 @@ const busy = ref(false)
 const error = ref('')
 const status = ref('')
 const viewMode = ref<'overlay' | 'original'>('overlay')
+const previewDialog = ref<HTMLDialogElement | null>(null)
+const preview = ref<{ image: PhotoAnalysisResultImage; index: number } | null>(null)
 let pollTimer: number | null = null
 
 const selectedModelOption = computed(() => health.value?.models?.find(model => model.id === selectedModel.value) ?? null)
 const canSubmit = computed(() => Boolean(health.value?.available && selectedModelOption.value?.available
   && selectedFiles.value.length && !busy.value))
 const interpretation = computed(() => job.value?.results?.interpretation ?? '')
+const previewUrl = computed(() => {
+  if (!preview.value) return ''
+  return viewMode.value === 'overlay'
+    ? fileUrl(preview.value.image.overlay)
+    : inputUrl(preview.value.index)
+})
 const modelSummary = computed(() => {
   const model = job.value?.results?.model
   if (!model) return ''
@@ -117,6 +125,26 @@ function inputUrl(index: number): string {
   return record ? photoAnalysisFileUrl(job.value!.job_id, `inputs/${record.name}`) : ''
 }
 
+function openPreview(image: PhotoAnalysisResultImage, index: number) {
+  preview.value = { image, index }
+  void nextTick(() => {
+    if (previewDialog.value && !previewDialog.value.open) previewDialog.value.showModal()
+  })
+}
+
+function closePreview() {
+  if (previewDialog.value?.open) previewDialog.value.close()
+  else preview.value = null
+}
+
+function onPreviewDialogClick(event: MouseEvent) {
+  if (event.target === previewDialog.value) closePreview()
+}
+
+function onPreviewDialogClose() {
+  preview.value = null
+}
+
 refreshHealth()
 onUnmounted(stopPolling)
 </script>
@@ -171,9 +199,9 @@ onUnmounted(stopPolling)
         </div>
         <ul class="photo-grid">
           <li v-for="(image, index) in job.results.images" :key="image.name">
-            <a :href="viewMode === 'overlay' ? fileUrl(image.overlay) : inputUrl(index)" target="_blank" rel="noopener">
-              <img :src="viewMode === 'overlay' ? fileUrl(image.overlay) : inputUrl(index)" :alt="`疑似积水叠图 ${image.name}`" loading="lazy" />
-            </a>
+            <button type="button" class="photo-thumbnail" :aria-label="`放大查看 ${image.name}`" @click="openPreview(image, index)">
+              <img :src="viewMode === 'overlay' ? fileUrl(image.overlay) : inputUrl(index)" :alt="`${viewMode === 'overlay' ? '疑似积水叠图' : '原始照片'} ${image.name}`" loading="lazy" />
+            </button>
             <div class="photo-meta">
               <strong :title="image.name">{{ image.name }}</strong>
               <small>疑似积水 {{ fractionPercent(image.suspected_fraction) }} · {{ image.suspected_patch_count }} 处</small>
@@ -184,6 +212,26 @@ onUnmounted(stopPolling)
         <p class="photo-warning">{{ interpretation }}</p>
       </div>
     </div>
+    <dialog v-if="preview" ref="previewDialog" class="photo-lightbox" :aria-labelledby="`photo-preview-title-${preview.index}`" @click="onPreviewDialogClick" @close="onPreviewDialogClose">
+      <div class="photo-lightbox-content">
+        <header class="photo-lightbox-header">
+          <div class="photo-lightbox-heading">
+            <strong :id="`photo-preview-title-${preview.index}`">{{ preview.image.name }}</strong>
+            <small>{{ viewMode === 'overlay' ? '分析叠图' : '原始照片' }}</small>
+          </div>
+          <div class="photo-lightbox-actions">
+            <div class="photo-view-toggle" role="group" aria-label="预览图片类型">
+              <button type="button" :class="{ 'is-active': viewMode === 'overlay' }" @click="viewMode = 'overlay'">叠图</button>
+              <button type="button" :class="{ 'is-active': viewMode === 'original' }" @click="viewMode = 'original'">原图</button>
+            </div>
+            <button type="button" class="photo-lightbox-close" aria-label="关闭图片预览" @click="closePreview">关闭</button>
+          </div>
+        </header>
+        <div class="photo-lightbox-body">
+          <img class="photo-lightbox-image" :src="previewUrl" :alt="`${viewMode === 'overlay' ? '分析叠图' : '原始照片'} ${preview.image.name}`" />
+        </div>
+      </div>
+    </dialog>
   </details>
 </template>
 
@@ -220,9 +268,30 @@ onUnmounted(stopPolling)
 .photo-view-toggle button.is-active { background: var(--ui-accent); border-color: var(--ui-accent); color: #fff; }
 .photo-grid { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
 .photo-grid li { min-width: 0; padding: 6px; border: 1px solid var(--ui-line); border-radius: 7px; background: #fbfcfe; }
+.photo-thumbnail { display: block; width: 100%; padding: 0 !important; border: none !important; border-radius: 5px; background: transparent !important; cursor: zoom-in; }
+.photo-thumbnail:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 2px; }
 .photo-grid img { display: block; width: 100%; height: auto; border-radius: 5px; }
 .photo-meta { margin-top: 5px; }
 .photo-meta strong { display: block; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .photo-meta small { display: block; margin-top: 2px; color: var(--ui-muted); }
 .photo-warning { margin: 10px 0 0; padding: 6px 8px; border-radius: 6px; background: #fff7ed; color: #9a5b13; line-height: 1.4; }
+.photo-lightbox { width: min(96vw, 1400px); max-width: 96vw; max-height: 94vh; margin: auto; padding: 0; overflow: hidden; border: 1px solid #394658; border-radius: 12px; background: #101820; color: #f8fafc; box-shadow: 0 24px 80px rgba(0, 0, 0, .5); }
+.photo-lightbox::backdrop { background: rgba(5, 10, 16, .78); backdrop-filter: blur(3px); }
+.photo-lightbox-content { display: flex; max-height: 94vh; flex-direction: column; }
+.photo-lightbox-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; }
+.photo-lightbox-heading { display: grid; min-width: 0; gap: 3px; }
+.photo-lightbox-heading strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.photo-lightbox-heading small { color: #a9b7c7; }
+.photo-lightbox-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 10px; }
+.photo-lightbox .photo-view-toggle button { border-color: #536174; background: #1c2835; color: #e2e8f0; }
+.photo-lightbox .photo-view-toggle button.is-active { border-color: var(--ui-accent); background: var(--ui-accent); color: #fff; }
+.photo-lightbox-close { border-color: #536174 !important; background: #1c2835 !important; color: #e2e8f0 !important; }
+.photo-lightbox-body { display: grid; min-height: 0; place-items: center; padding: 0 12px 12px; }
+.photo-lightbox-image { display: block; max-width: 100%; max-height: calc(94vh - 66px); object-fit: contain; }
+@media (max-width: 560px) {
+  .photo-lightbox { width: 96vw; }
+  .photo-lightbox-header { align-items: flex-start; flex-direction: column; }
+  .photo-lightbox-actions { width: 100%; justify-content: space-between; }
+  .photo-lightbox-image { max-height: calc(94vh - 108px); }
+}
 </style>
