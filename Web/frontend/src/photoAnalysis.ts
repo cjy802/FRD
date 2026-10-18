@@ -24,6 +24,11 @@ export type TaskVideoFrame = {
   latitude: number
   longitude: number
   altitude_m: number | null
+  selection_reason?: string | null
+  estimated_overlap_percent?: number | null
+  turn_angle_deg?: number | null
+  source_frame_index?: number | null
+  source_video_time?: number | null
 }
 
 export type PhotoAnalysisResultImage = {

@@ -11,6 +11,7 @@ import json
 import math
 import os
 import re
+import tempfile
 import time
 from functools import lru_cache
 from pathlib import Path
@@ -39,6 +40,7 @@ from route_templates import (
     TemplateUpdate, TemplateWrite,
 )
 from task_store import TaskError, tasks
+from adaptive_video import AdaptiveVideoError, select_frames as select_adaptive_video_frames
 
 
 app = FastAPI(title="低空飞行决策工作台", version="0.1.0")
@@ -150,6 +152,21 @@ class VideoSurveyPathRequest(BaseModel):
     video_path: str = Field(min_length=1, max_length=2048)
     srt_path: str = Field(min_length=1, max_length=2048)
     task_id: str = Field(min_length=23, max_length=23)
+
+
+class AdaptiveFrameSelectionRequest(BaseModel):
+    survey_id: str = Field(min_length=23, max_length=23)
+    straight_overlap_percent: float = Field(default=12, ge=0, le=50, allow_inf_nan=False)
+    turn_overlap_percent: float = Field(default=60, ge=20, le=90, allow_inf_nan=False)
+    scan_fps: float = Field(default=2, gt=0, le=5, allow_inf_nan=False)
+    turn_angle_degrees: float = Field(default=18, ge=10, le=90, allow_inf_nan=False)
+    camera_change_degrees: float = Field(default=12, ge=5, le=45, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def validate_overlap_targets(self):
+        if self.turn_overlap_percent <= self.straight_overlap_percent:
+            raise ValueError("转弯重叠目标应高于直线段目标。")
+        return self
 
 
 class TaskCreateRequest(BaseModel):
@@ -275,6 +292,64 @@ def delete_task_frame(request: Request, task_id: str, frame_id: str):
     except TaskError as error:
         raise HTTPException(status_code=error.http_status, detail=str(error)) from error
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post("/api/tasks/{task_id}/adaptive-frames")
+async def select_task_video_frames(request: Request, task_id: str, payload: AdaptiveFrameSelectionRequest):
+    require_local_request(request, mutation=True, label="任务视频自适应切帧")
+    try:
+        task = tasks.get(task_id)
+        if task.get("video_survey_id") != payload.survey_id:
+            raise TaskError("请选择当前任务已导入的视频与 SRT。", http_status=409)
+        survey = video_surveys.job(payload.survey_id)
+        if survey.get("task_id") != task_id or not survey.get("has_gps"):
+            raise VideoSurveyError("此视频没有绑定当前任务的有效 SRT GPS 轨迹。", http_status=422)
+        remaining_frames = 30 - len(tasks.frames(task_id))
+        if remaining_frames <= 0:
+            raise TaskError("当前任务的关键帧已达 30 张上限，请先移除不需要的帧。", http_status=409)
+        video_path = video_surveys.video_path(payload.survey_id)
+        before_count = len(tasks.frames(task_id))
+        with tempfile.TemporaryDirectory(prefix="adaptive-frame-selection-", dir=str(tasks.directory(task_id))) as temporary:
+            output_dir = Path(temporary)
+            selection = await asyncio.to_thread(
+                select_adaptive_video_frames,
+                video_path,
+                survey["telemetry"],
+                output_dir,
+                max_frames=remaining_frames,
+                scan_fps=payload.scan_fps,
+                straight_overlap_percent=payload.straight_overlap_percent,
+                turn_overlap_percent=payload.turn_overlap_percent,
+                turn_angle_degrees=payload.turn_angle_degrees,
+                camera_change_degrees=payload.camera_change_degrees,
+            )
+            stored_frames = []
+            for item in selection["selected_frames"]:
+                image_path = (output_dir / item["file"]).resolve()
+                if output_dir.resolve() not in image_path.parents or not image_path.is_file():
+                    raise AdaptiveVideoError("切帧程序输出的图像路径无效。", http_status=500)
+                stored_frames.append(tasks.add_frame(
+                    task_id,
+                    image_path.name,
+                    image_path.read_bytes(),
+                    {"time_seconds": item["time_seconds"], "latitude": item["latitude"],
+                     "longitude": item["longitude"], "altitude_m": item.get("altitude_m"),
+                     "gimbal_pitch_deg": item.get("gimbal_pitch_deg"),
+                     "selection_reason": item.get("selection_reason"),
+                     "estimated_overlap_percent": item.get("estimated_overlap_percent"),
+                     "turn_angle_deg": item.get("turn_angle_deg"),
+                     "source_frame_index": item.get("source_frame_index"),
+                     "source_video_time": item.get("time_seconds")},
+                ))
+        return {**{key: value for key, value in selection.items() if key != "selected_frames"},
+                "task_frames": stored_frames, "frame_count_before": before_count,
+                "frame_count_after": before_count + len(stored_frames)}
+    except AdaptiveVideoError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+    except VideoSurveyError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+    except TaskError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
 
 
 @lru_cache(maxsize=1)

@@ -42,6 +42,38 @@ export type VideoBrowserListing = {
   truncated: boolean
 }
 
+export type AdaptiveFrameSelectionOptions = {
+  straight_overlap_percent: number
+  turn_overlap_percent: number
+  scan_fps: number
+  turn_angle_degrees: number
+  camera_change_degrees: number
+}
+
+export type AdaptiveFrameSelectionResult = {
+  video_fps: number
+  video_frames: number
+  duration_seconds: number
+  scan_fps: number
+  scanned_candidates: number
+  reached_limit: boolean
+  elapsed_seconds: number
+  strategy: string
+  frame_count_before: number
+  frame_count_after: number
+  task_frames: Array<{
+    frame_id: string
+    name: string
+    time_seconds: number
+    latitude: number
+    longitude: number
+    altitude_m: number | null
+    selection_reason?: string
+    estimated_overlap_percent?: number | null
+    turn_angle_deg?: number | null
+  }>
+}
+
 export class VideoSurveyApiError extends Error {
   constructor(message: string, readonly status: number) {
     super(message)
@@ -78,6 +110,15 @@ export async function createVideoSurvey(videoPath: string, srtPath: string, task
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ video_path: videoPath, srt_path: srtPath, task_id: taskId }),
+  })
+}
+
+export function selectAdaptiveTaskFrames(taskId: string, surveyId: string,
+  options: AdaptiveFrameSelectionOptions): Promise<AdaptiveFrameSelectionResult> {
+  return request<AdaptiveFrameSelectionResult>(`/api/tasks/${encodeURIComponent(taskId)}/adaptive-frames`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ survey_id: surveyId, ...options }),
   })
 }
 

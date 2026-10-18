@@ -345,6 +345,11 @@ async function refreshTaskFrames(taskId: string) {
   if (activeTask.value?.task_id === taskId) taskFrames.value = loaded
 }
 
+async function onAdaptiveFramesAdded(_count: number) {
+  if (!activeTask.value || !taskRouteMatches.value) return
+  await refreshTaskFrames(activeTask.value.task_id)
+}
+
 async function restoreCurrentTask() {
   const taskId = localStorage.getItem(ACTIVE_TASK_STORAGE_KEY)
   if (!taskId) return
@@ -2366,7 +2371,7 @@ onBeforeUnmount(() => {
 
            <div class="settings-group" data-settings-page="photos" :class="{ 'settings-active': settingsPage === 'photos' }">
           <p class="form-scope-note">当前任务导入视频与对应 SRT。拖动时间线核对无人机位置，只截取需要分析的关键帧。</p>
-          <VideoSurveyPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frame-count="taskFrames.length" @track-change="setVideoTelemetryTrack" @position-change="setVideoTelemetryPosition" @targets-change="setVideoCaptureTargets" @frame-capture="addTaskFrame" @survey-change="onTaskSurveyChange" />
+          <VideoSurveyPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frame-count="taskFrames.length" @track-change="setVideoTelemetryTrack" @position-change="setVideoTelemetryPosition" @targets-change="setVideoCaptureTargets" @frame-capture="addTaskFrame" @frames-added="onAdaptiveFramesAdded" @survey-change="onTaskSurveyChange" />
           <p class="form-scope-note">关键帧会保存在任务文件夹中。模型只分析勾选的帧，SRT 位置会随结果一同记录。</p>
           <PhotoAnalysisPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frames="taskFrames" @remove-frame="removeTaskFrame" @analysis-complete="recordTaskAnalysis" />
           </div>

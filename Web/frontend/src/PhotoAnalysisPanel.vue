@@ -202,7 +202,7 @@ onUnmounted(stopPolling)
         <ul v-else class="photo-frame-list">
           <li v-for="(frame, index) in frames" :key="`${frame.file.name}-${index}`" :class="{ 'is-excluded': excludedFrames.includes(index) }">
             <label><input type="checkbox" :checked="!excludedFrames.includes(index)" :disabled="busy" @change="setFrameIncluded(index, $event)" />
-              <span><strong>{{ frame.file.name }}</strong><small>{{ Math.floor(frame.time_seconds / 60).toString().padStart(2, '0') }}:{{ Math.floor(frame.time_seconds % 60).toString().padStart(2, '0') }} · {{ frame.latitude.toFixed(6) }}, {{ frame.longitude.toFixed(6) }}<template v-if="frame.altitude_m !== null"> · {{ frame.altitude_m.toFixed(0) }} m</template></small></span>
+              <span><strong>{{ frame.file.name }}</strong><small>{{ Math.floor(frame.time_seconds / 60).toString().padStart(2, '0') }}:{{ Math.floor(frame.time_seconds % 60).toString().padStart(2, '0') }} · {{ frame.latitude.toFixed(6) }}, {{ frame.longitude.toFixed(6) }}<template v-if="frame.altitude_m !== null"> · {{ frame.altitude_m.toFixed(0) }} m</template></small><small>{{ frame.selection_reason ?? '手动截取' }}<template v-if="frame.estimated_overlap_percent !== null && frame.estimated_overlap_percent !== undefined"> · 上一选帧重叠约 {{ frame.estimated_overlap_percent }}%</template></small></span>
             </label>
             <button type="button" :disabled="busy" :aria-label="`从任务分析队列移除 ${frame.file.name}`" @click="removeFrame(index)">移除</button>
           </li>

@@ -7,6 +7,7 @@ import {
   deleteVideoCaptureTarget,
   fetchVideoSurvey,
   interpolateVideoPosition,
+  selectAdaptiveTaskFrames,
 } from './videoSurvey'
 import type { VideoBrowserEntry, VideoBrowserListing, VideoCaptureTarget, VideoSurvey, VideoTelemetryPoint } from './videoSurvey'
 import type { TaskVideoFrame } from './photoAnalysis'
@@ -18,6 +19,7 @@ const emit = defineEmits<{
   'position-change': [position: VideoTelemetryPoint | null]
   'targets-change': [targets: VideoCaptureTarget[]]
   'frame-capture': [frame: TaskVideoFrame]
+  'frames-added': [count: number]
   'survey-change': [survey: VideoSurvey | null]
 }>()
 
@@ -39,12 +41,20 @@ const targetLabel = ref('')
 const loading = ref(false)
 const busyTarget = ref(false)
 const capturingFrame = ref(false)
+const selectingFrames = ref(false)
+const straightOverlapPercent = ref(12)
+const turnOverlapPercent = ref(60)
+const scanFps = ref(2)
+const turnAngleDegrees = ref(18)
+const cameraChangeDegrees = ref(12)
 const error = ref('')
 const status = ref('')
 
 const canImport = computed(() => Boolean(props.taskId && videoPath.value && srtPath.value && !loading.value))
 const canCaptureFrame = computed(() => Boolean(survey.value && currentPosition.value && videoElement.value?.videoWidth
   && props.frameCount < 30 && !capturingFrame.value))
+const canSelectAdaptiveFrames = computed(() => Boolean(props.taskId && survey.value?.has_gps
+  && props.frameCount < 30 && !selectingFrames.value && !loading.value))
 const currentTimeLabel = computed(() => formatVideoTime(currentTime.value))
 const videoSelectionName = computed(() => videoPath.value ? pathBasename(videoPath.value) : survey.value?.video_name ?? '尚未选择视频')
 const srtSelectionName = computed(() => srtPath.value ? pathBasename(srtPath.value) : survey.value?.srt_name ?? '尚未选择 SRT')
@@ -167,6 +177,32 @@ async function captureCurrentFrame() {
     error.value = cause instanceof Error ? cause.message : '截取视频帧失败。'
   } finally {
     capturingFrame.value = false
+  }
+}
+
+async function selectAdaptiveFrames() {
+  if (!props.taskId || !survey.value || !canSelectAdaptiveFrames.value) return
+  selectingFrames.value = true
+  error.value = ''
+  status.value = '正在低分辨率扫描视频画面、估算重叠并识别转弯；不会逐帧运行水坑模型…'
+  try {
+    const result = await selectAdaptiveTaskFrames(props.taskId, survey.value.job_id, {
+      straight_overlap_percent: straightOverlapPercent.value,
+      turn_overlap_percent: turnOverlapPercent.value,
+      scan_fps: scanFps.value,
+      turn_angle_degrees: turnAngleDegrees.value,
+      camera_change_degrees: cameraChangeDegrees.value,
+    })
+    if (result.task_frames.length) emit('frames-added', result.task_frames.length)
+    status.value = result.task_frames.length
+      ? `扫描 ${result.scanned_candidates} 个候选时刻，自动选出 ${result.task_frames.length} 张关键帧（总计 ${result.frame_count_after} 张）。`
+        + (result.reached_limit ? '已达到任务关键帧上限。' : '')
+      : `扫描了 ${result.scanned_candidates} 个候选时刻；当前任务没有新增关键帧。`
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : '自适应视频切帧失败。'
+    status.value = ''
+  } finally {
+    selectingFrames.value = false
   }
 }
 
@@ -308,6 +344,21 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
         {{ capturingFrame ? '截取中…' : frameCount >= 30 ? '关键帧已达 30 张上限' : '截取当前画面用于分析' }}
       </button>
 
+      <section class="adaptive-selector" aria-label="自适应筛选视频关键帧">
+        <header><strong>自适应筛选关键帧</strong><small>按画面重叠和 SRT 转弯状态选帧，不使用固定抽帧间隔。</small></header>
+        <div class="adaptive-selector-fields">
+          <label>直线段最大重叠 · %<input v-model.number="straightOverlapPercent" type="number" min="0" max="50" step="1" :disabled="selectingFrames" /></label>
+          <label>转弯处保留重叠 · %<input v-model.number="turnOverlapPercent" type="number" min="20" max="90" step="1" :disabled="selectingFrames" /></label>
+          <label>画面扫描频率<select v-model.number="scanFps" :disabled="selectingFrames"><option :value="1">1 次 / 秒</option><option :value="2">2 次 / 秒</option><option :value="4">4 次 / 秒</option></select></label>
+          <label>转弯识别角度 · °<input v-model.number="turnAngleDegrees" type="number" min="10" max="90" step="5" :disabled="selectingFrames" /></label>
+          <label>镜头角度变化阈值 · °<input v-model.number="cameraChangeDegrees" type="number" min="5" max="45" step="1" :disabled="selectingFrames" /></label>
+        </div>
+        <button class="adaptive-selector-action" type="button" :disabled="!canSelectAdaptiveFrames" @click="selectAdaptiveFrames">
+          {{ selectingFrames ? '正在自适应筛帧…' : !survey?.has_gps ? '需要带 GPS 的 SRT' : frameCount >= 30 ? '关键帧已达 30 张上限' : '自动筛选并保存关键帧' }}
+        </button>
+        <small class="adaptive-selector-note">系统用特征匹配估算相邻画面覆盖，用 SRT 轨迹变化识别转弯；匹配不确定时会保留画面以降低漏区风险。重叠值是筛选目标，不代表地面覆盖的测绘级保证。</small>
+      </section>
+
       <ul v-if="survey.targets.length" class="video-survey-target-list">
         <li v-for="target in survey.targets" :key="target.id">
           <button class="video-survey-target-summary" type="button" @click="seekTarget(target)">
@@ -373,6 +424,17 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
 .video-survey-import { width: 100%; margin-top: 4px; border-color: var(--ui-accent); background: var(--ui-accent); color: #fff; }
 .video-survey-import:hover:not(:disabled) { background: var(--ui-accent-hover); color: #fff; }
 .video-survey-capture { width: 100%; margin-top: 7px; border-color: var(--ui-accent); color: var(--ui-accent); }
+.adaptive-selector { display: grid; gap: 7px; margin-top: 9px; padding: 8px; border: 1px solid var(--ui-line); border-radius: 7px; background: #fbfcfe; }
+.adaptive-selector header { display: grid; gap: 3px; }
+.adaptive-selector header strong { color: #27364a; font-size: 11px; }
+.adaptive-selector header small, .adaptive-selector-note { color: var(--ui-muted); font-size: 10px; line-height: 1.4; }
+.adaptive-selector-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.adaptive-selector-fields label { display: grid; min-width: 0; gap: 3px; color: #526273; font-size: 10px; }
+.adaptive-selector-fields input, .adaptive-selector-fields select { width: 100%; min-width: 0; min-height: 28px; padding: 3px 5px; border: 1px solid #d7dfe8; border-radius: 5px; background: #fff; color: #27364a; font-size: 11px; }
+.adaptive-selector-action { width: 100%; border-color: var(--ui-accent) !important; background: var(--ui-accent) !important; color: #fff !important; }
+.adaptive-selector-action:hover:not(:disabled) { background: var(--ui-accent-hover) !important; }
+.adaptive-selector-action:disabled { opacity: .5; cursor: not-allowed; }
+.adaptive-selector-note { margin: 0; }
 .video-survey-note, .video-survey-feedback { margin: 7px 0; padding: 6px 8px; border-radius: 6px; background: #eff6ff; color: #1d4ed8; line-height: 1.4; overflow-wrap: anywhere; }
 .video-survey-feedback.is-error { background: #fef2f2; color: #a4262c; }
 .video-survey-review { margin-top: 9px; }
