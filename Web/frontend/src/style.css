@@ -80,6 +80,28 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .insights-header { position: sticky; top: -20px; z-index: 3; margin: -20px -18px 14px; padding: 16px 18px 12px; background: #f7f9fbf5; border-bottom: 1px solid var(--ui-line); backdrop-filter: blur(10px); }
 .insights-header h2 { margin: 4px 0 0; }
 .overview-hero, .overview-section, .overview-footer { display: grid; gap: 12px; }
+.task-weather-advisory { display: grid; gap: 10px; margin: 0 0 12px; padding: 12px; border: 1px solid var(--ui-line); border-radius: 9px; background: #fff; }
+.task-weather-advisory-heading, .task-weather-advisory-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.task-weather-advisory-heading h3 { margin: 3px 0 0; color: #27364a; font-size: 14px; }
+.task-weather-advisory-heading > small, .task-weather-advisory-footer > small { color: var(--ui-muted); font-size: 10px; line-height: 1.4; }
+.task-weather-advisory-heading > small { flex: 0 0 105px; text-align: right; }
+.task-weather-checks { display: grid; gap: 7px; }
+.task-weather-check { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px 8px; padding: 8px; border: 1px solid #dfe4ea; border-left: 3px solid #8795a1; border-radius: 7px; background: #fbfcfd; }
+.task-weather-check > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; min-width: 0; }
+.task-weather-check > div strong { color: #344455; font-size: 11px; }
+.task-weather-check > div b { color: #526273; font-size: 10px; }
+.task-weather-check-value { color: #344455; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.task-weather-check p { grid-column: 1 / -1; margin: 0; color: #59697a; font-size: 10px; line-height: 1.45; }
+.task-weather-check.is-normal { border-left-color: #218653; background: #f5fbf7; }
+.task-weather-check.is-normal > div b { color: #167348; }
+.task-weather-check.is-attention { border-left-color: #d68100; background: #fffaf0; }
+.task-weather-check.is-attention > div b { color: #9a5b13; }
+.task-weather-check.is-elevated { border-left-color: #c4312b; background: #fff6f5; }
+.task-weather-check.is-elevated > div b { color: #a4262c; }
+.task-weather-check.is-incomplete, .task-weather-check.is-pending { border-left-color: #74869a; background: #f7f9fb; }
+.task-weather-advisory-footer { align-items: flex-end; }
+.task-weather-advisory-footer > small { flex: 1; }
+.task-weather-advisory-footer .weather-refresh { flex: 0 0 auto; }
 .overview-section-heading { padding: 4px 2px 0; }
 .overview-section-heading h3 { margin: 2px 0 3px; font-size: 16px; line-height: 1.3; }
 .overview-section-heading p { margin: 0; color: var(--ui-muted); font-size: var(--font-caption); }
