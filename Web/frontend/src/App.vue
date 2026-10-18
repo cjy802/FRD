@@ -9,7 +9,7 @@ import PlaceSearch from './PlaceSearch.vue'
 import BaiduCameraPreview from './BaiduCameraPreview.vue'
 import PhotoAnalysisPanel from './PhotoAnalysisPanel.vue'
 import VideoSurveyPanel from './VideoSurveyPanel.vue'
-import type { VideoCaptureTarget, VideoSurvey, VideoTelemetryPoint } from './videoSurvey'
+import type { VideoCaptureTarget, VideoTelemetryPoint } from './videoSurvey'
 import type { CameraPose } from './baiduScene'
 import type { RouteAssessment, WeatherLimits } from './weatherTypes'
 import { weatherOnlyChecks } from './weatherPresentation'
@@ -31,7 +31,7 @@ const activeModule = ref<ModuleKey>('route')
 
 function selectModule(module: ModuleKey) {
   if (module !== 'route' && !taskRouteMatches.value) {
-    taskError.value = activeTask.value ? '路线参数已变化，请在下方创建任务或替换当前任务。' : '请先选定并生成航线，再创建任务。'
+    taskError.value = activeTask.value ? '路线参数已变化，请创建新任务。' : '请先选定并生成航线，再创建任务。'
     activeModule.value = 'route'
     workspacePanel.value = 'settings'
     settingsPage.value = 'points'
@@ -167,7 +167,6 @@ const taskListLoading = ref(false)
 const taskListError = ref('')
 const pendingDeleteTaskId = ref('')
 const deletingTaskId = ref('')
-const taskSurveyStatus = ref('')
 const ACTIVE_TASK_STORAGE_KEY = 'low-altitude-current-mission-task'
 type Rc2Status = {
   available: boolean
@@ -247,7 +246,7 @@ function setVideoCaptureTargets(targets: VideoCaptureTarget[]) { videoCaptureTar
 const mapCaptureTargets = computed(() => [...videoCaptureTargets.value, ...analysisMapTargets.value])
 
 async function createCurrentTask() {
-  if (!preview.value || previewKey.value !== routeKey.value || taskBusy.value || loading.value) return
+  if (!preview.value || previewKey.value !== routeKey.value || taskBusy.value || loading.value || checkingPoint.value || locatingPoint.value !== null) return
   taskBusy.value = true
   taskError.value = ''
   try {
@@ -258,18 +257,12 @@ async function createCurrentTask() {
     localStorage.setItem(ACTIVE_TASK_STORAGE_KEY, created.task_id)
     taskFrames.value = []
     analysisMapTargets.value = []
-    taskSurveyStatus.value = ''
     void refreshMissionTaskList()
   } catch (cause) {
     taskError.value = cause instanceof Error ? cause.message : '创建当前任务失败。'
   } finally {
     taskBusy.value = false
   }
-}
-
-async function replaceCurrentTask() {
-  if (!activeTask.value || !preview.value || previewKey.value !== routeKey.value || taskBusy.value || loading.value) return
-  await createCurrentTask()
 }
 
 async function persistTask(changes: Parameters<typeof updateMissionTask>[1]) {
@@ -377,7 +370,6 @@ function applyMissionTask(task: MissionTask) {
   settingsRoute.value = null
   waypointSettings.value = []
   taskFrames.value = []
-  taskSurveyStatus.value = ''
   analysisMapTargets.value = (task.analysis_targets ?? []) as unknown as VideoCaptureTarget[]
   const route = task.route
   const savedAnchors = route.anchors
@@ -437,7 +429,6 @@ async function deleteSavedMissionTask(task: MissionTaskSummary) {
       activeTask.value = null
       taskFrames.value = []
       analysisMapTargets.value = []
-      taskSurveyStatus.value = ''
       routeAssessment.value = null
       selectModule('route')
     }
@@ -487,8 +478,7 @@ function restoreTaskWaypointSettings() {
   scheduleWaypointRender()
 }
 
-async function onTaskSurveyChange(survey: VideoSurvey | null) {
-  if (survey) taskSurveyStatus.value = `${survey.video_name} + ${survey.srt_name}`
+async function onTaskSurveyChange() {
   if (!activeTask.value || !taskRouteMatches.value) return
   const updated = await fetchMissionTask(activeTask.value.task_id).catch(() => null)
   if (updated) activeTask.value = updated
@@ -590,9 +580,7 @@ const taskRouteMatches = computed(() => {
     return false
   }
 })
-const canCreateTask = computed(() => Boolean(!activeTask.value && preview.value
-  && previewKey.value === routeKey.value && !taskBusy.value && !loading.value && !checkingPoint.value && locatingPoint.value === null))
-const canReplaceTask = computed(() => Boolean(activeTask.value && preview.value
+const canCreateTask = computed(() => Boolean(preview.value
   && previewKey.value === routeKey.value && !taskBusy.value && !loading.value && !checkingPoint.value && locatingPoint.value === null))
 const taskStatusLabel = computed(() => activeTask.value?.status === 'in_flight' ? '飞行中'
   : activeTask.value?.status === 'ready' ? '已准备' : '规划中')
@@ -2389,12 +2377,6 @@ onBeforeUnmount(() => {
       <aside id="mission-sidebar" class="sidebar module-panel" :class="[{ 'panel-active': workspacePanel === 'settings', 'module-active': activeModule === 'route' || activeModule === 'photos' }, `module-mode-${activeModule}`]" aria-label="航线设置">
         <div v-if="activeModule === 'route'" class="section-heading"><span class="eyebrow"><span class="svg-icon icon-route" aria-hidden="true"></span>第 1 步 · 选定航线</span><h1>规划本次飞行</h1><PlaceSearch :disabled="loading || checkingPoint" :targets="anchorChoices" :selection-feedback="placeSelectionFeedback" @choose-point="chooseSearchedPoint" @clear-selection-feedback="placeSelectionFeedback = null" /></div>
 
-        <section v-if="activeModule === 'route'" class="task-current-card" aria-label="当前飞行任务">
-          <div><strong>{{ activeTask && taskRouteMatches ? '当前任务' : '创建本次任务' }}</strong><span v-if="activeTask">{{ taskRouteMatches ? `任务 ${activeTask.task_id}` : '路线或飞行参数已变化，将以当前路线替换当前任务' }}</span><span v-else>创建后，天气、机型导出、视频和关键帧会归档到同一任务。</span><small v-if="taskSurveyStatus">已关联：{{ taskSurveyStatus }}</small><small v-if="activeTask">替换会新建当前任务，原任务保留在任务列表中。</small></div>
-          <button v-if="activeTask" type="button" :disabled="!canReplaceTask" @click="replaceCurrentTask">{{ taskBusy ? '替换中…' : '替换当前任务' }}</button>
-          <p v-if="taskError" class="form-error" role="alert">{{ taskError }}</p>
-        </section>
-
         <form class="route-form" @submit.prevent="createCurrentTask" @invalid.capture="revealInvalidSetting">
           <nav v-if="activeModule === 'route'" class="settings-pages" aria-label="航线设置分组"><button type="button" :aria-pressed="settingsPage === 'points'" @click="settingsPage = 'points'">主点与坐标</button><button type="button" :aria-pressed="settingsPage === 'mission'" @click="settingsPage = 'mission'">飞行参数</button></nav>
           <div class="settings-fields">
@@ -2441,7 +2423,9 @@ onBeforeUnmount(() => {
           <PhotoAnalysisPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frames="taskFrames" @remove-frame="removeTaskFrame" @analysis-complete="recordTaskAnalysis" />
           </div>
           </div>
-            <fluent-button v-if="activeModule === 'route'" class="primary-button" appearance="primary" type="submit" :disabled="!canCreateTask" :title="activeTask ? '当前已有任务，请使用上方“替换当前任务”操作。' : undefined"><span class="svg-icon" :class="taskBusy ? 'icon-refresh is-spinning' : 'icon-square-check'" aria-hidden="true"></span><span>{{ taskBusy ? '创建中…' : '创建任务' }}</span></fluent-button>
+            <fluent-button v-if="activeModule === 'route'" class="primary-button" appearance="primary" type="submit" :disabled="!canCreateTask"><span class="svg-icon" :class="taskBusy ? 'icon-refresh is-spinning' : 'icon-square-check'" aria-hidden="true"></span><span>{{ taskBusy ? '创建中…' : '创建任务' }}</span></fluent-button>
+           <p v-if="activeModule === 'route'" class="form-scope-note task-create-guide">路线计算完成且参数未变化、没有正在进行的计算、定位或创建操作时可创建。创建后新任务成为当前任务，已有任务仍保留在任务列表。</p>
+           <p v-if="taskError && activeModule === 'route'" class="form-error" role="alert">{{ taskError }}</p>
            <p v-if="error && activeModule === 'route' && !locationFeedback?.error && !placeSelectionFeedback?.error" class="form-error" role="alert">{{ error }}</p>
         </form>
       </aside>
