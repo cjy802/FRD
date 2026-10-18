@@ -395,8 +395,8 @@ def weather_risk(init_time_utc: str | None = None, lead_hours: int | None = None
 
 
 @app.post("/api/weather/predict")
-def start_weather_prediction():
-    return forecast_jobs.start()
+def start_weather_prediction(refresh: bool = Query(default=False)):
+    return forecast_jobs.start(force_refresh=refresh)
 
 
 @app.get("/api/weather/predictions/{job_id}")

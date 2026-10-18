@@ -24,6 +24,10 @@ from weather_decision import build_decision
 from weather_windows import compare_departures
 
 
+MAX_CACHE_AGE = timedelta(hours=6)
+DEFAULT_CACHE_PATH = PROJECT_ROOT / "Web" / "backend" / "user_data" / "weather_cache" / "latest.json"
+
+
 def validate_metadata(metadata: dict, now: datetime) -> tuple[datetime, datetime]:
     init = utc_timestamp(metadata["init_time_utc"])
     previous = utc_timestamp(metadata["previous_time_utc"])
@@ -102,7 +106,7 @@ def prepare_height_weather(input_path: Path) -> dict:
 
 class ForecastJobs:
     def __init__(self, worker=call_worker, clock=None, corrector=load_corrector, preparer=prepare_latest_input,
-                 height_provider=prepare_height_weather):
+                 height_provider=prepare_height_weather, cache_path: Path | None = None):
         self.worker = worker
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.corrector = corrector
@@ -116,6 +120,10 @@ class ForecastJobs:
         self.height_grids: dict[str, HeightWeather] = {}
         self.height_warnings: dict[str, str] = {}
         self.active: str | None = None
+        self.cache_path = cache_path
+        self.latest_successful_job_id: str | None = None
+        if self.cache_path is not None:
+            self._restore_cache()
 
     def get(self, job_id: str) -> dict:
         with self.lock:
@@ -126,9 +134,101 @@ class ForecastJobs:
     def update(self, job_id: str, **values):
         with self.lock:
             self.jobs[job_id].update(values)
+            if values.get("status") == "succeeded":
+                self.latest_successful_job_id = job_id
             if values.get("status") in ("blocked", "failed", "succeeded"):
                 if self.active == job_id:
                     self.active = None
+
+    @staticmethod
+    def _serialize_grid(grid: RegionalWeather) -> dict:
+        payload = {
+            "init_time_utc": iso_utc(grid.init),
+            "input_source": grid.input_source,
+            "input_frames": grid.input_frames,
+            "latitudes": grid.latitudes.tolist(),
+            "longitudes": grid.longitudes.tolist(),
+            "channels": grid.channels,
+            "snapshots": [{
+                "valid_time_utc": iso_utc(item["valid"]),
+                "lead_hours": item["lead_hours"],
+                "source": item["source"],
+                "values": item["values"].tolist(),
+            } for item in grid.snapshots],
+        }
+        if isinstance(grid, HeightWeather):
+            payload.update({"height_reference": "AGL", "heights_m": [10, 20, 30, 40, 50, 80, 100],
+                            "source_cycle_utc": iso_utc(grid.source_cycle)})
+        return payload
+
+    @staticmethod
+    def _restore_grid(payload: dict, *, height: bool = False) -> RegionalWeather:
+        if height:
+            return HeightWeather(payload, payload["init_time_utc"])
+        return RegionalWeather(payload, payload["init_time_utc"], payload["input_source"],
+                               input_frames=payload.get("input_frames"))
+
+    def _restore_cache(self) -> None:
+        try:
+            payload = json.loads(self.cache_path.read_text(encoding="utf-8"))
+            job = payload["job"]
+            job_id = job["job_id"]
+            if payload.get("version") != 1 or job.get("status") != "succeeded" or not job.get("forecast"):
+                return
+            generated = utc_timestamp(job["forecast"]["generated_at_utc"])
+            valid = utc_timestamp(job["forecast"]["valid_time_utc"])
+            now = self.clock()
+            if now - generated >= MAX_CACHE_AGE or valid <= now:
+                return
+            grid = self._restore_grid(payload["grid"])
+            height_payload = payload.get("height_grid")
+            height_grid = self._restore_grid(height_payload, height=True) if height_payload else None
+            model = self.corrector(configured_path("WEATHER_CORRECTOR_PATH", DEFAULT_MODEL))
+            with self.lock:
+                self.jobs[job_id] = job
+                self.grids[job_id] = grid
+                self.models[job_id] = model
+                self.latest_successful_job_id = job_id
+                if height_grid is not None:
+                    self.height_grids[job_id] = height_grid
+                if payload.get("height_warning"):
+                    self.height_warnings[job_id] = payload["height_warning"]
+        except (OSError, KeyError, TypeError, ValueError, WeatherUnavailable):
+            # An incomplete or incompatible local cache should never prevent a fresh prediction.
+            return
+
+    def _persist_cache(self, job_id: str) -> None:
+        if self.cache_path is None:
+            return
+        with self.lock:
+            job = copy.deepcopy(self.jobs[job_id])
+            grid = self.grids.get(job_id)
+            height_grid = self.height_grids.get(job_id)
+            height_warning = self.height_warnings.get(job_id)
+        if grid is None or job.get("status") != "succeeded":
+            return
+        payload = {
+            "version": 1,
+            "job": job,
+            "grid": self._serialize_grid(grid),
+            "height_grid": self._serialize_grid(height_grid) if height_grid is not None else None,
+            "height_warning": height_warning,
+        }
+        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.cache_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        temporary.replace(self.cache_path)
+
+    def _fresh_cache_age(self, job: dict) -> float | None:
+        forecast = job.get("forecast") or {}
+        try:
+            generated = utc_timestamp(forecast["generated_at_utc"])
+            valid = utc_timestamp(forecast["valid_time_utc"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        now = self.clock()
+        age = (now - generated).total_seconds()
+        return age if 0 <= age < MAX_CACHE_AGE.total_seconds() and valid > now else None
 
     def regional_job(self, job_id: str):
         with self.lock:
@@ -199,10 +299,15 @@ class ForecastJobs:
         result['decision'] = build_decision(result)
         return result
 
-    def start(self) -> dict:
+    def start(self, *, force_refresh: bool = False) -> dict:
         with self.lock:
             if self.active:
                 return {**copy.deepcopy(self.jobs[self.active]), "shared_in_progress": True}
+            if not force_refresh and self.latest_successful_job_id:
+                cached = self.jobs.get(self.latest_successful_job_id)
+                age = self._fresh_cache_age(cached) if cached else None
+                if cached is not None and age is not None:
+                    return {**copy.deepcopy(cached), "cache_hit": True, "cache_age_seconds": age}
             job_id = uuid.uuid4().hex
             self.jobs[job_id] = {
                 "job_id": job_id, "status": "queued", "message": "正在检查最新全球起报场。",
@@ -274,10 +379,15 @@ class ForecastJobs:
                 validate_metadata(predicted, self.clock())
                 forecast['generated_at_utc'] = iso_utc(self.clock())
             self.update(job_id, status="succeeded", message="未来天气预报已生成。", forecast=forecast)
+            try:
+                self._persist_cache(job_id)
+            except (OSError, TypeError, ValueError):
+                # Keep the in-memory result usable if the local cache directory is unavailable.
+                pass
         except (WeatherUnavailable, FileNotFoundError) as error:
             self.update(job_id, status="blocked", message=str(error), forecast=None)
         except Exception as error:
             self.update(job_id, status="failed", message=f"天气预测失败：{error}", forecast=None)
 
 
-forecast_jobs = ForecastJobs()
+forecast_jobs = ForecastJobs(cache_path=DEFAULT_CACHE_PATH)
