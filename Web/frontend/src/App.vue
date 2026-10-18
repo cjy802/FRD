@@ -258,6 +258,7 @@ async function createCurrentTask() {
     taskFrames.value = []
     analysisMapTargets.value = []
     void refreshMissionTaskList()
+    selectModule('status')
   } catch (cause) {
     taskError.value = cause instanceof Error ? cause.message : '创建当前任务失败。'
   } finally {
