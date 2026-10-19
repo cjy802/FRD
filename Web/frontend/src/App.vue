@@ -68,6 +68,19 @@ const form = reactive({
   speed_kmh: 45,
   clearance_m: 2,
 })
+type PlanningMode = 'anchors' | 'area'
+const planningMode = ref<PlanningMode>('anchors')
+const coveragePolygon = ref<number[][]>([])
+const coverageRoadClasses = ref<string[]>(['trunk', 'primary', 'secondary'])
+const coverageDrawEnabled = ref(false)
+const coverageStartPoint = ref<Point | null>(null)
+const coverageRoadClassOptions = [
+  { value: 'motorway', label: '高速道路' },
+  { value: 'trunk', label: '快速 / 主干道' },
+  { value: 'primary', label: '一级道路' },
+  { value: 'secondary', label: '二级道路' },
+  { value: 'tertiary', label: '三级道路' },
+]
 const anchors = ref<MajorPoint[]>([
   { id: 'anchor-1', latitude: form.start.latitude, longitude: form.start.longitude },
   { id: 'anchor-2', latitude: form.end.latitude, longitude: form.end.longitude },
@@ -87,16 +100,66 @@ function majorPointLabel(index: number) {
 function majorPointTitle(index: number) {
   return index === 0 ? '起点' : index === anchors.value.length - 1 ? '终点' : '途经点'
 }
+function choosePlanningMode(mode: PlanningMode) {
+  if (planningMode.value === mode) return
+  if (mode === 'area') {
+    roadSource.value = 'local'
+    mapEditMode.value = 'route'
+    if (coveragePolygon.value.length >= 3) syncAreaWeatherBounds(coveragePolygon.value)
+  } else {
+    const first = anchors.value[0]
+    const last = anchors.value[anchors.value.length - 1]
+    if (validMajorPoint(first)) Object.assign(form.start, { latitude: first.latitude, longitude: first.longitude })
+    if (validMajorPoint(last)) Object.assign(form.end, { latitude: last.latitude, longitude: last.longitude })
+  }
+  coverageDrawEnabled.value = false
+  if (mode === 'anchors') coverageStartPoint.value = null
+  planningMode.value = mode
+}
+function updateCoveragePolygon(polygon: number[][]) {
+  coveragePolygon.value = polygon.map(([longitude, latitude]) => [Number(longitude.toFixed(7)), Number(latitude.toFixed(7))])
+  syncAreaWeatherBounds(coveragePolygon.value)
+  coverageDrawEnabled.value = false
+  clearBatchRange()
+}
+function syncAreaWeatherBounds(polygon: number[][]) {
+  if (polygon.length < 3) return
+  const longitudes = polygon.map(([longitude]) => longitude)
+  const latitudes = polygon.map(([, latitude]) => latitude)
+  Object.assign(form.start, { latitude: Math.min(...latitudes), longitude: Math.min(...longitudes) })
+  Object.assign(form.end, { latitude: Math.max(...latitudes), longitude: Math.max(...longitudes) })
+}
+function startCoverageDraw() {
+  selectModule('route')
+  settingsPage.value = 'points'
+  workspacePanel.value = 'map'
+  mapEditMode.value = 'route'
+  if (mapViewMode.value !== '2d') chooseMapViewMode('2d')
+  coverageDrawEnabled.value = true
+}
+function clearCoveragePolygon() {
+  coveragePolygon.value = []
+  coverageStartPoint.value = null
+  coverageDrawEnabled.value = false
+  preview.value = null
+  previewKey.value = ''
+  routeAssessment.value = null
+}
 function validMajorPoint(anchor: MajorPoint | undefined): anchor is MajorPoint & Point {
   return !!anchor && typeof anchor.latitude === 'number' && Number.isFinite(anchor.latitude)
     && Math.abs(anchor.latitude) <= 90 && typeof anchor.longitude === 'number'
     && Number.isFinite(anchor.longitude) && Math.abs(anchor.longitude) <= 180
 }
 const allAnchorsReady = computed(() => anchors.value.length >= 2 && anchors.value.every(validMajorPoint))
+const routeDefinitionReady = computed(() => planningMode.value === 'area'
+  ? coveragePolygon.value.length >= 3 && coverageRoadClasses.value.length > 0
+  : allAnchorsReady.value)
 const anchorChoices = computed(() => anchors.value.map((anchor, index) => ({ id: anchor.id, label: majorPointLabel(index), title: majorPointTitle(index) })))
-const mapAnchors = computed(() => anchors.value.flatMap((anchor, index) => validMajorPoint(anchor)
-  ? [{ id: anchor.id, latitude: anchor.latitude, longitude: anchor.longitude, label: majorPointLabel(index),
-    role: (index === 0 ? 'start' : index === anchors.value.length - 1 ? 'end' : 'middle') as 'start' | 'middle' | 'end' }] : []))
+const mapAnchors = computed(() => planningMode.value === 'area'
+  ? coverageStartPoint.value ? [{ id: 'coverage-start', ...coverageStartPoint.value, label: '起终', role: 'start' as const }] : []
+  : anchors.value.flatMap((anchor, index) => validMajorPoint(anchor)
+    ? [{ id: anchor.id, latitude: anchor.latitude, longitude: anchor.longitude, label: majorPointLabel(index),
+      role: (index === 0 ? 'start' : index === anchors.value.length - 1 ? 'end' : 'middle') as 'start' | 'middle' | 'end' }] : []))
 const selectedAnchorChoice = computed(() => anchorChoices.value.find((choice) => choice.id === selectedAnchorId.value) ?? anchorChoices.value[0])
 function closeMapAnchorMenu(restoreFocus = false) {
   if (!mapAnchorMenuOpen.value) return
@@ -510,14 +573,35 @@ function applyMissionTask(task: MissionTask) {
   previewKey.value = ''
   settingsRoute.value = null
   waypointSettings.value = []
+  const savedCoverage = task.route.coverage_area as { polygon?: unknown; road_classes?: unknown; start?: unknown; point_anchors?: unknown } | null | undefined
+  if (savedCoverage && Array.isArray(savedCoverage.polygon) && savedCoverage.polygon.length >= 3) {
+    planningMode.value = 'area'
+    coveragePolygon.value = (savedCoverage.polygon as number[][]).map(([longitude, latitude]) => [Number(longitude), Number(latitude)])
+    syncAreaWeatherBounds(coveragePolygon.value)
+    coverageRoadClasses.value = Array.isArray(savedCoverage.road_classes)
+      ? savedCoverage.road_classes.filter((value): value is string => typeof value === 'string')
+      : ['trunk', 'primary', 'secondary']
+    const routeStart = savedCoverage.start && typeof savedCoverage.start === 'object'
+      ? savedCoverage.start as Record<string, unknown>
+      : Array.isArray(task.route.anchors) ? (task.route.anchors as Array<Record<string, unknown>>)[0] : null
+    coverageStartPoint.value = routeStart && typeof routeStart.latitude === 'number' && typeof routeStart.longitude === 'number'
+      ? { latitude: routeStart.latitude, longitude: routeStart.longitude } : null
+  } else {
+    planningMode.value = 'anchors'
+    coveragePolygon.value = []
+    coverageRoadClasses.value = ['trunk', 'primary', 'secondary']
+    coverageStartPoint.value = null
+  }
   taskFrames.value = []
   analysisMapTargets.value = (task.analysis_targets ?? []) as unknown as VideoCaptureTarget[]
   const route = task.route
-  const savedAnchors = route.anchors
+  const savedAnchors = planningMode.value === 'area' && Array.isArray(savedCoverage?.point_anchors)
+    ? savedCoverage.point_anchors : route.anchors
   if (Array.isArray(savedAnchors) && savedAnchors.length >= 2) {
     anchors.value = savedAnchors.map((anchor: any) => ({ id: String(anchor.id), latitude: Number(anchor.latitude), longitude: Number(anchor.longitude) }))
     selectedAnchorId.value = anchors.value[0].id
   }
+  if (planningMode.value === 'area') syncAreaWeatherBounds(coveragePolygon.value)
   if (route.road_source === 'local' || route.road_source === 'online') roadSource.value = route.road_source
   if (typeof route.altitude_m === 'number') form.altitude_m = route.altitude_m
   if (typeof route.speed_kmh === 'number') form.speed_kmh = route.speed_kmh
@@ -692,16 +776,28 @@ let isBootstrappingRoute = true
 const elapsed = computed(() => preview.value && form.speed_kmh > 0 ? `${(preview.value.distance_km / form.speed_kmh * 60).toFixed(2)} 分钟` : '待计算')
 const distance = computed(() => preview.value ? `${preview.value.distance_km.toFixed(2)} km` : '待计算')
 const layoutStyle = computed(() => ({ '--sidebar-width': `${sidebarWidth.value}px`, '--insights-width': `${insightsWidth.value}px` }))
-const routeKey = computed(() => JSON.stringify([anchors.value.map((anchor) => [anchor.id, anchor.latitude, anchor.longitude]), roadSource.value, form.clearance_m]))
+const routeKey = computed(() => planningMode.value === 'area'
+  ? JSON.stringify(['area', coveragePolygon.value, [...coverageRoadClasses.value].sort()])
+  : JSON.stringify(['anchors', anchors.value.map((anchor) => [anchor.id, anchor.latitude, anchor.longitude]), roadSource.value, form.clearance_m]))
 const taskRouteSnapshot = computed(() => ({
   fingerprint: JSON.stringify({ routeKey: routeKey.value, altitude_m: form.altitude_m, speed_kmh: form.speed_kmh }),
   geometry: preview.value?.geometry ?? null,
   road_names: preview.value?.road_names ?? [],
   data_source: preview.value?.data_source ?? '',
-  route_type: roadSource.value === 'online' ? 'online_driving_reference' : 'road_corridor_demo',
+  route_type: planningMode.value === 'area' ? 'area_road_coverage_reference'
+    : roadSource.value === 'online' ? 'online_driving_reference' : 'road_corridor_demo',
   distance_km: preview.value?.distance_km ?? null,
-  anchors: anchors.value.map(({ id, latitude, longitude }) => ({ id, latitude, longitude })),
-  road_source: roadSource.value,
+  anchors: planningMode.value === 'area' && preview.value?.anchors?.length
+    ? preview.value.anchors.map(({ id, latitude, longitude }) => ({ id, latitude, longitude }))
+    : anchors.value.map(({ id, latitude, longitude }) => ({ id, latitude, longitude })),
+  road_source: planningMode.value === 'area' ? 'local' : roadSource.value,
+  coverage_area: planningMode.value === 'area' ? {
+    polygon: coveragePolygon.value,
+    road_classes: [...coverageRoadClasses.value],
+    start: coverageStartPoint.value,
+    point_anchors: anchors.value.map(({ id, latitude, longitude }) => ({ id, latitude, longitude })),
+    metrics: preview.value?.area_coverage ?? null,
+  } : null,
   altitude_m: form.altitude_m,
   speed_kmh: form.speed_kmh,
   clearance_m: form.clearance_m,
@@ -918,6 +1014,7 @@ const taskWeatherAdvisories = computed(() => {
 
 watch(routeKey, () => {
   clearBatchRange()
+  if (planningMode.value === 'area') coverageStartPoint.value = null
   if (routeRefreshTimer) clearTimeout(routeRefreshTimer)
   routeRefreshTimer = null
   cancelCalculation()
@@ -928,7 +1025,7 @@ watch(routeKey, () => {
     routeAssessment.value = null
   }
   drawCesiumRoute(false)
-  if (isBootstrappingRoute || !allAnchorsReady.value) return
+  if (isBootstrappingRoute || !routeDefinitionReady.value) return
   routeRefreshTimer = setTimeout(() => {
     routeRefreshTimer = null
     void calculate(false)
@@ -1756,10 +1853,14 @@ async function calculate(flyToRoute: boolean | SubmitEvent = true) {
   if (loading.value || locatingPoint.value) return
   if (routeRefreshTimer) clearTimeout(routeRefreshTimer)
   routeRefreshTimer = null
-  if (!allAnchorsReady.value) {
+  if (!routeDefinitionReady.value) {
     settingsPage.value = 'points'
-    const missingIndex = anchors.value.findIndex((anchor) => !validMajorPoint(anchor))
-    error.value = missingIndex >= 0 ? `请先填写主点 ${majorPointLabel(missingIndex)} 的有效经纬度。` : '至少需要两个有效主点。'
+    if (planningMode.value === 'area') {
+      error.value = '请先在地图上框选一个有效的巡查区域。'
+    } else {
+      const missingIndex = anchors.value.findIndex((anchor) => !validMajorPoint(anchor))
+      error.value = missingIndex >= 0 ? `请先填写主点 ${majorPointLabel(missingIndex)} 的有效经纬度。` : '至少需要两个有效主点。'
+    }
     return
   }
   clearBatchRange()
@@ -1774,14 +1875,22 @@ async function calculate(flyToRoute: boolean | SubmitEvent = true) {
   routeAssessment.value = null
   drawCesiumRoute()
   try {
-    const response = await fetch('/api/routes/plan-mission', {
+    const areaRequest = planningMode.value === 'area'
+      ? {
+          polygon: coveragePolygon.value.map(([longitude, latitude]) => ({ longitude, latitude })),
+          road_classes: coverageRoadClasses.value,
+          altitude_m: form.altitude_m,
+          speed_kmh: form.speed_kmh,
+        }
+      : {
+          anchors: anchors.value.map((anchor) => ({ id: anchor.id, latitude: anchor.latitude, longitude: anchor.longitude })),
+          altitude_m: form.altitude_m, speed_kmh: form.speed_kmh, clearance_m: form.clearance_m,
+          road_source: roadSource.value,
+        }
+    const response = await fetch(planningMode.value === 'area' ? '/api/routes/area-coverage' : '/api/routes/plan-mission', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        anchors: anchors.value.map((anchor) => ({ id: anchor.id, latitude: anchor.latitude, longitude: anchor.longitude })),
-        altitude_m: form.altitude_m, speed_kmh: form.speed_kmh, clearance_m: form.clearance_m,
-        road_source: roadSource.value,
-      }),
+      body: JSON.stringify(areaRequest),
       signal: controller.signal,
     })
     if (!response.ok) {
@@ -1790,6 +1899,9 @@ async function calculate(flyToRoute: boolean | SubmitEvent = true) {
     }
     const result: Preview = await response.json()
     if (controller.signal.aborted || requestVersion !== routeRequestVersion) return
+    if (planningMode.value === 'area' && result.anchors?.[0]) {
+      coverageStartPoint.value = { latitude: result.anchors[0].latitude, longitude: result.anchors[0].longitude }
+    }
     syncWaypointSettings(result)
     preview.value = result
     previewKey.value = requestedKey
@@ -2545,12 +2657,13 @@ onBeforeUnmount(() => {
       </Teleport>
 
       <aside id="mission-sidebar" class="sidebar module-panel" :class="[{ 'panel-active': workspacePanel === 'settings', 'module-active': activeModule === 'route' || activeModule === 'photos' }, `module-mode-${activeModule}`]" aria-label="航线设置">
-        <div v-if="activeModule === 'route'" class="section-heading"><span class="eyebrow"><span class="svg-icon icon-route" aria-hidden="true"></span>第 1 步 · 选定航线</span><h1>规划本次飞行</h1><PlaceSearch :disabled="loading || checkingPoint" :targets="anchorChoices" :selection-feedback="placeSelectionFeedback" @choose-point="chooseSearchedPoint" @clear-selection-feedback="placeSelectionFeedback = null" /></div>
+        <div v-if="activeModule === 'route'" class="section-heading"><span class="eyebrow"><span class="svg-icon icon-route" aria-hidden="true"></span>第 1 步 · 选定航线</span><h1>规划本次飞行</h1><PlaceSearch v-if="planningMode === 'anchors'" :disabled="loading || checkingPoint" :targets="anchorChoices" :selection-feedback="placeSelectionFeedback" @choose-point="chooseSearchedPoint" @clear-selection-feedback="placeSelectionFeedback = null" /></div>
 
         <form class="route-form" @submit.prevent @invalid.capture="revealInvalidSetting">
-          <nav v-if="activeModule === 'route'" class="settings-pages" aria-label="航线设置分组"><button type="button" :aria-pressed="settingsPage === 'points'" @click="settingsPage = 'points'">主点与坐标</button><button type="button" :aria-pressed="settingsPage === 'mission'" @click="settingsPage = 'mission'">飞行参数</button></nav>
+          <div v-if="activeModule === 'route'" class="planning-mode-switch" role="group" aria-label="路线规划方式"><button type="button" :class="{ active: planningMode === 'anchors' }" :aria-pressed="planningMode === 'anchors'" @click="choosePlanningMode('anchors')">点到点路线</button><button type="button" :class="{ active: planningMode === 'area' }" :aria-pressed="planningMode === 'area'" @click="choosePlanningMode('area')">区域道路巡查</button></div>
+          <nav v-if="activeModule === 'route'" class="settings-pages" aria-label="航线设置分组"><button type="button" :aria-pressed="settingsPage === 'points'" @click="settingsPage = 'points'">{{ planningMode === 'area' ? '区域与道路' : '主点与坐标' }}</button><button type="button" :aria-pressed="settingsPage === 'mission'" @click="settingsPage = 'mission'">飞行参数</button></nav>
           <div class="settings-fields">
-          <div class="settings-group" data-settings-page="points" :class="{ 'settings-active': settingsPage === 'points' }">
+          <div v-if="planningMode === 'anchors'" class="settings-group" data-settings-page="points" :class="{ 'settings-active': settingsPage === 'points' }">
           <p class="batch-range-guide">{{ batchRouteAnchorIndices ? batchBoundaryIds.length === 1 ? '再勾选一个主点，确定批量视角区间。' : '勾选两个主点，统一设置两端及中间航点的视角。' : '计算道路路线后可勾选两个主点，批量设置视角。' }}</p>
           <div v-for="(anchor, index) in anchors" :key="anchor.id" class="major-point-card" :class="{ 'is-selected': selectedAnchorId === anchor.id, 'is-batch-boundary': batchBoundaryIds.includes(anchor.id), 'is-batch-range': batchAnchorRange && index >= batchAnchorRange.first && index <= batchAnchorRange.last }">
             <div class="point-heading"><input class="batch-boundary-checkbox" type="checkbox" :checked="batchBoundaryIds.includes(anchor.id)" :disabled="!batchRouteAnchorIndices || loading || checkingPoint || (batchBoundaryIds.length === 2 && !batchBoundaryIds.includes(anchor.id))" :aria-label="`选择 ${majorPointLabel(index)} 作为批量视角区间边界`" @change="toggleBatchBoundary(anchor.id)" /><span class="point-mark" :class="index === 0 ? 'point-a' : index === anchors.length - 1 ? 'point-b' : 'point-middle'">{{ majorPointLabel(index) }}</span><div><div class="point-title-row"><strong>{{ majorPointTitle(index) }}</strong><button type="button" class="point-location-button" :disabled="loading || checkingPoint || locatingPoint !== null" :aria-label="locatingPoint === anchor.id ? `正在定位${majorPointTitle(index)} ${majorPointLabel(index)}` : `使用当前位置设置${majorPointTitle(index)} ${majorPointLabel(index)}`" :title="`使用当前位置设置${majorPointTitle(index)} ${majorPointLabel(index)}`" @click="useCurrentLocation(anchor.id)"><span class="svg-icon icon-location-on" aria-hidden="true"></span></button></div><small>{{ formatted(anchor) }}</small></div><button v-if="index === 0 || index === anchors.length - 1" type="button" class="range-toggle" :class="{ active: index === 0 ? showStartRange : showEndRange }" :aria-pressed="index === 0 ? showStartRange : showEndRange" :disabled="loading || checkingPoint" title="显示或隐藏接路搜索范围" @click="toggleRange(index === 0 ? 'start' : 'end')"><span class="svg-icon icon-eye" aria-hidden="true"></span><span>范围：{{ (index === 0 ? showStartRange : showEndRange) ? '开' : '关' }}</span></button></div>
@@ -2578,11 +2691,32 @@ onBeforeUnmount(() => {
           </div>
           </div>
 
+          <div v-else class="settings-group area-coverage-settings" data-settings-page="points" :class="{ 'settings-active': settingsPage === 'points' }">
+            <p class="form-scope-note">路线覆盖本地道路数据里符合筛选等级的中心线，连接段也沿已收录道路规划。道路等级是宽度的近似，不等同于现场实测；覆盖率不包含数据中未收录的道路。</p>
+            <div class="coverage-road-classes" role="group" aria-label="选择要覆盖的道路等级">
+              <label v-for="option in coverageRoadClassOptions" :key="option.value"><input v-model="coverageRoadClasses" type="checkbox" :value="option.value" :disabled="loading" />{{ option.label }}</label>
+            </div>
+            <div class="coverage-area-actions">
+              <button type="button" class="major-point-add" :class="{ 'is-drawing': coverageDrawEnabled }" :disabled="loading" @click="startCoverageDraw">{{ coverageDrawEnabled ? '请在地图上拖动框选区域…' : coveragePolygon.length ? '重新框选道路巡查范围' : '在地图上框选道路巡查范围' }}</button>
+              <button v-if="coveragePolygon.length" type="button" class="coverage-area-clear" :disabled="loading" @click="clearCoveragePolygon">清除范围</button>
+            </div>
+            <p v-if="coveragePolygon.length" class="coverage-area-note">已选 {{ coveragePolygon.length }} 个边界点。可拖动边界点调整范围，双击顶点删除，点击边线中点可增加顶点。</p>
+            <p v-else class="coverage-area-note">框选完成后会自动计算闭环路线，从区域中心附近的道路出发并返回起点。</p>
+            <div v-if="preview?.area_coverage && previewKey === routeKey" class="coverage-area-summary" aria-live="polite">
+              <strong>道路覆盖路线已生成 · {{ (preview.area_coverage.coverage_ratio * 100).toFixed(0) }}% 覆盖</strong>
+              <div><span>目标道路</span><b>{{ (preview.area_coverage.target_road_m / 1000).toFixed(2) }} km · {{ preview.area_coverage.road_edge_count }} 段</b></div>
+              <div><span>重复经过</span><b>{{ (preview.area_coverage.repeated_road_m / 1000).toFixed(2) }} km</b></div>
+              <div><span>连接道路</span><b>{{ (preview.area_coverage.connector_m / 1000).toFixed(2) }} km</b></div>
+              <small>路线总长 {{ preview.distance_km.toFixed(2) }} km · 估计 {{ elapsed }}</small>
+            </div>
+          </div>
+
           <div class="settings-group" data-settings-page="mission" :class="{ 'settings-active': settingsPage === 'mission' }">
           <div class="form-line"></div>
           <div class="coordinate-row"><label>离地高度 AGL · 米<input v-model.number="form.altitude_m" type="number" min="0" max="1000" required :disabled="loading" /></label><label>巡航速度 · km/h<input v-model.number="form.speed_kmh" type="number" min="1" max="200" step="0.5" required :disabled="loading" /></label></div>
           <small class="form-scope-note">目前高度风覆盖 10–100 米；范围外会标记缺测。</small>
-          <div class="clearance-row"><label>建筑缓冲 · 米（演示）<input v-model.number="form.clearance_m" type="number" min="0" max="20" step="0.5" required :disabled="loading || roadSource === 'online'" /></label><span>{{ roadSource === 'local' ? '用于排除靠近建筑的道路段' : '在线机动车路线不使用此参数' }}</span></div>
+          <div v-if="planningMode === 'anchors'" class="clearance-row"><label>建筑缓冲 · 米（演示）<input v-model.number="form.clearance_m" type="number" min="0" max="20" step="0.5" required :disabled="loading || roadSource === 'online'" /></label><span>{{ roadSource === 'local' ? '用于排除靠近建筑的道路段' : '在线机动车路线不使用此参数' }}</span></div>
+          <p v-else class="form-scope-note">区域巡查路线依照所选道路中心线生成，不使用建筑缓冲参数。</p>
           <button ref="waypointEditorTrigger" type="button" class="waypoint-editor-trigger" :disabled="!waypointSettings.length" aria-haspopup="dialog" :aria-expanded="waypointEditorExpanded" @click="openWaypointEditor"><span>逐点设置高度和面向</span><small>{{ waypointSettings.length }} 个点</small><span aria-hidden="true">›</span></button>
           </div>
 
@@ -2602,7 +2736,7 @@ onBeforeUnmount(() => {
 
       <section id="route-map" class="map-panel" :class="{ 'panel-active': workspacePanel === 'map' }" aria-label="航线地图">
         <div ref="mapElement" class="cesium-map" aria-hidden="true"></div>
-        <EarthMap ref="earthMapRef" :active="true" :provider="baseMap === 'earth' ? 'baidu' : 'osm'" :view-mode="mapViewMode" :start="form.start" :end="form.end" :anchors="mapAnchors" :selected-anchor-id="selectedAnchorId" :route="earthRoute" :selected-index="selectedWaypointIndex" :edit-mode="mapEditMode" :footprint="earthFootprint" :flight-pose="mapFlightPose" :flight-footprint="flightFootprint" :weather-segments="routeAssessment?.weather_risk.segments ?? []" :weather-samples="showRouteWeatherPoints ? routeAssessment?.samples : null" :weather-risk-points="showRouteWeatherPoints ? routeAssessment?.weather_risk.points : null" :weather-altitude-m="form.altitude_m" :show-start-range="showStartRange" :show-end-range="showEndRange" :range-meters="landingSearchRadiusM" :video-track="activeModule === 'photos' ? videoTelemetryTrack : []" :video-position="activeModule === 'photos' ? videoTelemetryPosition : null" :capture-targets="activeModule === 'photos' ? mapCaptureTargets : []" @select-waypoint="selectWaypoint" @choose-point="chooseMapPoint" @rotate-waypoint="setSelectedWaypointOrientation($event, undefined, true)" />
+        <EarthMap ref="earthMapRef" :active="true" :provider="baseMap === 'earth' ? 'baidu' : 'osm'" :view-mode="mapViewMode" :start="form.start" :end="form.end" :anchors="mapAnchors" :selected-anchor-id="selectedAnchorId" :route="earthRoute" :coverage-polygon="coveragePolygon" :coverage-draw-enabled="coverageDrawEnabled" :coverage-edit-enabled="planningMode === 'area' && coveragePolygon.length >= 3" :suppress-map-point-selection="planningMode === 'area'" :selected-index="selectedWaypointIndex" :edit-mode="mapEditMode" :footprint="earthFootprint" :flight-pose="mapFlightPose" :flight-footprint="flightFootprint" :weather-segments="routeAssessment?.weather_risk.segments ?? []" :weather-samples="showRouteWeatherPoints ? routeAssessment?.samples : null" :weather-risk-points="showRouteWeatherPoints ? routeAssessment?.weather_risk.points : null" :weather-altitude-m="form.altitude_m" :show-start-range="showStartRange" :show-end-range="showEndRange" :range-meters="landingSearchRadiusM" :video-track="activeModule === 'photos' ? videoTelemetryTrack : []" :video-position="activeModule === 'photos' ? videoTelemetryPosition : null" :capture-targets="activeModule === 'photos' ? mapCaptureTargets : []" @select-waypoint="selectWaypoint" @choose-point="chooseMapPoint" @rotate-waypoint="setSelectedWaypointOrientation($event, undefined, true)" @coverage-polygon-created="updateCoveragePolygon" @coverage-polygon-updated="updateCoveragePolygon" />
         <div class="map-top">
           <div v-if="!flightActive" class="map-title-group"><span class="map-badge"><span class="svg-icon icon-layers" aria-hidden="true"></span>{{ (baseMap === 'earth' ? '地球模式' : '当前底图') + (mapViewMode === '3d' ? ' · 3D 航线' : ' · 2D 平面') }}</span><span class="map-mode-chip">{{ form.altitude_m }} m AGL</span><div class="map-source-switch base-map-switch" aria-label="底图"><button type="button" :class="{ active: baseMap === 'current' }" :aria-pressed="baseMap === 'current'" @click="chooseBaseMap('current')">当前底图</button><button type="button" :class="{ active: baseMap === 'earth' }" :aria-pressed="baseMap === 'earth'" @click="chooseBaseMap('earth')">地球模式</button></div><div class="map-edit-switch" aria-label="编辑对象"><button type="button" :class="{ active: mapEditMode === 'route' }" :aria-pressed="mapEditMode === 'route'" @click="mapEditMode = 'route'">路径 / 主点</button><button type="button" :class="{ active: mapEditMode === 'node' }" :aria-pressed="mapEditMode === 'node'" @click="mapEditMode = 'node'">节点 / 视角</button></div></div>
           <button v-if="!flightActive" class="flight-entry" type="button" :disabled="!flightTimeline" aria-label="开始模拟飞行" title="模拟飞行" @click="toggleFlight"><span class="svg-icon icon-drone" aria-hidden="true"></span></button>
@@ -2613,11 +2747,11 @@ onBeforeUnmount(() => {
             <span class="flight-percent">{{ Math.round(flightProgress * 100) }}%</span>
           </div>
           <button v-if="flightActive" class="flight-exit" type="button" @click="stopFlight">退出模拟飞行</button>
-          <span v-if="!flightTimeline" class="map-caption">{{ checkingPoint ? '正在检查点位…' : mapEditMode === 'node' ? '点击节点选中，拖动橙色镜头调整朝向' : `地图点击可设置 ${selectedAnchorChoice?.title} ${selectedAnchorChoice?.label}` }}</span>
+           <span v-if="!flightTimeline" class="map-caption">{{ coverageDrawEnabled ? '拖动地图框选道路巡查区域' : planningMode === 'area' ? '拖动边界点调整范围，双击删除，点击边线中点加点' : checkingPoint ? '正在检查点位…' : mapEditMode === 'node' ? '点击节点选中，拖动橙色镜头调整朝向' : `地图点击可设置 ${selectedAnchorChoice?.title} ${selectedAnchorChoice?.label}` }}</span>
         </div>
         <div class="map-view-switch map-source-switch view-mode-switch" aria-label="地图视图"><button type="button" :class="{ active: mapViewMode === '2d' }" :aria-pressed="mapViewMode === '2d'" @click="chooseMapViewMode('2d')">2D 平面</button><button type="button" :class="{ active: mapViewMode === '3d' }" :aria-pressed="mapViewMode === '3d'" @click="chooseMapViewMode('3d')">3D 视角</button></div>
         <div v-if="error" class="map-alert" role="alert">{{ error }}</div>
-         <div class="map-bottom"><div ref="mapAnchorPicker" class="map-anchor-picker" :class="{ 'is-open': mapAnchorMenuOpen }"><span class="svg-icon icon-map-pin" aria-hidden="true"></span><span class="map-anchor-label">地图选点</span><button ref="mapAnchorPickerButton" class="map-anchor-trigger" type="button" :disabled="mapAnchorPickerDisabled" :aria-expanded="mapAnchorMenuOpen" aria-haspopup="listbox" aria-controls="map-anchor-options" @click="toggleMapAnchorMenu" @keydown="onMapAnchorPickerKeydown"><span>{{ selectedAnchorChoice?.label }} · {{ selectedAnchorChoice?.title }}</span><span class="map-anchor-chevron" aria-hidden="true"></span></button><Transition name="map-anchor-menu"><div v-if="mapAnchorMenuOpen" id="map-anchor-options" class="map-anchor-options" role="listbox" aria-label="选择地图选点"><button v-for="choice in anchorChoices" :key="choice.id" class="map-anchor-option" :class="{ selected: choice.id === selectedAnchorId }" type="button" role="option" :aria-selected="choice.id === selectedAnchorId" @click="chooseMapAnchor(choice.id)"><span class="map-anchor-option-key">{{ choice.label }}</span><span>{{ choice.title }}</span><span v-if="choice.id === selectedAnchorId" class="map-anchor-check" aria-hidden="true">✓</span></button></div></Transition></div><span class="map-radius"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>接路判定 {{ landingSearchRadiusM }} m</span><span class="map-scale"><span class="svg-icon icon-wind" aria-hidden="true"></span>任务高度 {{ form.altitude_m }} m</span></div>
+         <div class="map-bottom"><div v-if="planningMode === 'anchors'" ref="mapAnchorPicker" class="map-anchor-picker" :class="{ 'is-open': mapAnchorMenuOpen }"><span class="svg-icon icon-map-pin" aria-hidden="true"></span><span class="map-anchor-label">地图选点</span><button ref="mapAnchorPickerButton" class="map-anchor-trigger" type="button" :disabled="mapAnchorPickerDisabled" :aria-expanded="mapAnchorMenuOpen" aria-haspopup="listbox" aria-controls="map-anchor-options" @click="toggleMapAnchorMenu" @keydown="onMapAnchorPickerKeydown"><span>{{ selectedAnchorChoice?.label }} · {{ selectedAnchorChoice?.title }}</span><span class="map-anchor-chevron" aria-hidden="true"></span></button><Transition name="map-anchor-menu"><div v-if="mapAnchorMenuOpen" id="map-anchor-options" class="map-anchor-options" role="listbox" aria-label="选择地图选点"><button v-for="choice in anchorChoices" :key="choice.id" class="map-anchor-option" :class="{ selected: choice.id === selectedAnchorId }" type="button" role="option" :aria-selected="choice.id === selectedAnchorId" @click="chooseMapAnchor(choice.id)"><span class="map-anchor-option-key">{{ choice.label }}</span><span>{{ choice.title }}</span><span v-if="choice.id === selectedAnchorId" class="map-anchor-check" aria-hidden="true">✓</span></button></div></Transition></div><span v-else class="coverage-map-hint">{{ coveragePolygon.length }} 个边界点 · {{ coverageRoadClasses.length }} 类道路</span><span class="map-radius"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>{{ planningMode === 'area' ? '区域道路覆盖' : `接路判定 ${landingSearchRadiusM} m` }}</span><span class="map-scale"><span class="svg-icon icon-wind" aria-hidden="true"></span>任务高度 {{ form.altitude_m }} m</span></div>
         <div v-if="!flightActive && mapEditMode === 'node' && selectedWaypointIndex !== null && selectedWaypointSetting()" class="node-controller" aria-label="航点控制器"><div class="node-controller-head"><strong>节点 {{ selectedWaypointIndex + 1 }} · 视角控制</strong><span>{{ Math.round(waypointHeading(selectedWaypointIndex)) }}° · {{ selectedWaypointSetting()?.altitude_m ?? form.altitude_m }}m</span></div><div class="node-controller-body"><div class="wasd-pad" aria-label="WASD 平面移动控制"><button type="button" @click="moveSelectedWaypoint(0, 1)">W</button><button type="button" @click="moveSelectedWaypoint(-1, 0)">A</button><button type="button" @click="moveSelectedWaypoint(0, -1)">S</button><button type="button" @click="moveSelectedWaypoint(1, 0)">D</button></div><div class="node-dial"><button type="button" aria-label="逆时针旋转" @click="rotateSelectedWaypoint(-15)">↺</button><strong>{{ Math.round(waypointHeading(selectedWaypointIndex)) }}°</strong><button type="button" aria-label="顺时针旋转" @click="rotateSelectedWaypoint(15)">↻</button></div><div class="node-axis"><button type="button" @click="rotateSelectedWaypoint(0, 5)">镜头上</button><button type="button" @click="rotateSelectedWaypoint(0, -5)">镜头下</button><button type="button" @click="adjustSelectedWaypoint({ altitude_m: Math.min(1500, (selectedWaypointSetting()?.altitude_m ?? form.altitude_m) + 5) })">高度 +</button><button type="button" @click="adjustSelectedWaypoint({ altitude_m: Math.max(1, (selectedWaypointSetting()?.altitude_m ?? form.altitude_m) - 5) })">高度 −</button></div></div><small>W/S 平面前后 ±1m，A/D 平面左右 ±1m，Q/E 航向 ±5°，Z/C 俯仰 ±5°可直接调整水平朝向。</small></div>
         <div v-if="routeAssessment" class="weather-map-legend">沿线初筛：蓝 · 未触发，橙 · 关注，红 · 较强，灰 · 缺测<br />基于 0.25° 场，不是街道级风险，也不代表飞行许可。</div>
         <div class="camera-preview" :class="{ visible: (flightActive || (mapEditMode === 'node' && selectedWaypointIndex !== null)) && (baseMap === 'earth' || cameraPreviewReady) }" aria-label="当前节点相机视角预览"><div ref="cameraPreviewElement" class="camera-preview-map" :data-base-map="baseMap" @pointerdown.capture="handleCameraPreviewPointerDown" @pointermove="handleCameraPreviewPointerMove" @pointerup="handleCameraPreviewPointerEnd" @pointercancel="handleCameraPreviewPointerEnd" @lostpointercapture="handleCameraPreviewPointerEnd"><div ref="cesiumCameraElement" :style="{ position: 'absolute', inset: '0', visibility: baseMap === 'current' ? 'visible' : 'hidden' }"></div><BaiduCameraPreview v-if="baseMap === 'earth' && (flightActive || (mapEditMode === 'node' && selectedWaypointIndex !== null))" :active="baseMap === 'earth' && (flightActive || (mapEditMode === 'node' && selectedWaypointIndex !== null))" :pose="currentCameraPose" /></div><div class="camera-preview-head"><strong>当前视角</strong><span v-if="flightActive">{{ flightNodeLabel }} / {{ Math.round(flightSample?.pitch ?? 0) }}&deg;</span><span v-else-if="selectedWaypointIndex !== null">节点 {{ selectedWaypointIndex + 1 }} · {{ Math.round(selectedWaypointSetting()?.gimbal_pitch_angle ?? 0) }}°</span></div><small>地图模拟视角 · 不是实时相机视频</small></div>
@@ -2671,7 +2805,13 @@ onBeforeUnmount(() => {
           </div>
         </details>
           <details v-if="activeModule === 'status'" class="overview-group"><summary><span><span class="svg-icon icon-layers" aria-hidden="true"></span>天气规则和技术状态</span><small>仅在需要核对时查看</small></summary><div class="overview-group-body"><p class="weather-threshold-note">中点温度、地面风、六小时降雨，以及沿线飞行高度风、侧风和地面能见度的报警阈值已移至对应天气卡片配置。未列出的逆风和阵风继续使用演示阈值；这些提示不代表放飞许可。</p><div class="pipeline"><h3>系统状态</h3><div><span>01</span><p>{{ alignmentProgress }}</p></div><div><span>02</span><p>{{ routeAssessment ? decisionTitle : '沿线初筛等待资料' }}</p></div><div><span>03</span><p>{{ routePhase.pending ? '正在匹配沿线天气' : routePhase.error || (routeAssessment ? '沿线天气已匹配' : '沿线初筛等待资料') }}</p></div></div></div></details>
-          <div v-if="activeModule === 'dji' && preview" class="road-summary"><strong><span class="svg-icon icon-route" aria-hidden="true"></span>当前路线：{{ preview.road_names.join(' → ') || '未命名道路' }}</strong><span>{{ distance }} · 预计用时 {{ elapsed }}</span><details><summary><span class="svg-icon icon-eye" aria-hidden="true"></span>查看路线数据</summary><small>直线 {{ preview.straight_distance_km.toFixed(2) }} km · {{ preview.building_clearance_m === null ? '在线模式未检查建筑缓冲' : `建筑缓冲 ${preview.building_clearance_m} m` }}</small><small>首末主点到道路分别约 {{ preview.start_snap_m }} m / {{ preview.end_snap_m }} m</small><small>手动主点 {{ anchors.length }} 个 · 自动生成小点 {{ generatedPointCount }} 个 · {{ preview.segments?.length ?? 1 }} 段</small><small v-for="segment in preview.segments" :key="segment.id">{{ majorPointLabel(segment.index) }} → {{ majorPointLabel(segment.index + 1) }}：{{ segment.distance_km.toFixed(2) }} km</small><small>{{ preview.data_source }}</small><small>路线数据 © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap contributors</a></small></details><div class="route-export"><label>DJI 机型模板<select v-model="djiModel"><option value="fly">DJI Fly · Air 3 / Air 3S / Mini 4 Pro</option><option value="m30">DJI Pilot 2 · M30 / M30T</option><option value="m3e">DJI Pilot 2 · Mavic 3E / 3T / 3M</option></select></label><button type="button" class="weather-refresh" :disabled="!flightTimeline" @click="toggleFlight"><span class="svg-icon icon-drone" aria-hidden="true"></span>{{ flightPlaying ? '暂停巡航动画' : flightProgress >= 1 ? '重播巡航动画' : flightActive ? '继续巡航动画' : '查看巡航路线动画' }}</button><button type="button" class="weather-refresh task-flight-start" :disabled="!activeTask || !taskRouteMatches || !activeTask.export_file_name || activeTask.status === 'in_flight'" @click="markTaskFlightStarted">{{ activeTask?.status === 'in_flight' ? '已标记本次任务开始' : '标记本次任务已开始' }}</button><small v-if="activeTask?.export_file_name">KMZ 已保存在任务目录：{{ activeTask.export_file_name }}</small><small>按相对起飞点高度生成。路线折点会先抽稀，减少 DJI 中高度标签和航点标记重叠。{{ roadSource === 'online' ? '当前是在线机动车道路参考，不应直接作为飞行线。' : '当前是道路走廊参考，不代表已核实飞行航线。' }}{{ djiModel === 'fly' ? 'DJI Fly 需先创建一条占位航线，再用相同 UUID 文件名替换 waypoint 目录中的 KMZ。' : '导入 DJI Pilot 2 后仍需核对机型、动作、返航、空域和现场条件。' }}文件不是放飞许可。</small><small v-if="djiModel === 'fly'">Air 3/Air 3S 使用 DJI Fly 消费级 WPML；当前通用机型枚举按 RC 2 航线格式生成，若设备拒绝文件需要用设备原生占位 KMZ 校验。</small><small v-if="kmzError" class="form-error" role="alert">{{ kmzError }}</small></div></div>
+          <div v-if="activeModule === 'dji' && preview" class="road-summary">
+            <strong><span class="svg-icon icon-route" aria-hidden="true"></span>当前路线：{{ preview.road_names.join(' → ') || '未命名道路' }}</strong>
+            <span>{{ distance }} · 预计用时 {{ elapsed }}</span>
+            <details v-if="!preview.area_coverage"><summary><span class="svg-icon icon-eye" aria-hidden="true"></span>查看路线数据</summary><small>直线 {{ preview.straight_distance_km.toFixed(2) }} km · {{ preview.building_clearance_m === null ? '在线模式未检查建筑缓冲' : `建筑缓冲 ${preview.building_clearance_m} m` }}</small><small>首末主点到道路分别约 {{ preview.start_snap_m }} m / {{ preview.end_snap_m }} m</small><small>手动主点 {{ anchors.length }} 个 · 自动生成小点 {{ generatedPointCount }} 个 · {{ preview.segments?.length ?? 1 }} 段</small><small v-for="segment in preview.segments" :key="segment.id">{{ majorPointLabel(segment.index) }} → {{ majorPointLabel(segment.index + 1) }}：{{ segment.distance_km.toFixed(2) }} km</small><small>{{ preview.data_source }}</small><small>路线数据 © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap contributors</a></small></details>
+            <div v-else class="coverage-route-detail"><strong>区域道路闭环</strong><span>目标道路 {{ (preview.area_coverage.target_road_m / 1000).toFixed(2) }} km · 重复经过 {{ (preview.area_coverage.repeated_road_m / 1000).toFixed(2) }} km</span><span>连接道路 {{ (preview.area_coverage.connector_m / 1000).toFixed(2) }} km · 道路等级 {{ preview.area_coverage.road_classes.join('、') }}</span><small>{{ preview.data_source }} · 起终点位于道路中心线。</small></div>
+            <div class="route-export"><label>DJI 机型模板<select v-model="djiModel"><option value="fly">DJI Fly · Air 3 / Air 3S / Mini 4 Pro</option><option value="m30">DJI Pilot 2 · M30 / M30T</option><option value="m3e">DJI Pilot 2 · Mavic 3E / 3T / 3M</option></select></label><button type="button" class="weather-refresh" :disabled="!flightTimeline" @click="toggleFlight"><span class="svg-icon icon-drone" aria-hidden="true"></span>{{ flightPlaying ? '暂停巡航动画' : flightProgress >= 1 ? '重播巡航动画' : flightActive ? '继续巡航动画' : '查看巡航路线动画' }}</button><button type="button" class="weather-refresh task-flight-start" :disabled="!activeTask || !taskRouteMatches || !activeTask.export_file_name || activeTask.status === 'in_flight'" @click="markTaskFlightStarted">{{ activeTask?.status === 'in_flight' ? '已标记本次任务开始' : '标记本次任务已开始' }}</button><small v-if="activeTask?.export_file_name">KMZ 已保存在任务目录：{{ activeTask.export_file_name }}</small><small>按相对起飞点高度生成。路线折点会先抽稀，减少 DJI 中高度标签和航点标记重叠。{{ preview.area_coverage ? '此路线用于道路区域巡查；起点是道路中心线参考点，仍需现场选择合适起降位置。' : roadSource === 'online' ? '当前是在线机动车道路参考，不应直接作为飞行线。' : '当前是道路走廊参考，不代表已核实飞行航线。' }}{{ djiModel === 'fly' ? 'DJI Fly 需先创建一条占位航线，再用相同 UUID 文件名替换 waypoint 目录中的 KMZ。' : '导入 DJI Pilot 2 后仍需核对机型、动作、返航、空域和现场条件。' }}文件不是放飞许可。</small><small v-if="djiModel === 'fly'">Air 3/Air 3S 使用 DJI Fly 消费级 WPML；当前通用机型枚举按 RC 2 航线格式生成，若设备拒绝文件需要用设备原生占位 KMZ 校验。</small><small v-if="kmzError" class="form-error" role="alert">{{ kmzError }}</small></div>
+          </div>
          <section v-if="activeModule === 'dji' && ((preview && djiModel === 'fly') || rc2Job)" class="rc2-import-panel" aria-label="导入 DJI RC 2">
           <div class="rc2-import-heading">
             <h3>导入已连接的 DJI RC 2</h3>
@@ -2723,6 +2863,25 @@ onBeforeUnmount(() => {
 <style scoped>
  .route-form .settings-fields { overflow-y: auto; overscroll-behavior: contain; padding-right: 5px; scrollbar-width: none; -ms-overflow-style: none; }
  .route-form .settings-fields::-webkit-scrollbar { display: none; width: 0; height: 0; }
+ .planning-mode-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin: 2px 0 8px; padding: 4px; border: 1px solid #dbe3ea; border-radius: 8px; background: #f3f6f8; }
+ .planning-mode-switch button { min-height: 31px; padding: 5px 8px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: #596b7c; font-size: 11px; font-weight: 600; cursor: pointer; }
+ .planning-mode-switch button.active { border-color: #b7d4eb; background: #fff; color: #1265a7; box-shadow: 0 1px 2px rgb(15 23 42 / .08); }
+ .coverage-road-classes { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 8px; margin: 10px 0; }
+ .coverage-road-classes label { display: flex; align-items: center; gap: 6px; min-height: 28px; color: #394b5e; font-size: 11px; }
+ .coverage-road-classes input { width: 15px; height: 15px; margin: 0; accent-color: var(--ui-accent); }
+ .coverage-area-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px; }
+ .coverage-area-actions .major-point-add { margin-top: 0; }
+ .coverage-area-actions .major-point-add.is-drawing { border-color: #0f6cbd; background: #e9f4fd; }
+ .coverage-area-clear { min-height: 36px; padding: 6px 9px; border: 1px solid #d7dfe8; border-radius: 6px; background: #fff; color: #526273; font-size: 11px; cursor: pointer; }
+ .coverage-area-note { margin: 8px 0; color: var(--ui-muted); font-size: 11px; line-height: 1.5; }
+ .coverage-area-summary { display: grid; gap: 7px; margin-top: 12px; padding: 10px; border: 1px solid #cfe0ee; border-radius: 8px; background: #f7fbff; color: #344455; font-size: 11px; }
+ .coverage-area-summary > strong { color: #1769aa; font-size: 12px; }
+ .coverage-area-summary > div { display: flex; justify-content: space-between; gap: 8px; }
+ .coverage-area-summary > div span, .coverage-area-summary small { color: var(--ui-muted); }
+ .coverage-map-hint { padding: 8px 10px; border: 1px solid #b7d4eb; border-radius: 7px; background: #fff; color: #1769aa; font-size: 11px; }
+ .coverage-route-detail { display: grid; gap: 4px; margin: 6px 0; padding: 9px 10px; border: 1px solid #cfe0ee; border-radius: 7px; background: #f7fbff; color: #344455; font-size: 11px; }
+ .coverage-route-detail strong { color: #1769aa; font-size: 12px; }
+ .coverage-route-detail small { color: var(--ui-muted); line-height: 1.45; }
 .batch-range-guide { margin: 2px 4px 6px; color: var(--ui-muted); font-size: var(--font-caption); line-height: 1.4; }
 .major-point-card { container-type: inline-size; padding: 12px 4px; border-bottom: 1px solid var(--ui-line); }
 .major-point-card.is-batch-range { background: #f0faf9; }

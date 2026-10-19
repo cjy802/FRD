@@ -24,7 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from online_router import OnlineServiceUnavailable, plan_online_route, plan_online_alternatives
-from road_planner import CampusRoadNetwork, LOCAL_INDEX_FILE, LocalRoadStore, RouteUnavailable
+from road_planner import CampusRoadNetwork, LOCAL_INDEX_FILE, LocalRoadStore, ROAD_KINDS, RouteUnavailable
 from weather_service import weather_store
 from live_weather import forecast_jobs
 from route_candidates import local_road_candidates
@@ -89,6 +89,28 @@ class MissionRouteRequest(BaseModel):
         for index, (start, end) in enumerate(zip(self.anchors, self.anchors[1:]), start=1):
             if start.latitude == end.latitude and start.longitude == end.longitude:
                 raise ValueError(f"第 {index} 段的相邻主点不能重合。")
+        return self
+
+
+class AreaCoverageRequest(BaseModel):
+    polygon: list[Point] = Field(min_length=3, max_length=128)
+    road_classes: list[str] = Field(default_factory=lambda: ["trunk", "primary", "secondary"], min_length=1, max_length=10)
+    altitude_m: float = Field(default=100, ge=0, le=1000, allow_inf_nan=False)
+    speed_kmh: float = Field(default=45, gt=0, le=200, allow_inf_nan=False)
+
+    @field_validator("road_classes")
+    @classmethod
+    def validate_road_classes(cls, values: list[str]) -> list[str]:
+        selected = list(dict.fromkeys(value.strip() for value in values))
+        if not selected or any(value not in ROAD_KINDS for value in selected):
+            raise ValueError("道路等级筛选项无效。")
+        return selected
+
+    @model_validator(mode="after")
+    def validate_polygon(self):
+        unique = {(round(point.latitude, 7), round(point.longitude, 7)) for point in self.polygon}
+        if len(unique) < 3:
+            raise ValueError("区域边界至少需要三个不同的顶点。")
         return self
 
 
@@ -653,6 +675,35 @@ def plan_mission_route(route: MissionRouteRequest):
     except MissionRouteError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
     return route_response(route, combined)
+
+
+@app.post("/api/routes/area-coverage")
+def plan_area_coverage(route: AreaCoverageRequest):
+    """Cover selected major road edges inside a drawn region using road-only connectors."""
+    try:
+        planner = local_road_store() if LOCAL_INDEX_FILE.is_file() else road_network()
+        result = planner.plan_area_coverage(
+            [(point.longitude, point.latitude) for point in route.polygon], set(route.road_classes),
+        )
+    except RouteUnavailable as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    distance_km = result["distance_m"] / 1000
+    for segment in result["segments"]:
+        segment["estimated_minutes"] = round(distance_km / route.speed_kmh * 60, 1)
+    return {
+        **result,
+        "distance_km": round(distance_km, 3),
+        "straight_distance_km": 0,
+        "estimated_minutes": round(distance_km / route.speed_kmh * 60, 1),
+        "altitude_m": route.altitude_m,
+        "route_type": "area_road_coverage_reference",
+        "risk": {
+            "level": "unassessed",
+            "score": None,
+            "reason": "路线沿本地 OpenStreetMap 道路中心线覆盖；道路数据完整性、无人机空域、障碍和现场条件仍需核验。",
+        },
+    }
 
 
 @app.post("/api/routes/export-kmz")

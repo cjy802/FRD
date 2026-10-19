@@ -63,6 +63,7 @@ class Segment:
     b: str
     way_id: str
     name: str | None
+    highway: str | None = None
 
 
 @dataclass(frozen=True)
@@ -100,7 +101,7 @@ class CampusRoadNetwork:
                     self.buildings.append(polygon)
             if tags.get("highway") in ROAD_KINDS:
                 self.segments.extend(
-                    Segment(a, b, way.attrib["id"], tags.get("name"))
+                    Segment(a, b, way.attrib["id"], tags.get("name"), tags.get("highway"))
                     for a, b in zip(refs, refs[1:])
                     if a != b
                 )
@@ -125,11 +126,11 @@ class CampusRoadNetwork:
         network.segments = []
         network.buildings = []
         network._allowed_cache = {}
-        for _, a, b, a_lon, a_lat, b_lon, b_lat, way_id, name, _ in roads:
+        for _, a, b, a_lon, a_lat, b_lon, b_lat, way_id, name, highway in roads:
             a_id, b_id = str(a), str(b)
             network.positions[a_id] = network._to_xy(a_lat, a_lon)
             network.positions[b_id] = network._to_xy(b_lat, b_lon)
-            network.segments.append(Segment(a_id, b_id, str(way_id), name))
+            network.segments.append(Segment(a_id, b_id, str(way_id), name, str(highway)))
         for ring in building_rings:
             polygon = Polygon([network._to_xy(lat, lon) for lon, lat in ring])
             if polygon.is_valid and not polygon.is_empty:
@@ -317,6 +318,11 @@ class CampusRoadNetwork:
             "data_source": self.data_source,
         }
 
+    def plan_area_coverage(self, polygon: list[tuple[float, float]], road_classes: set[str]) -> dict:
+        from road_coverage import plan_area_coverage
+
+        return plan_area_coverage(self, polygon, road_classes)
+
 
 class LocalRoadStore:
     """Read a small A/B area from a one-time SQLite index of the Jiangsu PBF."""
@@ -415,6 +421,11 @@ class LocalRoadStore:
         west, east = min(start_lon, end_lon) - lon_padding, max(start_lon, end_lon) + lon_padding
         south, north = min(start_lat, end_lat) - lat_padding, max(start_lat, end_lat) + lat_padding
 
+        return self._network_for_bounds(west, east, south, north, center_lat, center_lon)
+
+    def _network_for_bounds(
+        self, west: float, east: float, south: float, north: float, center_lat: float, center_lon: float
+    ) -> CampusRoadNetwork:
         with closing(sqlite3.connect(self.path)) as connection:
             roads = connection.execute("""
                 SELECT r.id, r.a, r.b, r.a_lon, r.a_lat, r.b_lon, r.b_lat, r.way_id, r.name, r.highway
@@ -426,10 +437,32 @@ class LocalRoadStore:
                 FROM building_rtree AS x JOIN buildings AS b ON b.id = x.id
                 WHERE x.max_lon >= ? AND x.min_lon <= ? AND x.max_lat >= ? AND x.min_lat <= ?
             """, (west, east, south, north)).fetchall()
-
+        if len(roads) > 100_000:
+            raise RouteUnavailable("选区道路过密，请缩小框选范围后重试。")
         return CampusRoadNetwork.from_index_rows(
             roads, [json.loads(row[0]) for row in buildings], center_lat, center_lon, self.data_source
         )
+
+    def plan_area_coverage(self, polygon: list[tuple[float, float]], road_classes: set[str]) -> dict:
+        if len(polygon) < 3:
+            raise RouteUnavailable("请先在地图上框选至少三个边界点。")
+        latitudes = [point[1] for point in polygon]
+        longitudes = [point[0] for point in polygon]
+        center_lat = (min(latitudes) + max(latitudes)) / 2
+        center_lon = (min(longitudes) + max(longitudes)) / 2
+        extent_m = math.hypot(
+            (max(latitudes) - min(latitudes)) * METRES_PER_DEGREE_LAT,
+            (max(longitudes) - min(longitudes)) * METRES_PER_DEGREE_LAT * math.cos(math.radians(center_lat)),
+        )
+        if extent_m > 15_000:
+            raise RouteUnavailable("区域巡查选区对角线不能超过 15 公里，请缩小范围。")
+        padding_m = max(500.0, min(2_500.0, extent_m * 0.4))
+        lat_padding = padding_m / METRES_PER_DEGREE_LAT
+        lon_padding = padding_m / (METRES_PER_DEGREE_LAT * math.cos(math.radians(center_lat)))
+        west, east = min(longitudes) - lon_padding, max(longitudes) + lon_padding
+        south, north = min(latitudes) - lat_padding, max(latitudes) + lat_padding
+        network = self._network_for_bounds(west, east, south, north, center_lat, center_lon)
+        return network.plan_area_coverage(polygon, road_classes)
 
     def plan(
         self, start_lat: float, start_lon: float, end_lat: float, end_lon: float, clearance_m: float = 2.0,

@@ -11,4 +11,12 @@ export type RoadPreview = {
     start_index: number; end_index: number; distance_m: number; distance_km: number
     estimated_minutes: number; road_names: string[]; start_snap_m: number; end_snap_m: number
   }>
+  area_coverage?: {
+    road_classes: string[]
+    target_road_m: number
+    repeated_road_m: number
+    connector_m: number
+    coverage_ratio: number
+    road_edge_count: number
+  }
 }

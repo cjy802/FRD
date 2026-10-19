@@ -8,6 +8,7 @@ type Point = { longitude: number; latitude: number }
 type AnchorRole = 'start' | 'middle' | 'end'
 type Anchor = Point & { id: string; label?: string; role?: AnchorRole }
 type OverlayPoint = { x: number; y: number; index?: number; id?: string; label?: string; role?: AnchorRole; selected?: boolean }
+type CoverageVertex = { index: number; x: number; y: number }
 type WeatherOverlayPoint = {
   index: number; x: number; y: number; popupX: number; popupY: number; placement: 'above' | 'below'
   time: string; level: string; riskLabel: string; reasons: string; coordinateLabel: string
@@ -17,6 +18,10 @@ const props = defineProps<{
   active: boolean; provider: MapProvider; viewMode: '2d' | '3d'; start: Point; end: Point; route: number[][] | null
   anchors?: Anchor[]
   selectedAnchorId?: string
+  coveragePolygon?: number[][]
+  coverageDrawEnabled?: boolean
+  coverageEditEnabled?: boolean
+  suppressMapPointSelection?: boolean
   selectedIndex: number | null; editMode: 'route' | 'node'; footprint: number[][]
   weatherSegments: { start: number[]; end: number[]; level: string }[]
   weatherSamples?: RouteAssessment['samples'] | null
@@ -29,7 +34,13 @@ const props = defineProps<{
   videoPosition?: VideoTelemetryPoint | null
   captureTargets?: VideoCaptureTarget[]
 }>()
-const emit = defineEmits<{ 'select-waypoint': [index: number]; 'choose-point': [point: Point]; 'rotate-waypoint': [heading: number] }>()
+const emit = defineEmits<{
+  'select-waypoint': [index: number]
+  'choose-point': [point: Point]
+  'rotate-waypoint': [heading: number]
+  'coverage-polygon-created': [polygon: number[][]]
+  'coverage-polygon-updated': [polygon: number[][]]
+}>()
 const earthElement = ref<HTMLElement | null>(null)
 const status = ref('正在加载地球模式…')
 const failed = ref(false)
@@ -39,6 +50,7 @@ const overlay = reactive({
   nodes: [] as { x: number; y: number; index: number }[],
   groundNodes: [] as { x: number; y: number; index: number }[],
   anchors: [] as { id: string; x: number; y: number; label: string; role: 'start' | 'middle' | 'end'; selected: boolean }[],
+  coverageVertices: [] as CoverageVertex[],
   autoNodes: [] as { index: number; x: number; y: number }[],
   drone: null as { x: number; y: number; angle: number } | null,
   videoPosition: null as { x: number; y: number; time_seconds: number; altitude_m: number | null } | null,
@@ -52,10 +64,18 @@ let drag: { index: number; pointerId: number; x: number; y: number; element: HTM
 let ctrlRotate: { pointerId: number; x: number; y: number; heading: number; pitch: number } | null = null
 let mapPointerStart: { x: number; y: number } | null = null
 let mapPointerMoved = false
+let coverageDraw: { pointerId: number; start: number[]; startX: number; startY: number; element: HTMLElement } | null = null
+let coverageVertexDrag: { index: number; pointerId: number; element: HTMLElement } | null = null
+let coverageDraft: number[][] | null = null
 let routeSignature = ''
 let footprintTimer: ReturnType<typeof setTimeout> | null = null
 let lastFlightFootprintAt = 0
 const selectedWeatherPoint = computed(() => overlay.weatherPoints.find(point => point.index === selectedWeatherPointIndex.value) ?? null)
+const coverageSvgPoints = computed(() => overlay.coverageVertices.map(point => `${point.x},${point.y}`).join(' '))
+const coverageMidpoints = computed(() => overlay.coverageVertices.map((point, index, points) => {
+  const next = points[(index + 1) % points.length]
+  return { index, x: (point.x + next.x) / 2, y: (point.y + next.y) / 2 }
+}))
 
 function sameOverlayPoints(first: OverlayPoint[], second: OverlayPoint[]) {
   if (first.length !== second.length) return false
@@ -135,6 +155,13 @@ function renderOverlay() {
     const pixel = scene!.project([point.longitude, point.latitude, 2])
     return pixel ? [{ id: point.id, ...pixel, label: point.label ?? anchorLabel(index), role: anchorRole(point, index, all.length), selected: point.id === props.selectedAnchorId }] : []
   })
+  const coverageSource = coverageDraft ?? props.coveragePolygon ?? []
+  const projectedCoverage = coverageSource.map((point, index) => {
+    const pixel = scene!.project([point[0]!, point[1]!, 2])
+    return pixel ? { ...pixel, index } : null
+  })
+  const coverageVertices = projectedCoverage.length >= 3 && projectedCoverage.every((point) => point !== null)
+    ? projectedCoverage as CoverageVertex[] : []
   const route = props.route ?? []
   const stride = Math.max(1, Math.ceil(Math.max(0, route.length - 2) / 120))
   const autoNodes: { index: number; x: number; y: number }[] = []
@@ -209,6 +236,7 @@ function renderOverlay() {
   if (!sameOverlayPoints(nodes, overlay.nodes)) overlay.nodes = nodes
   if (!sameOverlayPoints(groundNodes, overlay.groundNodes)) overlay.groundNodes = groundNodes
   if (!sameOverlayPoints(anchors, overlay.anchors)) overlay.anchors = anchors
+  if (!sameOverlayPoints(coverageVertices, overlay.coverageVertices)) overlay.coverageVertices = coverageVertices
   if (!sameOverlayPoints(autoNodes, overlay.autoNodes)) overlay.autoNodes = autoNodes
   const drone = projectedDrone()
   if (!sameDrone(drone, overlay.drone)) overlay.drone = drone
@@ -270,10 +298,120 @@ function focusWaypoint(index: number) { const point = props.route?.[index]; if (
 function setView(view: SceneView) { scene?.setView(view, coordinates()) }
 defineExpose({ focusWaypoint, setView })
 
-function onMapPointerDown(event: PointerEvent) { mapPointerStart = { x: event.clientX, y: event.clientY }; mapPointerMoved = false }
-function onMapPointerMove(event: PointerEvent) { if (mapPointerStart && Math.hypot(event.clientX - mapPointerStart.x, event.clientY - mapPointerStart.y) > 5) mapPointerMoved = true }
+function pickCoordinate(clientX: number, clientY: number): number[] | null {
+  if (!scene || !earthElement.value) return null
+  const bounds = earthElement.value.getBoundingClientRect()
+  const point = scene.pick(clientX - bounds.left, clientY - bounds.top)
+  return point ? [Number(point[0].toFixed(7)), Number(point[1].toFixed(7))] : null
+}
+
+function rectanglePolygon(first: number[], second: number[]) {
+  const west = Math.min(first[0]!, second[0]!)
+  const east = Math.max(first[0]!, second[0]!)
+  const south = Math.min(first[1]!, second[1]!)
+  const north = Math.max(first[1]!, second[1]!)
+  return [[west, south], [east, south], [east, north], [west, north]]
+}
+
+function onMapPointerDown(event: PointerEvent) {
+  mapPointerStart = { x: event.clientX, y: event.clientY }
+  mapPointerMoved = false
+  if (!props.coverageDrawEnabled || !props.active || props.flightPose?.playing || event.button !== 0 || !event.isPrimary || !earthElement.value) return
+  const point = pickCoordinate(event.clientX, event.clientY)
+  if (!point) return
+  event.preventDefault()
+  event.stopPropagation()
+  const element = event.currentTarget as HTMLElement
+  coverageDraw = { pointerId: event.pointerId, start: point, startX: event.clientX, startY: event.clientY, element }
+  coverageDraft = rectanglePolygon(point, point)
+  mapPointerMoved = true
+  scene?.setInputs(false)
+  element.setPointerCapture(event.pointerId)
+  renderOverlay()
+}
+
+function onMapPointerMove(event: PointerEvent) {
+  if (coverageDraw?.pointerId === event.pointerId) {
+    const point = pickCoordinate(event.clientX, event.clientY)
+    if (point) coverageDraft = rectanglePolygon(coverageDraw.start, point)
+    renderOverlay()
+    event.preventDefault()
+    return
+  }
+  if (mapPointerStart && Math.hypot(event.clientX - mapPointerStart.x, event.clientY - mapPointerStart.y) > 5) mapPointerMoved = true
+}
+
+function onMapPointerUp(event: PointerEvent) {
+  const drawing = coverageDraw
+  if (!drawing || drawing.pointerId !== event.pointerId) return
+  const point = pickCoordinate(event.clientX, event.clientY) ?? drawing.start
+  const polygon = rectanglePolygon(drawing.start, point)
+  const largeEnough = Math.hypot(event.clientX - drawing.startX, event.clientY - drawing.startY) >= 12
+  coverageDraw = null
+  coverageDraft = null
+  mapPointerStart = null
+  mapPointerMoved = true
+  if (drawing.element.hasPointerCapture(event.pointerId)) drawing.element.releasePointerCapture(event.pointerId)
+  scene?.setInputs(props.active && !props.flightPose?.playing)
+  if (largeEnough) emit('coverage-polygon-created', polygon)
+  renderOverlay()
+}
+
+function onCoverageVertexDown(event: PointerEvent, index: number) {
+  if (!props.coverageEditEnabled || event.button !== 0 || !event.isPrimary || props.flightPose?.playing || !earthElement.value) return
+  event.preventDefault()
+  event.stopPropagation()
+  finishDrag()
+  const element = event.currentTarget as HTMLElement
+  coverageDraft = (props.coveragePolygon ?? []).map(point => [...point])
+  coverageVertexDrag = { index, pointerId: event.pointerId, element }
+  mapPointerStart = null
+  mapPointerMoved = true
+  scene?.setInputs(false)
+  element.setPointerCapture(event.pointerId)
+}
+
+function onCoverageVertexMove(event: PointerEvent) {
+  const drag = coverageVertexDrag
+  if (!drag || drag.pointerId !== event.pointerId || !coverageDraft || !coverageDraft[drag.index]) return
+  const point = pickCoordinate(event.clientX, event.clientY)
+  if (!point) return
+  coverageDraft[drag.index] = point
+  renderOverlay()
+  event.preventDefault()
+}
+
+function onCoverageVertexEnd(event: PointerEvent) {
+  const drag = coverageVertexDrag
+  if (!drag || drag.pointerId !== event.pointerId) return
+  const updated = coverageDraft?.map(point => [...point])
+  coverageVertexDrag = null
+  coverageDraft = null
+  if (drag.element.hasPointerCapture(event.pointerId)) drag.element.releasePointerCapture(event.pointerId)
+  scene?.setInputs(props.active && !props.flightPose?.playing)
+  if (updated) emit('coverage-polygon-updated', updated)
+  renderOverlay()
+}
+
+function insertCoverageVertex(edgeIndex: number) {
+  if (!props.coverageEditEnabled) return
+  const polygon = (props.coveragePolygon ?? []).map(point => [...point])
+  if (polygon.length < 3) return
+  const start = polygon[edgeIndex]
+  const end = polygon[(edgeIndex + 1) % polygon.length]
+  if (!start || !end) return
+  polygon.splice(edgeIndex + 1, 0, [(start[0]! + end[0]!) / 2, (start[1]! + end[1]!) / 2])
+  emit('coverage-polygon-updated', polygon)
+}
+
+function deleteCoverageVertex(event: MouseEvent, index: number) {
+  if (!props.coverageEditEnabled || (props.coveragePolygon?.length ?? 0) <= 3) return
+  event.preventDefault()
+  event.stopPropagation()
+  emit('coverage-polygon-updated', props.coveragePolygon!.filter((_, pointIndex) => pointIndex !== index).map(point => [...point]))
+}
 function onCtrlRotateDown(event: PointerEvent) {
-  if (!scene || !props.active || props.flightPose?.playing || props.viewMode !== '3d' || ctrlRotate || event.button !== 0 || !event.isPrimary || !event.ctrlKey ||
+  if (!scene || !props.active || props.coverageDrawEnabled || props.flightPose?.playing || props.viewMode !== '3d' || ctrlRotate || event.button !== 0 || !event.isPrimary || !event.ctrlKey ||
       !earthElement.value?.contains(event.target as Node)) return
   event.preventDefault()
   event.stopImmediatePropagation()
@@ -316,7 +454,8 @@ function finishCtrlRotate() {
   scene?.setInputs(props.active && !props.flightPose?.playing)
 }
 function onMapClick(event: MouseEvent) {
-  if (!scene || !props.active || props.flightPose?.playing || props.editMode !== 'route' || mapPointerMoved || !earthElement.value) return
+  if (!scene || !props.active || props.flightPose?.playing || props.editMode !== 'route'
+    || props.coverageDrawEnabled || props.suppressMapPointSelection || mapPointerMoved || !earthElement.value) return
   const bounds = earthElement.value.getBoundingClientRect()
   const point = scene.pick(event.clientX - bounds.left, event.clientY - bounds.top)
   if (point) emit('choose-point', { longitude: Number(point[0].toFixed(5)), latitude: Number(point[1].toFixed(5)) })
@@ -358,6 +497,9 @@ async function initialize() {
     scene = nextScene
     scene.onFrame(renderOverlay)
     applyViewMode()
+    if (props.coveragePolygon && props.coveragePolygon.length >= 3) {
+      scene.fit(props.coveragePolygon.map(([longitude, latitude]) => [longitude, latitude, 0]), props.viewMode)
+    }
     scene.setActive(props.active)
     scene.setInputs(props.active && !props.flightPose?.playing)
     resizeObserver = new ResizeObserver(() => scene?.resize())
@@ -382,6 +524,12 @@ watch(() => props.provider, async () => {
   if (!unmounted) void initialize()
 })
 watch(() => [props.route, props.start, props.end, props.anchors, props.weatherSegments, props.showStartRange, props.showEndRange, props.rangeMeters], refreshRoute, { deep: true })
+watch(() => [props.coveragePolygon, props.coverageDrawEnabled], () => {
+  if (props.coveragePolygon && props.coveragePolygon.length >= 3) {
+    scene?.fit(props.coveragePolygon.map(([longitude, latitude]) => [longitude, latitude, 0]), props.viewMode)
+  }
+  renderOverlay()
+}, { deep: true, flush: 'sync' })
 watch(() => props.selectedAnchorId, renderOverlay, { flush: 'sync' })
 watch(() => [props.footprint, props.selectedIndex, props.editMode], () => { refreshFootprint(); renderOverlay() }, { deep: true, flush: 'sync' })
 watch(() => props.videoTrack, refreshVideoTrack, { deep: true })
@@ -401,7 +549,7 @@ watch(() => props.flightPose, (pose, previous) => {
 }, { deep: true, flush: 'sync' })
 watch(() => props.flightFootprint, refreshFootprint, { deep: true, flush: 'sync' })
 onBeforeUnmount(() => {
-  unmounted = true; finishDrag(); finishCtrlRotate(); resizeObserver?.disconnect()
+  unmounted = true; finishDrag(); finishCtrlRotate(); coverageDraw = null; coverageVertexDrag = null; coverageDraft = null; resizeObserver?.disconnect()
   if (footprintTimer !== null) clearTimeout(footprintTimer)
   window.removeEventListener('pointerup', finishDrag); window.removeEventListener('pointercancel', finishDrag); window.removeEventListener('blur', finishDrag)
   scene?.dispose(); scene = null
@@ -409,9 +557,14 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="earth-map" :class="{ active }" :aria-label="provider === 'baidu' ? '百度地图地球模式' : 'OpenStreetMap 地图模式'" :data-view-mode="viewMode" @pointerdown.capture="onCtrlRotateDown" @mousedown.capture="onCtrlMouseDown">
-    <div ref="earthElement" class="earth-map-canvas" @pointerdown="onMapPointerDown" @pointermove="onMapPointerMove" @click="onMapClick"></div>
+  <div class="earth-map" :class="{ active, 'coverage-drawing': coverageDrawEnabled }" :aria-label="provider === 'baidu' ? '百度地图地球模式' : 'OpenStreetMap 地图模式'" :data-view-mode="viewMode" @pointerdown.capture="onCtrlRotateDown" @mousedown.capture="onCtrlMouseDown">
+    <div ref="earthElement" class="earth-map-canvas" @pointerdown="onMapPointerDown" @pointermove="onMapPointerMove" @pointerup="onMapPointerUp" @pointercancel="onMapPointerUp" @click="onMapClick"></div>
     <div class="earth-map-overlay">
+      <svg v-if="overlay.coverageVertices.length >= 3" class="earth-coverage-svg" aria-hidden="true"><polygon :points="coverageSvgPoints" /></svg>
+      <template v-if="coverageEditEnabled && !coverageDrawEnabled">
+        <button v-for="midpoint in coverageMidpoints" :key="`coverage-edge-${midpoint.index}`" type="button" class="earth-coverage-edge-handle" :aria-label="`在区域边界 ${midpoint.index + 1} 添加节点`" title="点击添加边界节点" :style="{ left: `${midpoint.x}px`, top: `${midpoint.y}px` }" @click.stop="insertCoverageVertex(midpoint.index)">+</button>
+        <button v-for="point in overlay.coverageVertices" :key="`coverage-vertex-${point.index}`" type="button" class="earth-coverage-vertex" :aria-label="`区域边界节点 ${point.index + 1}，双击删除`" title="拖动调整范围，双击删除节点" :style="{ left: `${point.x}px`, top: `${point.y}px` }" @pointerdown="onCoverageVertexDown($event, point.index)" @pointermove="onCoverageVertexMove" @pointerup="onCoverageVertexEnd" @pointercancel="onCoverageVertexEnd" @lostpointercapture="onCoverageVertexEnd" @dblclick="deleteCoverageVertex($event, point.index)" @click.stop></button>
+      </template>
       <div v-if="videoTrack?.length" class="earth-video-legend" aria-label="视频轨迹图例"><span><i class="track-key"></i>SRT 轨迹</span><span><i class="position-key">V</i>当前画面</span><span><i class="target-key">拍</i>近拍点</span></div>
       <span v-for="anchor in overlay.anchors" :key="anchor.id" class="earth-endpoint" :class="[anchor.role, { selected: anchor.selected }]" :style="{ left: `${anchor.x}px`, top: `${anchor.y}px` }">{{ anchor.label }}</span>
       <span v-for="target in overlay.captureTargets" :key="`video-target-${target.id}`" class="earth-capture-target" :title="`${target.label} · ${Math.floor(target.time_seconds / 60)}:${String(Math.floor(target.time_seconds % 60)).padStart(2, '0')}`" :aria-label="`${target.label} 拍摄位置`" :style="{ left: `${target.x}px`, top: `${target.y}px` }">{{ target.marker }}</span>
@@ -423,6 +576,7 @@ onBeforeUnmount(() => {
         <div class="earth-weather-values"><div><span>温度</span><b>{{ selectedWeatherPoint.temperature }}</b></div><div><span>高度风</span><b>{{ selectedWeatherPoint.heightWind }}</b></div><div><span>10 米风</span><b>{{ selectedWeatherPoint.groundWind }}</b></div><div><span>阵风</span><b>{{ selectedWeatherPoint.gust }}</b></div><div><span>能见度</span><b>{{ selectedWeatherPoint.visibility }}</b></div><div><span>6 小时雨</span><b>{{ selectedWeatherPoint.rain }}</b></div></div>
         <small v-if="selectedWeatherPoint.reasons" class="earth-weather-reason">{{ selectedWeatherPoint.reasons }}</small>
       </article>
+      <div v-if="coverageDrawEnabled" class="earth-area-draw-surface" @pointerdown="onMapPointerDown" @pointermove="onMapPointerMove" @pointerup="onMapPointerUp" @pointercancel="onMapPointerUp"></div>
       <span v-for="node in overlay.autoNodes" :key="`auto-${node.index}`" class="earth-auto-node" aria-hidden="true" :style="{ left: `${node.x}px`, top: `${node.y}px` }"></span>
       <span v-for="node in overlay.groundNodes" :key="`ground-${node.index}`" class="earth-ground-node" aria-hidden="true" :style="{ left: `${node.x}px`, top: `${node.y}px` }"><span></span></span>
       <button v-for="node in overlay.nodes" :key="node.index" type="button" class="earth-node" :class="{ selected: node.index === selectedIndex }" :aria-label="`选择航点 ${node.index + 1}`" :aria-pressed="node.index === selectedIndex" :data-waypoint-index="node.index" :disabled="flightPose?.playing" :style="{ left: `${node.x}px`, top: `${node.y}px` }" @pointerdown="onNodeDown($event, node.index)" @pointermove="onNodeMove" @pointerup="onNodeUp" @pointercancel="onNodeUp" @lostpointercapture="onNodeUp" @click.stop="onNodeClick(node.index)"><span></span></button>
@@ -440,7 +594,16 @@ onBeforeUnmount(() => {
 .earth-map.active { visibility: visible; }
 .earth-map-canvas, .earth-map-overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
 .earth-map-canvas { z-index: 0; }
+.earth-map.coverage-drawing .earth-map-canvas { cursor: crosshair; touch-action: none; }
+.earth-area-draw-surface { position: absolute; z-index: 8; inset: 0; pointer-events: auto; touch-action: none; cursor: crosshair; }
 .earth-map-overlay { z-index: 1; pointer-events: none; overflow: hidden; }
+.earth-coverage-svg { position: absolute; z-index: 1; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.earth-coverage-svg polygon { fill: rgb(15 108 189 / .14); stroke: #0f6cbd; stroke-width: 2; stroke-dasharray: 7 4; vector-effect: non-scaling-stroke; }
+.earth-coverage-vertex, .earth-coverage-edge-handle { position: absolute; z-index: 5; display: grid; transform: translate(-50%, -50%); place-items: center; padding: 0; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 1px 5px rgb(15 23 42 / .45); color: #fff; pointer-events: auto; touch-action: none; cursor: grab; }
+.earth-coverage-vertex { width: 18px; height: 18px; background: #0f6cbd; }
+.earth-coverage-vertex:active { cursor: grabbing; }
+.earth-coverage-vertex:focus-visible, .earth-coverage-edge-handle:focus-visible { outline: 2px solid #f5bd4f; outline-offset: 2px; }
+.earth-coverage-edge-handle { width: 22px; height: 22px; border: 1px solid #0f6cbd; background: #fff; color: #0f6cbd; font-size: 16px; font-weight: 700; cursor: pointer; }
 .earth-video-legend { position: absolute; z-index: 4; top: 12px; left: 12px; display: flex; flex-wrap: wrap; gap: 9px; padding: 6px 8px; border: 1px solid #d8e0e7; border-radius: 6px; background: rgb(255 255 255 / .94); color: #344455; font-size: 11px; }
 .earth-video-legend span { display: inline-flex; align-items: center; gap: 4px; }
 .earth-video-legend i { display: inline-grid; width: 14px; height: 14px; place-items: center; border-radius: 50%; color: #fff; font-size: 8px; font-style: normal; font-weight: 700; }
