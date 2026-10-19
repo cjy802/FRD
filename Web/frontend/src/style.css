@@ -78,11 +78,14 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .task-create-form label { color: #344455; font-size: 12px; font-weight: 600; }
 .task-create-form input { width: 100%; min-height: 38px; padding: 7px 9px; border: 1px solid #cbd5df; border-radius: 6px; background: #fff; color: #27364a; }
 .task-create-form > small { color: var(--ui-muted); font-size: 11px; }
+.task-create-progress { margin: 3px 0 0; color: #1265a7; font-size: 12px; }
 .task-create-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .task-create-actions button { min-height: 32px; padding: 5px 10px; border: 1px solid #d7dfe8; border-radius: 6px; background: #fff; color: #34506c; font-size: 11px; }
 .task-create-actions .task-create-confirm { border-color: var(--ui-accent); background: var(--ui-accent); color: #fff; }
 .task-create-actions button:disabled { opacity: .55; cursor: default; }
-.task-create-footer { display: flex; justify-content: flex-end; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--ui-line); }
+.task-create-footer { display: grid; gap: 10px; width: 100%; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--ui-line); }
+.task-create-footer .primary-button { flex: 1 1 auto; width: 100%; min-height: 48px; margin-top: 0; white-space: nowrap; }
+.task-create-notice { margin: 0; color: #1265a7; font-size: 12px; line-height: 1.5; }
 .saved-task-list { display: grid; gap: 7px; margin: 0; padding: 12px; overflow-y: auto; list-style: none; }
 .saved-task-list li { min-width: 0; }
 .saved-task-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 6px; }
