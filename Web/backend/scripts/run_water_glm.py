@@ -64,6 +64,26 @@ def _polygon_points(raw: object, width: int, height: int) -> np.ndarray | None:
     return np.asarray(points, dtype=np.int32)
 
 
+def _read_image(path: Path) -> np.ndarray:
+    """Decode image bytes directly so OpenCV also supports Unicode Windows paths."""
+    try:
+        payload = path.read_bytes()
+    except OSError as error:
+        raise ValueError(f"无法读取截图：{path.name}") from error
+    image = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        raise ValueError(f"无法读取截图：{path.name}")
+    return image
+
+
+def _write_png(path: Path, image: np.ndarray) -> None:
+    """Encode first, then write via pathlib to avoid OpenCV Unicode path limits."""
+    ok, encoded = cv2.imencode(".png", image)
+    if not ok:
+        raise ValueError(f"无法写入分析结果：{path.name}")
+    path.write_bytes(encoded.tobytes())
+
+
 def _call_model(image: np.ndarray, url: str, api_key: str, model: str) -> dict:
     height, width = image.shape[:2]
     max_side = 1536
@@ -115,11 +135,17 @@ def _call_model(image: np.ndarray, url: str, api_key: str, model: str) -> dict:
 
 
 def _process(path: Path, output_dir: Path, url: str, api_key: str, model: str) -> dict:
-    image = cv2.imread(str(path), cv2.IMREAD_COLOR)
-    if image is None:
-        raise ValueError(f"无法读取截图：{path.name}")
+    image = _read_image(path)
     height, width = image.shape[:2]
-    result = _call_model(image, url, api_key, model)
+    try:
+        result = _call_model(image, url, api_key, model)
+    except ValueError as first_error:
+        # Vision chat models can occasionally ignore the JSON-only instruction.
+        # Retry once so one malformed response does not discard an otherwise valid batch.
+        try:
+            result = _call_model(image, url, api_key, model)
+        except ValueError as retry_error:
+            raise RuntimeError(f"模型两次均未返回有效 JSON：{retry_error}") from first_error
     mask = np.zeros((height, width), dtype=np.uint8)
     confidence = np.zeros((height, width), dtype=np.uint8)
     valid = []
@@ -153,9 +179,9 @@ def _process(path: Path, output_dir: Path, url: str, api_key: str, model: str) -
     overlay_name = f"{stem}-overlay.png"
     mask_name = f"{stem}-mask.png"
     confidence_name = f"{stem}-confidence.png"
-    cv2.imwrite(str(output_dir / overlay_name), overlay)
-    cv2.imwrite(str(output_dir / mask_name), mask)
-    cv2.imwrite(str(output_dir / confidence_name), confidence)
+    _write_png(output_dir / overlay_name, overlay)
+    _write_png(output_dir / mask_name, mask)
+    _write_png(output_dir / confidence_name, confidence)
     components, _ = cv2.connectedComponents((mask > 0).astype(np.uint8))
     pixels = int(np.count_nonzero(mask))
     return {
@@ -202,7 +228,7 @@ def main() -> int:
         print(json.dumps({"error": detail[:600]}, ensure_ascii=False))
         return 1
     model_digest = hashlib.sha256(model.encode("utf-8")).hexdigest()
-    print(json.dumps({
+    payload = {
         "model": {"default_model": model, "display_name": model, "engine": "remote-vision-polygon-mask",
                   "task": "puddle candidate segmentation", "water_class": 1,
                   "input_size": 1536, "normalize": "remote vision request; normalized polygons rasterized locally",
@@ -210,7 +236,10 @@ def main() -> int:
         "images": images,
         "elapsed_seconds": round(time.monotonic() - started, 2),
         "interpretation": "GLM 返回的多边形已在本机栅格化为候选掩膜；多边形精度受语言视觉模型限制，所有区域都需要人工核对，不代表积水深度或面积。",
-    }, ensure_ascii=False))
+    }
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    (args.output_dir / "results.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(payload, ensure_ascii=False))
     return 0
 
 
