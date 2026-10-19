@@ -280,7 +280,7 @@ onUnmounted(stopPolling)
 .photo-toolbar small { color: var(--ui-muted); line-height: 1.4; }
 .photo-form { padding: 4px 0 10px; }
 .photo-form > label { display: block; margin-bottom: 4px; color: #424242; font-weight: 600; }
-.photo-model-select { display: block; width: 100%; min-width: 0; height: 32px; margin: 0 0 4px; padding: 4px 7px; border: 1px solid #d1d5db; border-radius: 6px; background: #f9fafb; color: #27364a; font-size: var(--font-caption); }
+.photo-model-select { display: block; width: 100%; min-width: 0; height: 32px; margin: 0 0 4px; padding: 4px 30px 4px 7px; border: 1px solid #d1d5db; border-radius: 6px; background-color: #f9fafb; color: #27364a; font-size: var(--font-caption); }
 .photo-model-description { display: block; margin: 0 0 8px; color: var(--ui-muted); line-height: 1.4; }
 .photo-file-selection { min-width: 0; overflow: hidden; color: var(--ui-muted); text-overflow: ellipsis; white-space: nowrap; }
 .photo-frame-list { display: grid; max-height: 200px; gap: 5px; margin: 5px 0; padding: 0; overflow: auto; list-style: none; }

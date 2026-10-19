@@ -2778,7 +2778,7 @@ onBeforeUnmount(() => {
 .flight-toggle .svg-icon { width: 22px; height: 22px; }
 .icon-drone { -webkit-mask-image: url('/svg/drone.svg'); mask-image: url('/svg/drone.svg'); }
 .flight-speed { display: inline-flex; align-items: center; gap: 3px; flex: none; color: #526273; font-size: 11px; white-space: nowrap; }
-.flight-speed select { width: 57px; min-height: 30px; padding: 0 2px; border: 1px solid #dbe2ea; border-radius: 6px; background: #f7fafc; color: #1769aa; font: inherit; font-weight: 700; }
+.flight-speed select { width: 68px; min-height: 30px; padding: 0 22px 0 5px; border: 1px solid #dbe2ea; border-radius: 6px; background-color: #f7fafc; background-position: right 6px center; background-size: 11px 11px; color: #1769aa; font: inherit; font-weight: 700; }
 .flight-speed select:disabled { opacity: .5; }
 .flight-progress-wrap { display: flex; align-items: center; flex: 1; min-width: 60px; min-height: 30px; }
 .flight-progress { width: 100%; margin: 0; accent-color: #126cb7; cursor: pointer; }
@@ -2803,7 +2803,7 @@ onBeforeUnmount(() => {
 .rc2-import-panel p, .rc2-import-panel small, .rc2-job span { display: block; margin: 0; color: #53677c; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
 .rc2-import-panel .form-error { color: #a4262c; }
 .rc2-import-panel label { display: block; color: #344455; font-size: 12px; font-weight: 600; }
-.rc2-import-panel select { display: block; width: 100%; min-height: 34px; margin-top: 5px; padding: 5px 7px; border: 1px solid #b8cddd; border-radius: 6px; background: #fff; color: #25394d; font: inherit; font-weight: 400; }
+.rc2-import-panel select { display: block; width: 100%; min-height: 34px; margin-top: 5px; padding: 5px 32px 5px 7px; border: 1px solid #b8cddd; border-radius: 6px; background-color: #fff; color: #25394d; font: inherit; font-weight: 400; }
 .rc2-import-panel button:disabled { cursor: default; opacity: .55; }
 .rc2-job { display: grid; gap: 6px; padding: 10px; border: 1px solid #bdd7ed; border-radius: 7px; background: #fff; }
 .rc2-job > strong { color: #1265a7; font-size: 12px; }

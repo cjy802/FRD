@@ -436,7 +436,8 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
 .adaptive-selector header small, .adaptive-selector-note { color: var(--ui-muted); font-size: 10px; line-height: 1.4; }
 .adaptive-selector-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
 .adaptive-selector-fields label { display: grid; min-width: 0; gap: 3px; color: #526273; font-size: 10px; }
-.adaptive-selector-fields input, .adaptive-selector-fields select { width: 100%; min-width: 0; min-height: 28px; padding: 3px 5px; border: 1px solid #d7dfe8; border-radius: 5px; background: #fff; color: #27364a; font-size: 11px; }
+.adaptive-selector-fields input, .adaptive-selector-fields select { width: 100%; min-width: 0; min-height: 28px; padding: 3px 5px; border: 1px solid #d7dfe8; border-radius: 5px; background-color: #fff; color: #27364a; font-size: 11px; }
+.adaptive-selector-fields select { padding-right: 30px; }
 .adaptive-selector-fields .adaptive-blur-toggle { display: flex; align-items: center; gap: 6px; }
 .adaptive-selector-fields .adaptive-blur-toggle input { width: 15px; min-height: 15px; margin: 0; accent-color: var(--ui-accent); }
 .adaptive-selector-action { width: 100%; border-color: var(--ui-accent) !important; background: var(--ui-accent) !important; color: #fff !important; }
