@@ -602,6 +602,12 @@ onBeforeUnmount(() => {
 .earth-coverage-vertex, .earth-coverage-edge-handle { position: absolute; z-index: 5; display: grid; transform: translate(-50%, -50%); place-items: center; padding: 0; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 1px 5px rgb(15 23 42 / .45); color: #fff; pointer-events: auto; touch-action: none; cursor: grab; }
 .earth-coverage-vertex { width: 18px; height: 18px; background: #0f6cbd; }
 .earth-coverage-vertex:active { cursor: grabbing; }
+.earth-coverage-vertex:hover:not(:disabled), .earth-coverage-edge-handle:hover:not(:disabled),
+.earth-coverage-vertex:active:not(:disabled), .earth-coverage-edge-handle:active:not(:disabled) {
+  /* Preserve the geographic anchor transform instead of the global button hover/press translation. */
+  transform: translate(-50%, -50%);
+  box-shadow: 0 1px 5px rgb(15 23 42 / .45);
+}
 .earth-coverage-vertex:focus-visible, .earth-coverage-edge-handle:focus-visible { outline: 2px solid #f5bd4f; outline-offset: 2px; }
 .earth-coverage-edge-handle { width: 22px; height: 22px; border: 1px solid #0f6cbd; background: #fff; color: #0f6cbd; font-size: 16px; font-weight: 700; cursor: pointer; }
 .earth-video-legend { position: absolute; z-index: 4; top: 12px; left: 12px; display: flex; flex-wrap: wrap; gap: 9px; padding: 6px 8px; border: 1px solid #d8e0e7; border-radius: 6px; background: rgb(255 255 255 / .94); color: #344455; font-size: 11px; }
