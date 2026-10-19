@@ -372,8 +372,8 @@ onBeforeUnmount(() => {
       <template v-if="forecast">
         <p class="plain-summary">{{ groundSummary }}</p>
         <div class="weather-mini-grid"><div :class="metricTone('temperature')"><span>温度</span><strong>{{ (forecast.values.t2m_K - 273.15).toFixed(1) }}°C</strong></div><div :class="metricTone('wind')"><span>地面风</span><strong>{{ forecast.derived.wind_speed_10m_m_s.toFixed(1) }} m/s</strong></div><div :class="metricTone('rain')"><span>6 小时降雨</span><strong>{{ forecast.values.tp_6h_mm.toFixed(1) }} mm</strong></div></div>
-        <div class="weather-threshold-config" aria-label="中点地面天气阈值配置">
-          <div class="weather-threshold-config-heading"><strong>中点地面天气阈值</strong><small>示例阈值，可按机型说明书调整</small></div>
+        <details class="weather-threshold-config" aria-label="中点地面天气阈值配置">
+          <summary class="weather-threshold-config-heading"><strong>设置中点天气阈值</strong><small>点击展开配置</small></summary>
           <div class="weather-threshold-group">
             <div class="weather-threshold-item"><strong>温度范围 · °C</strong><label>低温提醒<input v-model.number="pointThresholds.temperature_min_c" type="number" min="-80" max="80" step="1" /></label><label>高温提醒<input v-model.number="pointThresholds.temperature_max_c" type="number" min="-80" max="80" step="1" /></label></div>
             <div class="weather-threshold-item"><strong>地面风速 · m/s</strong><label>关注 ≥<input v-model.number="pointThresholds.wind_attention_m_s" type="number" min="0" max="200" step="0.1" /></label><label>较强 ≥<input v-model.number="pointThresholds.wind_elevated_m_s" type="number" min="0" max="200" step="0.1" /></label></div>
@@ -381,7 +381,7 @@ onBeforeUnmount(() => {
           </div>
           <p v-if="pointThresholdError" class="weather-threshold-error" role="alert">{{ pointThresholdError }}</p>
           <small class="weather-threshold-note">仅评估中点地面温度、10 米风和 6 小时降雨，不是飞行限值。</small>
-        </div>
+        </details>
       </template>
       <p v-else>等待未来天气预报生成后评估风雨提示。</p>
     </div>

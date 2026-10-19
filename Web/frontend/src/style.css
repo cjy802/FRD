@@ -395,6 +395,11 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .weather-mini-grid strong { display: block; margin-top: 4px; color: #1e3a5f; font-size: 15px; line-height: 1.25; overflow-wrap: anywhere; }
 .weather-threshold-config { display: grid; gap: 8px; margin-top: 12px; padding: 9px; border: 1px solid #d8e4ef; border-radius: 8px; background: #fbfdff; container-type: inline-size; }
 .weather-threshold-config-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 8px; }
+.weather-threshold-config > summary { cursor: pointer; list-style: none; }
+.weather-threshold-config > summary::-webkit-details-marker { display: none; }
+.weather-threshold-config > summary::after { content: '+'; color: var(--ui-accent); font-size: 16px; line-height: 1; }
+.weather-threshold-config[open] > summary::after { content: '−'; }
+.weather-threshold-config > summary:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 2px; }
 .weather-threshold-config-heading strong { color: #344455; font-size: 11px; }
 .weather-threshold-config-heading small, .weather-threshold-note { color: var(--ui-muted); font-size: 10px; line-height: 1.4; }
 .weather-threshold-group { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }

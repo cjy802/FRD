@@ -169,15 +169,15 @@ onBeforeUnmount(() => { controller?.abort(); if (timer) clearTimeout(timer); if 
       <div class="weather-mini-grid"><div :class="metricTone('wind')"><span>飞行高度风</span><strong>{{ alignment.weather_risk.summary.max_wind_m_s?.toFixed(1) ?? '—' }} m/s</strong><small>最高风速</small></div><div :class="metricTone('crosswind')"><span>侧风</span><strong>{{ alignment.weather_risk.summary.max_crosswind_m_s?.toFixed(1) ?? '—' }} m/s</strong><small>横向风力</small></div><div :class="metricTone('visibility')"><span>地面能见度</span><strong>{{ alignment.weather_risk.summary.min_surface_visibility_m?.toFixed(0) ?? '—' }} m</strong><small>最低值</small></div></div>
     </template>
     <p v-else>{{ pending ? '正在计算沿线高度风及风雨提示…' : error || '等待路线与天气资料就绪。' }}</p>
-    <div v-if="coordinates" class="weather-threshold-config route-threshold-config" aria-label="沿线天气阈值配置">
-      <div class="weather-threshold-config-heading"><strong>沿线天气阈值</strong><small>{{ usesCustomThresholds ? '自定义阈值' : '演示阈值' }}</small></div>
+    <details v-if="coordinates" class="weather-threshold-config route-threshold-config" aria-label="沿线天气阈值配置">
+      <summary class="weather-threshold-config-heading"><strong>设置沿线天气阈值</strong><small>{{ usesCustomThresholds ? '当前为自定义阈值' : '当前为演示阈值' }}</small></summary>
       <div class="weather-threshold-group">
         <div class="weather-threshold-item"><strong>飞行高度风 · m/s</strong><label>较强提示线<input type="number" min="0.1" max="200" step="0.1" :value="displayedLimits.max_wind_m_s" @change="updateLimit('max_wind_m_s', $event)" /></label><small>关注线：{{ (displayedLimits.max_wind_m_s * .8).toFixed(1) }} m/s</small></div>
         <div class="weather-threshold-item"><strong>侧风 · m/s</strong><label>较强提示线<input type="number" min="0.1" max="200" step="0.1" :value="displayedLimits.max_crosswind_m_s" @change="updateLimit('max_crosswind_m_s', $event)" /></label><small>关注线：{{ (displayedLimits.max_crosswind_m_s * .8).toFixed(1) }} m/s</small></div>
         <div class="weather-threshold-item"><strong>地面能见度 · m</strong><label>较强提示线<input type="number" min="1" max="100000" step="1" :value="displayedLimits.min_visibility_m" @change="updateLimit('min_visibility_m', $event)" /></label><small>关注线：≤ {{ (displayedLimits.min_visibility_m / .8).toFixed(0) }} m</small></div>
       </div>
       <small class="weather-threshold-note">高度风覆盖离地 10–100 米；地面能见度和阵风是地面指标。预报网格与时次有限，不代表放飞许可。</small>
-    </div>
+    </details>
     <div v-if="!alignment && !pending && jobId && coordinates" class="weather-test-meta"><small>暂无六小时内的测试结果</small><button type="button" @click="requestAlignment">{{ error ? '重新测试' : '开始测试' }}</button></div>
   </div>
   <div class="status-block route-weather-panel" aria-label="任务时间和高度">
