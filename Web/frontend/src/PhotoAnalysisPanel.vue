@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   PhotoAnalysisApiError,
   fetchPhotoAnalysisHealth,
@@ -16,6 +16,10 @@ const emit = defineEmits<{ 'remove-frame': [index: number]; 'analysis-complete':
 const health = ref<PhotoAnalysisHealth | null>(null)
 const healthError = ref('')
 const selectedModel = ref('')
+const modelMenuOpen = ref(false)
+const modelPicker = ref<HTMLElement | null>(null)
+const modelTrigger = ref<HTMLButtonElement | null>(null)
+const modelOptionRefs = ref<HTMLButtonElement[]>([])
 const excludedFrames = ref<number[]>([])
 const siteName = ref('')
 const note = ref('')
@@ -33,6 +37,7 @@ watch(() => props.frames.map(frame => `${frame.file.name}:${frame.time_seconds}`
 })
 
 const selectedModelOption = computed(() => health.value?.models?.find(model => model.id === selectedModel.value) ?? null)
+const availableModelIndexes = computed(() => (health.value?.models ?? []).flatMap((model, index) => model.available ? [index] : []))
 const isRemoteModel = computed(() => selectedModel.value === 'remote-glm-puddle')
 const selectedFrames = computed(() => props.frames.filter((_, index) => !excludedFrames.value.includes(index)))
 const selectedFiles = computed(() => selectedFrames.value.map(frame => frame.file))
@@ -58,6 +63,94 @@ const modelSummary = computed(() => {
 
 function fractionPercent(value: number): string {
   return `${(value * 100).toFixed(1)}%`
+}
+
+function setModelOptionRef(element: unknown, index: number) {
+  if (element instanceof HTMLButtonElement) modelOptionRefs.value[index] = element
+}
+
+function focusModelOption(index: number) {
+  void nextTick(() => modelOptionRefs.value[index]?.focus())
+}
+
+function openModelMenu() {
+  if (busy.value || !health.value?.available || !availableModelIndexes.value.length) return
+  modelMenuOpen.value = true
+  const selectedIndex = health.value.models.findIndex(model => model.id === selectedModel.value && model.available)
+  focusModelOption(selectedIndex >= 0 ? selectedIndex : availableModelIndexes.value[0])
+}
+
+function closeModelMenu(restoreFocus = false) {
+  modelMenuOpen.value = false
+  if (restoreFocus) void nextTick(() => modelTrigger.value?.focus())
+}
+
+function toggleModelMenu() {
+  if (modelMenuOpen.value) closeModelMenu()
+  else openModelMenu()
+}
+
+function chooseModel(modelId: string) {
+  const model = health.value?.models?.find(item => item.id === modelId)
+  if (!model?.available || busy.value) return
+  selectedModel.value = modelId
+  closeModelMenu(true)
+}
+
+function focusAdjacentModel(currentIndex: number, direction: 1 | -1) {
+  const indexes = availableModelIndexes.value
+  if (!indexes.length) return
+  const position = indexes.indexOf(currentIndex)
+  const nextPosition = position < 0
+    ? (direction > 0 ? 0 : indexes.length - 1)
+    : (position + direction + indexes.length) % indexes.length
+  focusModelOption(indexes[nextPosition])
+}
+
+function onModelTriggerKeydown(event: KeyboardEvent) {
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault()
+    if (!modelMenuOpen.value) openModelMenu()
+    else {
+      const selectedIndex = health.value?.models.findIndex(model => model.id === selectedModel.value && model.available) ?? -1
+      focusAdjacentModel(selectedIndex, event.key === 'ArrowDown' ? 1 : -1)
+    }
+  } else if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault()
+    toggleModelMenu()
+  } else if (event.key === 'Escape' && modelMenuOpen.value) {
+    event.preventDefault()
+    closeModelMenu()
+  }
+}
+
+function onModelOptionKeydown(event: KeyboardEvent, index: number) {
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault()
+    focusAdjacentModel(index, event.key === 'ArrowDown' ? 1 : -1)
+  } else if (event.key === 'Home' || event.key === 'End') {
+    event.preventDefault()
+    const indexes = availableModelIndexes.value
+    if (indexes.length) focusModelOption(event.key === 'Home' ? indexes[0] : indexes[indexes.length - 1])
+  } else if (event.key === 'Escape') {
+    event.preventDefault()
+    closeModelMenu(true)
+  } else if (event.key === 'Tab') {
+    closeModelMenu()
+  }
+}
+
+function onDocumentPointerDown(event: PointerEvent) {
+  if (modelMenuOpen.value && !modelPicker.value?.contains(event.target as Node)) closeModelMenu()
+}
+
+function onPhotoPanelToggle(event: Event) {
+  if ((event.target as HTMLDetailsElement).open) void refreshHealth()
+  else closeModelMenu()
+}
+
+function onModelPickerFocusout(event: FocusEvent) {
+  if (!modelPicker.value?.contains(event.relatedTarget as Node | null)) closeModelMenu()
 }
 
 async function refreshHealth() {
@@ -167,11 +260,15 @@ function onPreviewDialogClose() {
 }
 
 refreshHealth()
-onUnmounted(stopPolling)
+onMounted(() => document.addEventListener('pointerdown', onDocumentPointerDown))
+onUnmounted(() => {
+  stopPolling()
+  document.removeEventListener('pointerdown', onDocumentPointerDown)
+})
 </script>
 
 <template>
-  <details class="photo-panel" @toggle="($event.target as HTMLDetailsElement).open && refreshHealth()">
+  <details class="photo-panel" @toggle="onPhotoPanelToggle">
     <summary>
       <span class="photo-heading">飞行后照片分析</span>
       <span v-if="health" :class="['photo-state', health.available ? 'is-ok' : 'is-off']">
@@ -188,12 +285,17 @@ onUnmounted(stopPolling)
       </div>
 
       <div class="photo-form">
-        <label for="photo-analysis-model">分割模型</label>
-        <select id="photo-analysis-model" v-model="selectedModel" class="photo-model-select" :disabled="busy || !health?.available">
-          <option v-for="model in health?.models ?? []" :key="model.id" :value="model.id" :disabled="!model.available">
-            {{ model.label }}{{ model.available ? '' : '（未就绪）' }}
-          </option>
-        </select>
+        <span id="photo-analysis-model-label" class="photo-model-label">分割模型</span>
+        <div ref="modelPicker" class="photo-model-picker" @focusout="onModelPickerFocusout">
+          <button id="photo-analysis-model" ref="modelTrigger" type="button" role="combobox" class="photo-model-select" :disabled="busy || !health?.available" :aria-labelledby="'photo-analysis-model-label'" aria-haspopup="listbox" aria-controls="photo-analysis-model-options" :aria-expanded="modelMenuOpen" @click="toggleModelMenu" @keydown="onModelTriggerKeydown">
+            <span class="photo-model-value">{{ selectedModelOption?.label ?? '选择分割模型' }}</span><span class="photo-model-chevron" :class="{ 'is-open': modelMenuOpen }" aria-hidden="true"></span>
+          </button>
+          <div v-if="modelMenuOpen" id="photo-analysis-model-options" class="photo-model-options" role="listbox" aria-labelledby="photo-analysis-model-label">
+          <button v-for="(model, index) in health?.models ?? []" :key="model.id" :ref="element => setModelOptionRef(element, index)" type="button" role="option" class="photo-model-option" :class="{ 'is-selected': model.id === selectedModel }" :disabled="!model.available" :aria-selected="model.id === selectedModel" @click="chooseModel(model.id)" @keydown="onModelOptionKeydown($event, index)">
+              <span>{{ model.label }}</span><span v-if="model.id === selectedModel" class="photo-model-check" aria-hidden="true">✓</span><span v-else-if="!model.available" class="photo-model-unavailable">未就绪</span>
+            </button>
+          </div>
+        </div>
         <small v-if="selectedModelOption" class="photo-model-description">{{ selectedModelOption.description }}</small>
         <p v-if="isRemoteModel" class="photo-feedback">所选任务关键帧会发送到 BigModel 接口处理；API Key 只保存在本机后端。返回多边形会在本机生成掩膜。</p>
         <label>任务关键帧（{{ selectedFiles.length }} / {{ frames.length }}）</label>
@@ -280,7 +382,22 @@ onUnmounted(stopPolling)
 .photo-toolbar small { color: var(--ui-muted); line-height: 1.4; }
 .photo-form { padding: 4px 0 10px; }
 .photo-form > label { display: block; margin-bottom: 4px; color: #424242; font-weight: 600; }
-.photo-model-select { display: block; width: 100%; min-width: 0; height: 32px; margin: 0 0 4px; padding: 4px 30px 4px 7px; border: 1px solid #d1d5db; border-radius: 6px; background-color: #f9fafb; color: #27364a; font-size: var(--font-caption); }
+.photo-model-label { display: block; margin-bottom: 4px; color: #424242; font-weight: 600; }
+.photo-model-picker { position: relative; z-index: 12; width: 100%; margin: 0 0 4px; }
+.photo-panel-body .photo-model-select { display: flex; width: 100%; min-width: 0; min-height: 32px; align-items: center; justify-content: space-between; gap: 10px; padding: 5px 10px; border: 1px solid #cbd5df; border-radius: 7px; background: #f9fafb; color: #27364a; font: inherit; font-size: var(--font-caption); text-align: left; }
+.photo-panel-body .photo-model-select:hover:not(:disabled) { transform: none; border-color: #9fc5e4; background: #fff; box-shadow: none; color: #27364a; }
+.photo-panel-body .photo-model-select:focus-visible { border-color: var(--ui-accent); outline: 2px solid var(--ui-accent); outline-offset: 2px; box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--ui-accent); }
+.photo-model-select:disabled { opacity: .55; cursor: not-allowed; }
+.photo-model-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.photo-model-chevron { width: 8px; height: 8px; flex: 0 0 auto; margin: -4px 2px 0 0; border-right: 2px solid #64748b; border-bottom: 2px solid #64748b; transform: rotate(45deg); transition: transform .16s ease, margin .16s ease; }
+.photo-model-chevron.is-open { margin-top: 4px; transform: rotate(225deg); }
+.photo-model-options { position: absolute; z-index: 1; top: calc(100% + 4px); left: 0; right: 0; display: grid; max-height: 260px; gap: 3px; padding: 4px; overflow-y: auto; border: 1px solid #cbd5df; border-radius: 8px; background: #fff; box-shadow: 0 8px 22px rgb(15 23 42 / .18); }
+.photo-panel-body .photo-model-options .photo-model-option { display: flex; width: 100%; min-height: 34px; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 9px; border: 1px solid transparent; border-radius: 5px; background: #fff; color: #344455; font-size: var(--font-caption); text-align: left; white-space: normal; }
+.photo-panel-body .photo-model-options .photo-model-option:hover:not(:disabled), .photo-panel-body .photo-model-options .photo-model-option:focus-visible { transform: none; border-color: #d6e7f5; background: #f2f8fd; box-shadow: none; color: #1769aa; outline: none; }
+.photo-panel-body .photo-model-options .photo-model-option.is-selected { border-color: #c5def2; background: #e6f1fb; color: #126cb7; font-weight: 700; }
+.photo-panel-body .photo-model-options .photo-model-option:disabled { opacity: .55; cursor: not-allowed; }
+.photo-model-check { flex: 0 0 auto; color: #087b76; font-weight: 800; }
+.photo-model-unavailable { flex: 0 0 auto; color: var(--ui-muted); font-size: 10px; }
 .photo-model-description { display: block; margin: 0 0 8px; color: var(--ui-muted); line-height: 1.4; }
 .photo-file-selection { min-width: 0; overflow: hidden; color: var(--ui-muted); text-overflow: ellipsis; white-space: nowrap; }
 .photo-frame-list { display: grid; max-height: 200px; gap: 5px; margin: 5px 0; padding: 0; overflow: auto; list-style: none; }

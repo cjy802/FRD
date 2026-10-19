@@ -305,6 +305,8 @@ onBeforeUnmount(() => {
     <p v-else>等待未来天气预报生成后评估风雨提示。</p>
   </div>
 
+  <slot name="route-weather" />
+
   <div class="status-block weather-data-panel" aria-label="详细天气">
     <div class="status-title"><span>详细天气</span><b class="weather-state">{{ weatherLabel }}</b></div>
     <div class="weather-live-actions weather-cache-toolbar">
