@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 
 const props = defineProps<{ altitudeM: number; start: { latitude: number; longitude: number }; end: { latitude: number; longitude: number } }>()
 const emit = defineEmits<{
@@ -8,6 +8,11 @@ const emit = defineEmits<{
   'point-risk-changed': [level: string | null]
 }>()
 type Field = 't2m_K' | 'u10_m_s' | 'v10_m_s' | 'msl_Pa' | 'tp_6h_mm'
+type GroundThresholds = {
+  temperature_min_c: number; temperature_max_c: number
+  wind_attention_m_s: number; wind_elevated_m_s: number
+  rain_attention_6h_mm: number; rain_elevated_6h_mm: number
+}
 type Forecast = {
   init_time_utc: string; valid_time_utc: string; generated_at_utc: string
   lead_hours: number; historical: boolean
@@ -19,7 +24,7 @@ type Forecast = {
   derived: { wind_speed_10m_m_s: number; wind_direction_from_deg: number | null }
   point_risk: {
     level: string; label: string; message: string; route_reason: string
-    triggers: { field: string; label: string; value: number; unit: string; threshold: number }[]
+    triggers: { field: string; label: string; value: number; unit: string; threshold: number; level?: string; reason?: string }[]
     rules: { wind_attention_m_s: number; wind_elevated_m_s: number; rain_attention_6h_mm: number; rain_elevated_6h_mm: number }
   }
 }
@@ -35,7 +40,13 @@ type Job = {
 }
 type WeatherCache = { job_id: string; forecast: Forecast; ground_series: GroundSeries | null }
 const WEATHER_CACHE_KEY = 'low-altitude-latest-weather-v1'
+const POINT_THRESHOLDS_KEY = 'low-altitude-point-weather-thresholds-v1'
 const MAX_CACHE_AGE_MS = 6 * 60 * 60 * 1000
+const pointThresholds = reactive<GroundThresholds>({
+  temperature_min_c: 0, temperature_max_c: 40,
+  wind_attention_m_s: 8, wind_elevated_m_s: 12,
+  rain_attention_6h_mm: 1, rain_elevated_6h_mm: 5,
+})
 
 const forecast = ref<Forecast | null>(null)
 const loading = ref(false)
@@ -75,13 +86,70 @@ const forecastAgeLabel = computed(() => {
 })
 const forecastNeedsRefresh = computed(() => Boolean(forecast.value
   && (forecastAgeMs.value >= MAX_CACHE_AGE_MS || new Date(forecast.value.valid_time_utc).getTime() <= ageClock.value)))
+const pointThresholdError = computed(() => {
+  if (![pointThresholds.temperature_min_c, pointThresholds.temperature_max_c, pointThresholds.wind_attention_m_s,
+    pointThresholds.wind_elevated_m_s, pointThresholds.rain_attention_6h_mm, pointThresholds.rain_elevated_6h_mm].every(Number.isFinite)) return '阈值必须填写有效数字。'
+  if (pointThresholds.temperature_min_c >= pointThresholds.temperature_max_c) return '温度低温线必须小于高温线。'
+  if (pointThresholds.wind_attention_m_s >= pointThresholds.wind_elevated_m_s) return '地面风关注线必须小于较强提示线。'
+  if (pointThresholds.rain_attention_6h_mm >= pointThresholds.rain_elevated_6h_mm) return '降雨关注线必须小于较强提示线。'
+  return ''
+})
+const pointRisk = computed(() => {
+  if (!forecast.value) return null
+  if (pointThresholdError.value) return { ...forecast.value.point_risk, level: 'incomplete', label: '阈值配置需检查', triggers: [], message: pointThresholdError.value }
+  const triggers: Forecast['point_risk']['triggers'] = []
+  const temperature = forecast.value.values.t2m_K - 273.15
+  const addTrigger = (field: string, label: string, value: number, unit: string, threshold: number, level: 'attention' | 'elevated', operator: string) => {
+    triggers.push({ field, label, value, unit, threshold, level, reason: `${label} ${value.toFixed(1)} ${unit} ${operator} ${threshold.toFixed(1)} ${unit}` })
+  }
+  if (temperature < pointThresholds.temperature_min_c) {
+    addTrigger('temperature', '低温', temperature, '°C', pointThresholds.temperature_min_c, 'attention', '低于')
+  } else if (temperature > pointThresholds.temperature_max_c) {
+    addTrigger('temperature', '高温', temperature, '°C', pointThresholds.temperature_max_c, 'attention', '高于')
+  }
+  const wind = forecast.value.derived.wind_speed_10m_m_s
+  if (wind >= pointThresholds.wind_elevated_m_s) addTrigger('wind', '地面风', wind, 'm/s', pointThresholds.wind_elevated_m_s, 'elevated', '≥')
+  else if (wind >= pointThresholds.wind_attention_m_s) addTrigger('wind', '地面风', wind, 'm/s', pointThresholds.wind_attention_m_s, 'attention', '≥')
+  const rain = forecast.value.values.tp_6h_mm
+  if (rain >= pointThresholds.rain_elevated_6h_mm) addTrigger('rain', '6 小时降雨', rain, 'mm/6h', pointThresholds.rain_elevated_6h_mm, 'elevated', '≥')
+  else if (rain >= pointThresholds.rain_attention_6h_mm) addTrigger('rain', '6 小时降雨', rain, 'mm/6h', pointThresholds.rain_attention_6h_mm, 'attention', '≥')
+  const level = triggers.some(trigger => trigger.level === 'elevated') ? 'elevated' : triggers.length ? 'attention' : 'no_trigger'
+  return {
+    ...forecast.value.point_risk,
+    level,
+    label: level === 'elevated' ? '需要重点留意' : level === 'attention' ? '需要留意' : '暂未发现明显提醒',
+    triggers,
+    message: triggers.length ? triggers.map(trigger => trigger.reason).join('；') : '当前参考点没有超过配置的提醒阈值。',
+    rules: { ...forecast.value.point_risk.rules, ...pointThresholds },
+  }
+})
 function riskLabel(level: string, fallback: string) {
   return ({ elevated: '需要重点留意', attention: '需要留意', no_trigger: '暂未发现明显提醒', incomplete: '资料不完整' } as Record<string, string>)[level] || fallback
 }
 const groundSummary = computed(() => {
   if (!forecast.value) return '等待未来天气预报生成后评估路线中点附近天气。'
-  return forecast.value.point_risk.triggers.length ? '路线中点附近有风雨因素需要留意。' : '路线中点附近暂未发现超过当前提醒线的风雨。'
+  if (pointThresholdError.value) return `中点天气阈值配置有误：${pointThresholdError.value}`
+  const summary = pointRisk.value?.triggers.length ? '路线中点附近有天气因素需要留意' : '路线中点附近暂未发现超过当前提醒线的天气因素'
+  return `${summary}；此处只是起终点之间的地面参考位置，整条路线和飞行高度请看“沿线天气检查”。`
 })
+function restorePointThresholds() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(POINT_THRESHOLDS_KEY) ?? 'null') as Partial<GroundThresholds> | null
+    if (saved) for (const key of Object.keys(pointThresholds) as (keyof GroundThresholds)[]) {
+      const value = saved[key]
+      if (typeof value === 'number' && Number.isFinite(value)) pointThresholds[key] = value
+    }
+  } catch {
+    // Keep the demonstration defaults if browser storage is unavailable.
+  }
+}
+function savePointThresholds() {
+  try { localStorage.setItem(POINT_THRESHOLDS_KEY, JSON.stringify(pointThresholds)) } catch {
+    // Thresholds remain editable for the current page session.
+  }
+}
+watch(pointThresholds, savePointThresholds, { deep: true })
+watch(pointThresholds, () => emit('point-risk-changed', pointRisk.value?.level ?? null), { deep: true, flush: 'sync' })
 const routePoint = computed(() => ({
   latitude: (props.start.latitude + props.end.latitude) / 2,
   longitude: (props.start.longitude + props.end.longitude) / 2,
@@ -104,7 +172,7 @@ function restoreWeatherCache(): boolean {
     const value = JSON.parse(raw) as WeatherCache
     if (!value.job_id || !value.forecast?.generated_at_utc || !value.forecast?.valid_time_utc) return false
     forecast.value = value.forecast
-    emit('point-risk-changed', value.forecast.point_risk?.level ?? null)
+    emit('point-risk-changed', pointRisk.value?.level ?? null)
     displayedForecastJob.value = value.job_id
     groundSeries.value = value.ground_series ?? null
     message.value = '已恢复上一次天气结果，正在检查本机缓存。'
@@ -132,7 +200,7 @@ async function sampleRouteWeather() {
     if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : '区域天气查询失败。')
     if (controller.signal.aborted || controller !== sampleController) return
     forecast.value = payload
-    emit('point-risk-changed', payload.point_risk?.level ?? null)
+    emit('point-risk-changed', pointRisk.value?.level ?? null)
     displayedForecastJob.value = completedJob.value
     groundSeries.value = null
     error.value = ''
@@ -175,13 +243,9 @@ function localTime(time: string) {
 function metricValue(field: Field, value: number) {
   return (field === 't2m_K' ? value - 273.15 : value).toFixed(2)
 }
-function metricTone(field: 'wind' | 'rain') {
-  const value = field === 'wind' ? forecast.value?.derived.wind_speed_10m_m_s : forecast.value?.values.tp_6h_mm
-  const rules = forecast.value?.point_risk.rules
-  if (value === undefined || value === null || !rules) return ''
-  const attention = field === 'wind' ? rules.wind_attention_m_s : rules.rain_attention_6h_mm
-  const elevated = field === 'wind' ? rules.wind_elevated_m_s : rules.rain_elevated_6h_mm
-  return value >= elevated ? 'is-danger' : value >= attention ? 'is-attention' : ''
+function metricTone(field: 'temperature' | 'wind' | 'rain') {
+  const level = pointRisk.value?.triggers.find(trigger => trigger.field === field)?.level
+  return level === 'elevated' ? 'is-danger' : level === 'attention' ? 'is-attention' : ''
 }
 async function readJob(response: Response): Promise<Job> {
   const payload = await response.json()
@@ -214,7 +278,7 @@ function applyJob(job: Job, controller: AbortController) {
     if (!forecast.value || new Date(job.forecast.generated_at_utc).getTime()
       > new Date(forecast.value.generated_at_utc).getTime()) {
       forecast.value = job.forecast
-      emit('point-risk-changed', job.forecast.point_risk?.level ?? null)
+      emit('point-risk-changed', pointRisk.value?.level ?? null)
       displayedForecastJob.value = job.job_id
       groundSeries.value = null
     }
@@ -302,16 +366,26 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <Teleport to="#weather-reference-slot">
   <div class="status-block weather-risk-panel" aria-label="路线中点参考天气">
-    <div class="status-title"><span>路线中点参考天气</span><b :class="forecast ? `risk-${forecast.point_risk.level}` : 'pending'">{{ forecast ? riskLabel(forecast.point_risk.level, forecast.point_risk.label) : (loading ? '等待预测' : '待评估') }}</b></div>
+    <div class="status-title"><span>路线中点参考天气</span><b :class="pointRisk ? `risk-${pointRisk.level}` : 'pending'">{{ pointRisk ? riskLabel(pointRisk.level, pointRisk.label) : (loading ? '等待预测' : '待评估') }}</b></div>
     <template v-if="forecast">
       <p class="plain-summary">{{ groundSummary }}</p>
-      <div class="weather-mini-grid"><div><span>温度</span><strong>{{ (forecast.values.t2m_K - 273.15).toFixed(1) }}°C</strong></div><div :class="metricTone('wind')"><span>地面风</span><strong>{{ forecast.derived.wind_speed_10m_m_s.toFixed(1) }} m/s</strong></div><div :class="metricTone('rain')"><span>6 小时降雨</span><strong>{{ forecast.values.tp_6h_mm.toFixed(1) }} mm</strong></div></div>
-      <small class="weather-scope">这里看的是起终点之间一个参考位置的地面天气；整条路线和任务高度请看“沿线天气检查”。</small>
-      <details class="weather-rule-details"><summary>查看提醒规则</summary><p>风速达到 {{ forecast.point_risk.rules.wind_attention_m_s }} / {{ forecast.point_risk.rules.wind_elevated_m_s }} m/s，或 6 小时降雨达到 {{ forecast.point_risk.rules.rain_attention_6h_mm }} / {{ forecast.point_risk.rules.rain_elevated_6h_mm }} mm，会分别显示关注 / 较强提醒。</p><small>{{ forecast.point_risk.message }}</small></details>
+      <div class="weather-mini-grid"><div :class="metricTone('temperature')"><span>温度</span><strong>{{ (forecast.values.t2m_K - 273.15).toFixed(1) }}°C</strong></div><div :class="metricTone('wind')"><span>地面风</span><strong>{{ forecast.derived.wind_speed_10m_m_s.toFixed(1) }} m/s</strong></div><div :class="metricTone('rain')"><span>6 小时降雨</span><strong>{{ forecast.values.tp_6h_mm.toFixed(1) }} mm</strong></div></div>
+      <div class="weather-threshold-config" aria-label="中点地面天气阈值配置">
+        <div class="weather-threshold-config-heading"><strong>中点地面天气阈值</strong><small>示例阈值，可按机型说明书调整</small></div>
+        <div class="weather-threshold-group">
+          <div class="weather-threshold-item"><strong>温度范围 · °C</strong><label>低温提醒<input v-model.number="pointThresholds.temperature_min_c" type="number" min="-80" max="80" step="1" /></label><label>高温提醒<input v-model.number="pointThresholds.temperature_max_c" type="number" min="-80" max="80" step="1" /></label></div>
+          <div class="weather-threshold-item"><strong>地面风速 · m/s</strong><label>关注 ≥<input v-model.number="pointThresholds.wind_attention_m_s" type="number" min="0" max="200" step="0.1" /></label><label>较强 ≥<input v-model.number="pointThresholds.wind_elevated_m_s" type="number" min="0" max="200" step="0.1" /></label></div>
+          <div class="weather-threshold-item"><strong>6 小时降雨 · mm</strong><label>关注 ≥<input v-model.number="pointThresholds.rain_attention_6h_mm" type="number" min="0" max="500" step="0.1" /></label><label>较强 ≥<input v-model.number="pointThresholds.rain_elevated_6h_mm" type="number" min="0" max="500" step="0.1" /></label></div>
+        </div>
+        <p v-if="pointThresholdError" class="weather-threshold-error" role="alert">{{ pointThresholdError }}</p>
+        <small class="weather-threshold-note">仅评估中点地面温度、10 米风和 6 小时降雨，不是飞行限值。</small>
+      </div>
     </template>
     <p v-else>等待未来天气预报生成后评估风雨提示。</p>
   </div>
+  </Teleport>
 
   <slot name="route-weather" />
 
