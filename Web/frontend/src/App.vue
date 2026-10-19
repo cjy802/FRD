@@ -807,8 +807,17 @@ const flightFootprint = computed(() => {
     return [Cesium.Math.toDegrees(point.longitude), Cesium.Math.toDegrees(point.latitude), point.height]
   })
 })
+const decisionLevel = computed(() => {
+  const risk = routeAssessment.value?.weather_risk
+  if (!risk) return null
+  const alerts = risk.alerts ?? []
+  if (risk.level === 'elevated' || alerts.some(alert => alert.level === 'elevated')) return 'elevated'
+  if (risk.level === 'attention' || alerts.some(alert => alert.level === 'attention')) return 'attention'
+  if (risk.level === 'incomplete' || !risk.coverage_complete) return 'incomplete'
+  return 'no_trigger'
+})
 const decisionTone = computed(() => {
-  if (routeAssessment.value) return `risk-${routeAssessment.value.weather_risk.level}`
+  if (routeAssessment.value) return `risk-${decisionLevel.value}`
   return routePhase.value.error || ['blocked', 'failed'].includes(weatherState.value.status) ? 'risk-incomplete' : 'pending'
 })
 const decisionTitle = computed(() => {
@@ -822,7 +831,7 @@ const decisionTitle = computed(() => {
     attention: '有天气因素需要留意',
     elevated: '发现较强天气提醒',
     incomplete: '天气资料不完整，暂不能判断',
-  } as Record<string, string>)[routeAssessment.value.weather_risk.level] || '天气初筛已完成'
+  } as Record<string, string>)[decisionLevel.value ?? 'incomplete'] || '天气初筛已完成'
 })
 const decisionDescription = computed(() => {
   if (!weatherCoordinates.value) return '先在左侧完成所有主点和飞行参数，系统才能沿路线匹配天气。'
@@ -830,8 +839,8 @@ const decisionDescription = computed(() => {
   if (routePhase.value.error) return routePhase.value.error
   if (routePhase.value.pending) return '系统正在按出发时间、飞行高度和路线逐点检查天气。'
   if (!routeAssessment.value) return '结果出来后，这里会先告诉你是否有需要留意的天气因素。'
-  if (routeAssessment.value.weather_risk.level === 'no_trigger') return '已覆盖的风、降雨、阵风和能见度没有触发当前规则。仍需结合机型和现场情况核验。'
-  if (routeAssessment.value.weather_risk.level === 'incomplete') return '部分路线缺少可用的高度或时间资料，不能把“没有提醒”理解为安全。'
+  if (decisionLevel.value === 'no_trigger') return '整条路线天气资料覆盖完整，风、降雨、阵风和能见度均未触发当前提醒线。仍需结合机型和现场情况核验。'
+  if (decisionLevel.value === 'incomplete') return '部分路线缺少可用的高度或时间资料，当前判断不完整，不能把“没有提醒”理解为安全。'
   return '较强提醒指标已用红框标出，接近提醒线的指标用橙框标出；可展开沿线天气查看地图点位。这个结果只是天气初筛。'
 })
 const weatherChecks = computed(() => routeAssessment.value ? weatherOnlyChecks(routeAssessment.value.decision) : [])
