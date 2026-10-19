@@ -9,7 +9,8 @@ type AnchorRole = 'start' | 'middle' | 'end'
 type Anchor = Point & { id: string; label?: string; role?: AnchorRole }
 type OverlayPoint = { x: number; y: number; index?: number; id?: string; label?: string; role?: AnchorRole; selected?: boolean }
 type WeatherOverlayPoint = {
-  index: number; x: number; y: number; popupX: number; popupY: number; placement: 'above' | 'below'
+  index: number; x: number; y: number; markerX: number; markerY: number; leaderLength: number; leaderAngle: number
+  popupX: number; popupY: number; placement: 'above' | 'below'
   time: string; level: string; riskLabel: string; reasons: string; coordinateLabel: string
   temperature: string; groundWind: string; heightWind: string; gust: string; visibility: string; rain: string
 }
@@ -81,6 +82,8 @@ function sameWeatherPoints(first: WeatherOverlayPoint[], second: WeatherOverlayP
   return first.every((point, index) => {
     const previous = second[index]
     return point.index === previous.index && point.x === previous.x && point.y === previous.y
+      && point.markerX === previous.markerX && point.markerY === previous.markerY
+      && point.leaderLength === previous.leaderLength && point.leaderAngle === previous.leaderAngle
       && point.popupX === previous.popupX && point.popupY === previous.popupY && point.placement === previous.placement
       && point.time === previous.time && point.level === previous.level && point.riskLabel === previous.riskLabel
       && point.reasons === previous.reasons && point.coordinateLabel === previous.coordinateLabel && point.temperature === previous.temperature
@@ -171,7 +174,42 @@ function renderOverlay() {
   const mapWidth = earthElement.value?.clientWidth ?? 0
   const mapHeight = earthElement.value?.clientHeight ?? 0
   const popupWidth = Math.min(258, Math.max(0, mapWidth - 16))
-  const popupHeight = 162
+  const popupHeight = 190
+  const placedWeatherMarkers = new Map<string, { x: number; y: number }[]>()
+  const protectedPoints = [
+    ...anchors.map(point => ({ x: point.x, y: point.y })),
+    ...nodes.filter(point => point.index === props.selectedIndex).map(point => ({ x: point.x, y: point.y })),
+  ]
+  const nearbyMarkers = (x: number, y: number) => {
+    const cellX = Math.floor(x / 32)
+    const cellY = Math.floor(y / 32)
+    const nearby: { x: number; y: number }[] = []
+    for (let dx = -2; dx <= 2; dx += 1) for (let dy = -2; dy <= 2; dy += 1) {
+      nearby.push(...(placedWeatherMarkers.get(`${cellX + dx}:${cellY + dy}`) ?? []))
+    }
+    return nearby
+  }
+  const placeWeatherMarker = (x: number, y: number) => {
+    const offsets = [{ x: 0, y: 0 }]
+    for (const radius of [28, 38, 48]) for (let step = 0; step < 8; step += 1) {
+      const angle = step * Math.PI / 4
+      offsets.push({ x: Math.cos(angle) * radius, y: Math.sin(angle) * radius })
+    }
+    const obstacles = [...protectedPoints, ...nearbyMarkers(x, y)]
+    const candidates = offsets.map(offset => ({ x: x + offset.x, y: y + offset.y, distance: Math.hypot(offset.x, offset.y) }))
+      .filter(point => mapWidth < 28 || (point.x >= 14 && point.x <= mapWidth - 14))
+      .filter(point => mapHeight < 28 || (point.y >= 14 && point.y <= mapHeight - 14))
+    const separation = (point: { x: number; y: number }) => obstacles.reduce((minimum, obstacle) =>
+      Math.min(minimum, Math.hypot(point.x - obstacle.x, point.y - obstacle.y)), Number.POSITIVE_INFINITY)
+    const fallback = candidates[0] ?? { x, y, distance: 0 }
+    const placed = candidates.find(point => separation(point) >= 30)
+      ?? candidates.reduce((best, point) => separation(point) - point.distance * .02 > separation(best) - best.distance * .02 ? point : best, fallback)
+    const cell = `${Math.floor(placed.x / 32)}:${Math.floor(placed.y / 32)}`
+    placedWeatherMarkers.set(cell, [...(placedWeatherMarkers.get(cell) ?? []), { x: placed.x, y: placed.y }])
+    const dx = placed.x - x
+    const dy = placed.y - y
+    return { markerX: placed.x, markerY: placed.y, leaderLength: Math.hypot(dx, dy), leaderAngle: Math.atan2(dy, dx) * 180 / Math.PI }
+  }
   const weatherPoints = (props.weatherSamples ?? []).flatMap(sample => {
     const routePoint = props.route?.[sample.index]
     const altitude = props.viewMode === '2d' ? 3 : (routePoint?.[2] ?? props.weatherAltitudeM ?? 100)
@@ -181,15 +219,17 @@ function renderOverlay() {
     const level = pointRisk?.level ?? 'no_trigger'
     const reasons = pointRisk?.triggers.map(trigger => trigger.reason).join('；') ?? ''
     const visibility = sample.height_weather?.visibility_surface_m
+    const marker = placeWeatherMarker(pixel.x, pixel.y)
     const popupX = mapWidth > popupWidth + 16
-      ? Math.max(popupWidth / 2 + 8, Math.min(mapWidth - popupWidth / 2 - 8, pixel.x)) : mapWidth / 2
-    const placement: WeatherOverlayPoint['placement'] = pixel.y < popupHeight + 24 ? 'below' : 'above'
+      ? Math.max(popupWidth / 2 + 8, Math.min(mapWidth - popupWidth / 2 - 8, marker.markerX)) : mapWidth / 2
+    const placement: WeatherOverlayPoint['placement'] = marker.markerY < popupHeight + 24 ? 'below' : 'above'
     const popupY = placement === 'below'
-      ? Math.max(8, Math.min(mapHeight - popupHeight - 8, pixel.y + 18))
-      : Math.max(popupHeight + 8, Math.min(mapHeight - 8, pixel.y - 16))
+      ? Math.max(8, Math.min(mapHeight - popupHeight - 8, marker.markerY + 18))
+      : Math.max(popupHeight + 8, Math.min(mapHeight - 8, marker.markerY - 16))
     return [{
       index: sample.index,
       ...pixel,
+      ...marker,
       popupX,
       popupY,
       placement,
@@ -416,7 +456,8 @@ onBeforeUnmount(() => {
       <span v-for="anchor in overlay.anchors" :key="anchor.id" class="earth-endpoint" :class="[anchor.role, { selected: anchor.selected }]" :style="{ left: `${anchor.x}px`, top: `${anchor.y}px` }">{{ anchor.label }}</span>
       <span v-for="target in overlay.captureTargets" :key="`video-target-${target.id}`" class="earth-capture-target" :title="`${target.label} · ${Math.floor(target.time_seconds / 60)}:${String(Math.floor(target.time_seconds % 60)).padStart(2, '0')}`" :aria-label="`${target.label} 拍摄位置`" :style="{ left: `${target.x}px`, top: `${target.y}px` }">{{ target.marker }}</span>
       <span v-if="overlay.weatherPoints.length" class="earth-weather-hint">点击编号查看该点天气</span>
-      <button v-for="point in overlay.weatherPoints" :key="`weather-point-${point.index}`" type="button" class="earth-weather-marker" :class="[`is-${point.level}`, { selected: point.index === selectedWeatherPointIndex }]" :title="`查看航线点 ${point.index + 1} 天气`" :aria-label="`查看航线点 ${point.index + 1} 天气，${point.riskLabel}`" :aria-pressed="point.index === selectedWeatherPointIndex" :style="{ left: `${point.x}px`, top: `${point.y}px` }" @click.stop="selectedWeatherPointIndex = point.index">{{ point.index + 1 }}</button>
+      <span v-for="point in overlay.weatherPoints" :key="`weather-leader-${point.index}`" class="earth-weather-leader" aria-hidden="true" :style="{ left: `${point.x}px`, top: `${point.y}px`, width: `${point.leaderLength}px`, transform: `rotate(${point.leaderAngle}deg)` }"></span>
+      <button v-for="point in overlay.weatherPoints" :key="`weather-point-${point.index}`" type="button" class="earth-weather-marker" :class="[`is-${point.level}`, { selected: point.index === selectedWeatherPointIndex }]" :title="`查看航线点 ${point.index + 1} 天气`" :aria-label="`查看航线点 ${point.index + 1} 天气，${point.riskLabel}`" :aria-pressed="point.index === selectedWeatherPointIndex" :style="{ left: `${point.markerX}px`, top: `${point.markerY}px` }" @click.stop="selectedWeatherPointIndex = point.index">{{ point.index + 1 }}</button>
       <article v-if="selectedWeatherPoint" class="earth-weather-popover" :class="[`is-${selectedWeatherPoint.level}`, `is-${selectedWeatherPoint.placement}`]" :style="{ left: `${selectedWeatherPoint.popupX}px`, top: `${selectedWeatherPoint.popupY}px` }" @click.stop>
         <header><div><strong>航线点 {{ selectedWeatherPoint.index + 1 }}</strong><span>{{ selectedWeatherPoint.time }} · {{ selectedWeatherPoint.riskLabel }}</span></div><button type="button" aria-label="关闭点位天气" @click="selectedWeatherPointIndex = null">×</button></header>
         <small class="earth-weather-coordinate">坐标 {{ selectedWeatherPoint.coordinateLabel }}</small>
@@ -448,6 +489,7 @@ onBeforeUnmount(() => {
 .earth-video-legend .position-key { background: #0f6cbd; }
 .earth-video-legend .target-key { background: #d97706; }
 .earth-weather-hint { position: absolute; z-index: 4; top: 12px; right: 12px; padding: 6px 9px; border: 1px solid #d8e0e7; border-radius: 6px; background: rgb(255 255 255 / .96); color: #526273; font-size: 11px; }
+.earth-weather-leader { position: absolute; z-index: 3; height: 1.5px; transform-origin: left center; background: #0f6cbd; opacity: .72; pointer-events: none; }
 .earth-weather-marker { position: absolute; z-index: 4; display: grid; width: 26px; height: 26px; transform: translate(-50%, -50%); place-items: center; padding: 0; border: 2px solid #fff; border-radius: 50%; background: #0f6cbd; box-shadow: 0 1px 5px rgb(15 23 42 / .45); color: #fff; font-family: inherit; font-size: 10px; font-weight: 700; line-height: 1; pointer-events: auto; cursor: pointer; }
 .earth-weather-marker.is-attention { background: #c77900; }
 .earth-weather-marker.is-elevated { background: #bd302b; }
@@ -469,7 +511,7 @@ onBeforeUnmount(() => {
 .earth-weather-values span { color: #64748b; white-space: nowrap; }
 .earth-weather-values b { color: #26394c; font-weight: 600; text-align: right; white-space: nowrap; }
 .earth-weather-reason { padding-top: 6px; border-top: 1px solid #eef0f2; color: #a4262c; font-size: 10px; line-height: 1.35; }
-.earth-node { position: absolute; width: 32px; height: 32px; transform: translate(-50%, -50%); display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: transparent; pointer-events: auto; cursor: pointer; touch-action: none; }
+.earth-node { position: absolute; z-index: 5; width: 32px; height: 32px; transform: translate(-50%, -50%); display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: transparent; pointer-events: auto; cursor: pointer; touch-action: none; }
 .earth-node:hover:not(:disabled), .earth-node:active:not(:disabled) { transform: translate(-50%, -50%); box-shadow: none; }
 .earth-node span { width: 12px; height: 12px; border: 2px solid #fff; border-radius: 50%; background: #00e5a8; box-shadow: 0 1px 5px #12343b; }
 .earth-node.selected span { width: 18px; height: 18px; background: #ffb547; }
