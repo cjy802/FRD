@@ -225,6 +225,8 @@ type WaypointSetting = {
 }
 const waypointSettings = ref<WaypointSetting[]>([])
 const waypointEditorExpanded = ref(false)
+const waypointEditorTrigger = ref<HTMLButtonElement | null>(null)
+const waypointEditorDialog = ref<HTMLElement | null>(null)
 const batchBoundaryIds = ref<string[]>([])
 const batchHeadingInput = ref('')
 const batchPitchInput = ref('')
@@ -1436,8 +1438,16 @@ function applyBatchCamera() {
   scheduleWaypointRender(true)
 }
 
-function onWaypointEditorToggle(event: Event) {
-  waypointEditorExpanded.value = (event.target as HTMLDetailsElement).open
+async function openWaypointEditor() {
+  if (!waypointSettings.value.length) return
+  waypointEditorExpanded.value = true
+  await nextTick()
+  waypointEditorDialog.value?.focus({ preventScroll: true })
+}
+
+function closeWaypointEditor() {
+  waypointEditorExpanded.value = false
+  void nextTick(() => waypointEditorTrigger.value?.focus({ preventScroll: true }))
 }
 
 function selectWaypoint(index: number) {
@@ -2488,6 +2498,29 @@ onBeforeUnmount(() => {
         </div>
       </Teleport>
 
+      <Teleport to="body">
+        <div v-if="waypointEditorExpanded" class="waypoint-editor-backdrop" @click.self="closeWaypointEditor">
+          <section ref="waypointEditorDialog" class="waypoint-editor-dialog" role="dialog" aria-modal="true" aria-labelledby="waypoint-editor-title" tabindex="-1" @keydown.esc.stop.prevent="closeWaypointEditor" @change="markWaypointEdited">
+            <header class="waypoint-editor-heading">
+              <div><h2 id="waypoint-editor-title">逐点设置高度和面向</h2><small>{{ waypointSettings.length }} 个航点 · 每个航点可单独设置</small></div>
+              <button type="button" aria-label="关闭逐点设置" @click="closeWaypointEditor">关闭</button>
+            </header>
+            <div class="waypoint-editor-body">
+              <p class="waypoint-editor-note">高度相对起飞点；机头角度控制水平朝向，真北为 0°。摄像头俯仰默认 0°（水平），负数向下。</p>
+              <p v-if="waypointSettings.length > 200" class="waypoint-editor-note">此处列出前 200 个点和当前选中点；完整路线仍保留全部 {{ waypointSettings.length }} 个点。</p>
+              <div v-for="{ setting, index } in editorWaypoints" :key="index" class="waypoint-row" :data-waypoint-index="index">
+                <strong>点 {{ index + 1 }}</strong>
+                <label>高度（m）<input v-model.number="setting.altitude_m" type="number" min="1" max="1500" step="1" /></label>
+                <label>机头方向<select v-model="setting.heading_mode"><option value="followWayline">沿航线</option><option value="fixed">固定角度</option><option value="smoothTransition">平滑转向</option><option value="manually">手动控制</option></select></label>
+                <label v-if="setting.heading_mode === 'fixed' || setting.heading_mode === 'smoothTransition'">机头角度（°）<input v-model.number="setting.heading_angle" type="number" step="1" /></label>
+                <label>摄像头俯仰（°）<input v-model.number="setting.gimbal_pitch_angle" type="number" min="-90" max="45" step="1" /></label>
+              </div>
+            </div>
+            <footer class="waypoint-editor-footer"><button type="button" @click="closeWaypointEditor">完成</button></footer>
+          </section>
+        </div>
+      </Teleport>
+
       <aside id="mission-sidebar" class="sidebar module-panel" :class="[{ 'panel-active': workspacePanel === 'settings', 'module-active': activeModule === 'route' || activeModule === 'photos' }, `module-mode-${activeModule}`]" aria-label="航线设置">
         <div v-if="activeModule === 'route'" class="section-heading"><span class="eyebrow"><span class="svg-icon icon-route" aria-hidden="true"></span>第 1 步 · 选定航线</span><h1>规划本次飞行</h1><PlaceSearch :disabled="loading || checkingPoint" :targets="anchorChoices" :selection-feedback="placeSelectionFeedback" @choose-point="chooseSearchedPoint" @clear-selection-feedback="placeSelectionFeedback = null" /></div>
 
@@ -2527,7 +2560,7 @@ onBeforeUnmount(() => {
           <div class="coordinate-row"><label>离地高度 AGL · 米<input v-model.number="form.altitude_m" type="number" min="0" max="1000" required :disabled="loading" /></label><label>巡航速度 · km/h<input v-model.number="form.speed_kmh" type="number" min="1" max="200" step="0.5" required :disabled="loading" /></label></div>
           <small class="form-scope-note">目前高度风覆盖 10–100 米；范围外会标记缺测。</small>
           <div class="clearance-row"><label>建筑缓冲 · 米（演示）<input v-model.number="form.clearance_m" type="number" min="0" max="20" step="0.5" required :disabled="loading || roadSource === 'online'" /></label><span>{{ roadSource === 'local' ? '用于排除靠近建筑的道路段' : '在线机动车路线不使用此参数' }}</span></div>
-          <details class="waypoint-editor" @toggle="onWaypointEditorToggle"><summary>逐点设置高度和面向（{{ waypointSettings.length }} 个点）</summary><p class="waypoint-editor-note">高度相对起飞点；机头角度控制水平朝向，真北为 0°。摄像头俯仰默认 0°（水平），负数向下；每个航点独立设置。</p><p v-if="waypointSettings.length > 200" class="waypoint-editor-note">此处列出前 200 个点和当前选中点；完整路线仍保留全部 {{ waypointSettings.length }} 个点。</p><div v-for="{ setting, index } in editorWaypoints" :key="index" class="waypoint-row" :data-waypoint-index="index"><strong>点 {{ index + 1 }}</strong><label>高度（m）<input v-model.number="setting.altitude_m" type="number" min="1" max="1500" step="1" /></label><label>机头方向<select v-model="setting.heading_mode"><option value="followWayline">沿航线</option><option value="fixed">固定角度</option><option value="smoothTransition">平滑转向</option><option value="manually">手动控制</option></select></label><label v-if="setting.heading_mode === 'fixed' || setting.heading_mode === 'smoothTransition'">机头角度（°）<input v-model.number="setting.heading_angle" type="number" step="1" /></label><label>摄像头俯仰（°）<input v-model.number="setting.gimbal_pitch_angle" type="number" min="-90" max="45" step="1" /></label></div></details>
+          <button ref="waypointEditorTrigger" type="button" class="waypoint-editor-trigger" :disabled="!waypointSettings.length" aria-haspopup="dialog" :aria-expanded="waypointEditorExpanded" @click="openWaypointEditor"><span>逐点设置高度和面向</span><small>{{ waypointSettings.length }} 个点</small><span aria-hidden="true">›</span></button>
           </div>
 
            <div class="settings-group" data-settings-page="photos" :class="{ 'settings-active': settingsPage === 'photos' }">
@@ -2660,7 +2693,8 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.route-form .settings-fields { overflow-y: auto; overscroll-behavior: contain; padding-right: 5px; }
+ .route-form .settings-fields { overflow-y: auto; overscroll-behavior: contain; padding-right: 5px; scrollbar-width: none; -ms-overflow-style: none; }
+ .route-form .settings-fields::-webkit-scrollbar { display: none; width: 0; height: 0; }
 .batch-range-guide { margin: 2px 4px 6px; color: var(--ui-muted); font-size: var(--font-caption); line-height: 1.4; }
 .major-point-card { container-type: inline-size; padding: 12px 4px; border-bottom: 1px solid var(--ui-line); }
 .major-point-card.is-batch-range { background: #f0faf9; }
