@@ -385,11 +385,14 @@ function onCoverageVertexEnd(event: PointerEvent) {
   const drag = coverageVertexDrag
   if (!drag || drag.pointerId !== event.pointerId) return
   const updated = coverageDraft?.map(point => [...point])
+  const original = props.coveragePolygon ?? []
+  const changed = !!updated && updated.length === original.length
+    && updated.some((point, index) => point.some((coordinate, axis) => coordinate !== original[index]?.[axis]))
   coverageVertexDrag = null
   coverageDraft = null
   if (drag.element.hasPointerCapture(event.pointerId)) drag.element.releasePointerCapture(event.pointerId)
   scene?.setInputs(props.active && !props.flightPose?.playing)
-  if (updated) emit('coverage-polygon-updated', updated)
+  if (updated && changed) emit('coverage-polygon-updated', updated)
   renderOverlay()
 }
 
@@ -525,9 +528,6 @@ watch(() => props.provider, async () => {
 })
 watch(() => [props.route, props.start, props.end, props.anchors, props.weatherSegments, props.showStartRange, props.showEndRange, props.rangeMeters], refreshRoute, { deep: true })
 watch(() => [props.coveragePolygon, props.coverageDrawEnabled], () => {
-  if (props.coveragePolygon && props.coveragePolygon.length >= 3) {
-    scene?.fit(props.coveragePolygon.map(([longitude, latitude]) => [longitude, latitude, 0]), props.viewMode)
-  }
   renderOverlay()
 }, { deep: true, flush: 'sync' })
 watch(() => props.selectedAnchorId, renderOverlay, { flush: 'sync' })
