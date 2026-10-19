@@ -22,6 +22,7 @@ export type WeatherRisk = {
 export type RouteAssessment = {
   state: string; departure_time_utc: string; arrival_time_utc: string
   sample_count: number; duration_seconds: number; message: string; eta_warning: string
+  job_id?: string; generated_at_utc?: string; tested_at_utc?: string; assessment_cache_key?: string; cache_reused?: boolean
   samples: { index: number; coordinate: number[]; eta_utc: string
     weather: { values: { t2m_K: number; tp_6h_mm: number }; derived: { wind_speed_10m_m_s: number }
       time_method: string; rain_interval: { start_utc: string; end_utc: string } }

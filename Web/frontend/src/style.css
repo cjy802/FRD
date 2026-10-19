@@ -357,6 +357,10 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .weather-mini-grid > div.is-attention { border: 2px solid #d68100; background: #fffaf0; }
 .weather-mini-grid span, .weather-mini-grid small { display: block; color: var(--ui-muted); font-size: 11px; line-height: 1.35; }
 .weather-mini-grid strong { display: block; margin-top: 4px; color: #1e3a5f; font-size: 15px; line-height: 1.25; overflow-wrap: anywhere; }
+.weather-test-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: -3px 0 10px; }
+.weather-test-meta small { min-width: 0; color: var(--ui-muted); font-size: var(--font-caption); line-height: 1.4; }
+.weather-test-meta button { flex: 0 0 auto; padding: 3px 7px; border: 1px solid var(--ui-line); border-radius: var(--ui-radius); background: #fff; color: var(--ui-accent); font-size: var(--font-caption); }
+.weather-test-meta button:disabled { color: var(--ui-muted); cursor: wait; }
 .weather-point-toggle { display: inline-flex; min-height: 32px; align-items: center; margin: 4px 0 8px; padding: 4px 9px; border: 1px solid #c7dcef; border-radius: 6px; background: #fff; color: #0f6cbd; font-size: 12px; font-weight: 600; }
 .weather-point-toggle:hover { background: #f3f8fd; }
 .weather-inline-warning { margin-top: 10px !important; padding: 8px 10px; border-left: 3px solid #b42318; background: #fff5f5; color: #7f1d1d !important; font-size: var(--font-caption) !important; }

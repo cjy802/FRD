@@ -50,7 +50,12 @@ def align_route(grid, coordinates, departure_time_utc, speed_kmh, altitude_m, mo
         raise WeatherUnavailable("任务高度须在 0–1000 米范围内。")
     departure = utc_timestamp(departure_time_utc)
     if now is not None and departure < now:
-        raise WeatherUnavailable("出发时间已过去，请选择当前或未来时刻。")
+        # The web planner sends Beijing departure times at minute precision.
+        # Accept that minute's start when only its seconds have elapsed; an
+        # earlier minute still means the requested departure is in the past.
+        current_minute = now.replace(second=0, microsecond=0)
+        if departure != current_minute:
+            raise WeatherUnavailable("出发时间已过去，请选择当前或未来时刻。")
     positions, total = route_positions(coordinates)
     samples, missing, height_missing = [], [], []
     for index, position in enumerate(positions):

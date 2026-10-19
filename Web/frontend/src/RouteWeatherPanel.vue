@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { RouteAssessment, WeatherLimits } from './weatherTypes'
 
 const props = defineProps<{
   jobId: string | null; coordinates: number[][] | null
   departureBeijing: string; speedKmh: number; altitudeM: number
   limits?: WeatherLimits | null
+  savedAssessment?: RouteAssessment | null
 }>()
 const emit = defineEmits<{
   assessed: [result: RouteAssessment | null]
@@ -16,6 +17,19 @@ const alignment = ref<RouteAssessment | null>(null)
 const pending = ref(false)
 const error = ref('')
 const pointWeatherVisible = ref(false)
+const ageClock = ref(Date.now())
+const CACHE_KEY = 'low-altitude-route-weather-v1'
+const CACHE_TTL_MS = 6 * 60 * 60 * 1000
+const assessmentAgeMs = computed(() => alignment.value?.tested_at_utc
+  ? Math.max(0, ageClock.value - new Date(alignment.value.tested_at_utc).getTime()) : 0)
+const assessmentAgeLabel = computed(() => {
+  const minutes = Math.floor(assessmentAgeMs.value / 60_000)
+  if (minutes < 1) return '刚刚'
+  if (minutes < 60) return `${minutes} 分钟前`
+  const hours = Math.floor(minutes / 60)
+  const remainingMinutes = minutes % 60
+  return remainingMinutes ? `${hours} 小时 ${remainingMinutes} 分钟前` : `${hours} 小时前`
+})
 let controller: AbortController | null = null
 let timer: ReturnType<typeof setTimeout> | null = null
 let expiryTimer: ReturnType<typeof setInterval> | null = null
@@ -40,10 +54,44 @@ function togglePointWeather() {
   pointWeatherVisible.value = !pointWeatherVisible.value
   emit('point-weather-toggle', pointWeatherVisible.value)
 }
+function assessmentCacheKey() {
+  if (!props.jobId || !props.coordinates) return ''
+  const signature = JSON.stringify({
+    job_id: props.jobId, coordinates: props.coordinates,
+    speed_kmh: props.speedKmh, altitude_m: props.altitudeM, profile: props.limits ?? null,
+  })
+  let hash = 2166136261
+  for (let index = 0; index < signature.length; index += 1) {
+    hash = Math.imul(hash ^ signature.charCodeAt(index), 16777619)
+  }
+  return `route-weather-v1-${(hash >>> 0).toString(16)}`
+}
+function freshAssessment(value: RouteAssessment | null | undefined, key: string): RouteAssessment | null {
+  if (!value || value.assessment_cache_key !== key || !value.tested_at_utc) return null
+  const testedAt = new Date(value.tested_at_utc).getTime()
+  const age = Date.now() - testedAt
+  return age >= 0 && age < CACHE_TTL_MS ? { ...value, cache_reused: true } : null
+}
+function restoreAssessment(key: string): RouteAssessment | null {
+  try {
+    const stored = JSON.parse(localStorage.getItem(CACHE_KEY) ?? 'null') as RouteAssessment | null
+    const cached = freshAssessment(stored, key)
+    if (cached) return cached
+  } catch {
+    // Ignore a missing, expired, or unreadable browser cache.
+  }
+  return freshAssessment(props.savedAssessment, key)
+}
+function saveAssessment(value: RouteAssessment) {
+  try { localStorage.setItem(CACHE_KEY, JSON.stringify(value)) } catch {
+    // The active mission record still stores the assessment when a task exists.
+  }
+}
 async function requestAlignment() {
   if (!props.jobId || !props.coordinates) return
   const current = new AbortController()
   controller = current
+  error.value = ''
   pending.value = true
   emit('phase', { pending: true, error: '' })
   try {
@@ -56,8 +104,11 @@ async function requestAlignment() {
     const payload = await response.json()
     if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : '航线天气时间匹配失败，请检查任务参数。')
     if (current.signal.aborted || current !== controller) return
-    alignment.value = payload
-    emit('assessed', payload)
+    const assessed = { ...payload, tested_at_utc: new Date().toISOString(),
+      assessment_cache_key: assessmentCacheKey(), cache_reused: false } as RouteAssessment
+    alignment.value = assessed
+    saveAssessment(assessed)
+    emit('assessed', assessed)
   } catch (cause) {
     if (!current.signal.aborted && current === controller) error.value = cause instanceof Error ? cause.message : '航线天气时间匹配失败。'
   } finally {
@@ -68,22 +119,29 @@ watch(() => [props.jobId, props.coordinates], () => {
   pointWeatherVisible.value = false
   emit('point-weather-toggle', false)
 }, { deep: true, flush: 'sync' })
-watch(() => [props.jobId, props.coordinates, props.departureBeijing, props.speedKmh, props.altitudeM, props.limits], () => {
+watch(() => [props.jobId, props.coordinates, props.speedKmh, props.altitudeM, props.limits], () => {
   controller?.abort()
   controller = null
   if (timer) clearTimeout(timer)
-  alignment.value = null
-  emit('assessed', null)
   pending.value = false
   error.value = ''
   emit('phase', { pending: false, error: '' })
+  const key = assessmentCacheKey()
+  const cached = key ? restoreAssessment(key) : null
+  alignment.value = cached
+  emit('assessed', cached)
+  if (cached) {
+    saveAssessment(cached)
+    return
+  }
   if (props.jobId && props.coordinates) timer = setTimeout(() => { void requestAlignment() }, 250)
 }, { immediate: true, deep: true })
 onMounted(() => {
   expiryTimer = setInterval(() => {
-    if (alignment.value && new Date(alignment.value.arrival_time_utc).getTime() < Date.now()) {
+    ageClock.value = Date.now()
+    if (alignment.value && assessmentAgeMs.value >= CACHE_TTL_MS) {
       controller?.abort(); controller = null; alignment.value = null; pending.value = false
-      error.value = '预计到达时刻已过去，请返回天气页重新匹配当前时刻。'
+      error.value = '沿线天气测试结果已超过六小时，请刷新天气后重新测试。'
       emit('assessed', null); emit('phase', { pending: false, error: error.value })
     }
   }, 30000)
@@ -95,11 +153,13 @@ onBeforeUnmount(() => { controller?.abort(); if (timer) clearTimeout(timer); if 
   <div class="status-block" aria-label="沿线天气检查">
     <div class="status-title"><span>沿线天气检查</span><b :class="alignment ? `risk-${alignment.weather_risk.level}` : 'pending'">{{ alignment ? riskLabel(alignment.weather_risk.level, alignment.weather_risk.label) : '待评估' }}</b></div>
     <template v-if="alignment">
+      <div class="weather-test-meta"><small>上次测试：{{ assessmentAgeLabel }}<span v-if="alignment.cache_reused"> · 已复用六小时缓存</span></small><button type="button" :disabled="pending" @click="requestAlignment">{{ pending ? '正在测试…' : '重新测试' }}</button></div>
       <p class="plain-summary">{{ riskDescription(alignment.weather_risk.level, alignment.weather_risk.coverage_complete) }}</p>
       <div class="weather-mini-grid"><div :class="metricTone('wind')"><span>飞行高度风</span><strong>{{ alignment.weather_risk.summary.max_wind_m_s?.toFixed(1) ?? '—' }} m/s</strong><small>最高风速</small></div><div :class="metricTone('crosswind')"><span>侧风</span><strong>{{ alignment.weather_risk.summary.max_crosswind_m_s?.toFixed(1) ?? '—' }} m/s</strong><small>横向风力</small></div><div :class="metricTone('visibility')"><span>地面能见度</span><strong>{{ alignment.weather_risk.summary.min_surface_visibility_m?.toFixed(0) ?? '—' }} m</strong><small>最低值</small></div></div>
       <details class="weather-rule-details"><summary>查看规则和数据范围</summary><small>当前使用{{ alignment.weather_risk.rule_mode === 'demo' ? '演示' : '自定义' }}提醒线；飞行高度风 {{ alignment.weather_risk.limits.max_wind_m_s }}、侧风 {{ alignment.weather_risk.limits.max_crosswind_m_s }}、逆风 {{ alignment.weather_risk.limits.max_headwind_m_s }} m/s；地面阵风 {{ alignment.weather_risk.limits.max_gust_m_s }} m/s；6 小时降雨 {{ alignment.weather_risk.limits.max_rain_6h_mm }} mm；能见度最低 {{ alignment.weather_risk.limits.min_visibility_m }} m。</small><small>参考分仅用于内部排序，不是事故概率。高度风覆盖离地 10–100 米；阵风和能见度是地面指标。</small><small>0.25° 网格与 6 小时时次，不能代表街道级预报。</small></details>
     </template>
     <p v-else>{{ pending ? '正在计算沿线高度风及风雨提示…' : error || '等待路线与天气资料就绪。' }}</p>
+    <div v-if="!alignment && !pending && jobId && coordinates" class="weather-test-meta"><small>暂无六小时内的测试结果</small><button type="button" @click="requestAlignment">{{ error ? '重新测试' : '开始测试' }}</button></div>
   </div>
   <div class="status-block route-weather-panel" aria-label="任务时间和高度">
     <div class="status-title"><span>任务时间和高度</span><b :class="alignment?.coverage.flight_height ? 'risk-no_trigger' : 'pending'">{{ pending ? '匹配中' : alignment?.coverage.flight_height ? '资料完整' : alignment?.coverage.surface_space_time ? '缺少高度资料' : '待匹配' }}</b></div>
