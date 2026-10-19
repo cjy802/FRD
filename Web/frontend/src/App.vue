@@ -140,6 +140,8 @@ const settingsRoute = ref<Preview | null>(null)
 const previewKey = ref('')
 const weatherJobId = ref<string | null>(null)
 const weatherState = ref({ status: 'idle', message: '等待天气预测。' })
+const pointWeatherRiskLevel = ref<string | null>(null)
+watch(allAnchorsReady, ready => { if (!ready) pointWeatherRiskLevel.value = null }, { immediate: true })
 const weatherRefreshVersion = ref(0)
 const routeAssessment = ref<RouteAssessment | null>(null)
 const showRouteWeatherPoints = ref(false)
@@ -809,32 +811,40 @@ const flightFootprint = computed(() => {
 })
 const decisionLevel = computed(() => {
   const risk = routeAssessment.value?.weather_risk
+  const alerts = risk?.alerts ?? []
+  if (risk?.level === 'elevated' || alerts.some(alert => alert.level === 'elevated') || pointWeatherRiskLevel.value === 'elevated') return 'elevated'
+  if (risk?.level === 'attention' || alerts.some(alert => alert.level === 'attention') || pointWeatherRiskLevel.value === 'attention') return 'attention'
+  if (risk && (risk.level === 'incomplete' || !risk.coverage_complete)) return 'incomplete'
+  if (pointWeatherRiskLevel.value === 'incomplete' || (risk && pointWeatherRiskLevel.value !== 'no_trigger')) return 'incomplete'
   if (!risk) return null
-  const alerts = risk.alerts ?? []
-  if (risk.level === 'elevated' || alerts.some(alert => alert.level === 'elevated')) return 'elevated'
-  if (risk.level === 'attention' || alerts.some(alert => alert.level === 'attention')) return 'attention'
-  if (risk.level === 'incomplete' || !risk.coverage_complete) return 'incomplete'
   return 'no_trigger'
 })
 const decisionTone = computed(() => {
-  if (routeAssessment.value) return `risk-${decisionLevel.value}`
+  if (decisionLevel.value) return `risk-${decisionLevel.value}`
   return routePhase.value.error || ['blocked', 'failed'].includes(weatherState.value.status) ? 'risk-incomplete' : 'pending'
 })
 const decisionTitle = computed(() => {
   if (!weatherCoordinates.value) return '先计算道路路线'
+  if (decisionLevel.value === 'elevated') return '发现较强天气提醒'
+  if (decisionLevel.value === 'attention') return '有天气因素需要留意'
   if (['blocked', 'failed'].includes(weatherState.value.status)) return '天气预测不可用'
   if (routePhase.value.error) return '沿线天气检查未完成'
   if (routePhase.value.pending) return '正在检查沿线天气'
   if (!routeAssessment.value) return weatherJobId.value ? '等待沿线天气结果' : '正在准备天气资料'
-  return ({
-    no_trigger: '当前规则下没有明显天气提醒',
-    attention: '有天气因素需要留意',
-    elevated: '发现较强天气提醒',
-    incomplete: '天气资料不完整，暂不能判断',
-  } as Record<string, string>)[decisionLevel.value ?? 'incomplete'] || '天气初筛已完成'
+  if (decisionLevel.value === 'incomplete') return '天气资料不完整，暂不能判断'
+  return '当前规则下没有明显天气提醒'
 })
 const decisionDescription = computed(() => {
   if (!weatherCoordinates.value) return '先在左侧完成所有主点和飞行参数，系统才能沿路线匹配天气。'
+  const risk = routeAssessment.value?.weather_risk
+  const hasRouteElevated = risk?.level === 'elevated' || risk?.alerts.some(alert => alert.level === 'elevated')
+  const hasRouteAttention = risk?.level === 'attention' || risk?.alerts.some(alert => alert.level === 'attention')
+  if (pointWeatherRiskLevel.value === 'elevated' && !hasRouteElevated) {
+    return '路线中点参考天气触发较强提醒；该点不代表整条路线，请结合下方沿线天气检查复核。'
+  }
+  if (pointWeatherRiskLevel.value === 'attention' && !hasRouteElevated && !hasRouteAttention) {
+    return '路线中点参考天气有黄色提醒；该点不代表整条路线，请结合下方沿线天气检查复核。'
+  }
   if (['blocked', 'failed'].includes(weatherState.value.status)) return weatherState.value.message
   if (routePhase.value.error) return routePhase.value.error
   if (routePhase.value.pending) return '系统正在按出发时间、飞行高度和路线逐点检查天气。'
@@ -2647,7 +2657,7 @@ onBeforeUnmount(() => {
          <details v-if="activeModule === 'status'" class="overview-group" open>
            <summary><span><span class="svg-icon icon-cloud-rain" aria-hidden="true"></span>沿线天气检查</span><small>风、降雨、阵风和能见度</small></summary>
           <div class="overview-group-body overview-weather">
-            <WeatherPanels v-if="allAnchorsReady" :key="weatherRefreshVersion" :altitude-m="form.altitude_m" :start="form.start" :end="form.end" @job-ready="weatherJobId = $event" @state-changed="weatherState = $event">
+            <WeatherPanels v-if="allAnchorsReady" :key="weatherRefreshVersion" :altitude-m="form.altitude_m" :start="form.start" :end="form.end" @job-ready="weatherJobId = $event" @state-changed="weatherState = $event" @point-risk-changed="pointWeatherRiskLevel = $event">
               <template #route-weather>
                 <RouteWeatherPanel :job-id="weatherJobId" :coordinates="weatherCoordinates" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" :limits="activeLimits" :saved-assessment="savedTaskAssessment" @assessed="recordTaskWeather" @point-weather-toggle="showRouteWeatherPoints = $event" @phase="routePhase = $event" />
               </template>

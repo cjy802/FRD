@@ -2,7 +2,11 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 const props = defineProps<{ altitudeM: number; start: { latitude: number; longitude: number }; end: { latitude: number; longitude: number } }>()
-const emit = defineEmits<{ jobReady: [jobId: string | null]; stateChanged: [state: { status: string; message: string }] }>()
+const emit = defineEmits<{
+  jobReady: [jobId: string | null]
+  stateChanged: [state: { status: string; message: string }]
+  'point-risk-changed': [level: string | null]
+}>()
 type Field = 't2m_K' | 'u10_m_s' | 'v10_m_s' | 'msl_Pa' | 'tp_6h_mm'
 type Forecast = {
   init_time_utc: string; valid_time_utc: string; generated_at_utc: string
@@ -100,6 +104,7 @@ function restoreWeatherCache(): boolean {
     const value = JSON.parse(raw) as WeatherCache
     if (!value.job_id || !value.forecast?.generated_at_utc || !value.forecast?.valid_time_utc) return false
     forecast.value = value.forecast
+    emit('point-risk-changed', value.forecast.point_risk?.level ?? null)
     displayedForecastJob.value = value.job_id
     groundSeries.value = value.ground_series ?? null
     message.value = '已恢复上一次天气结果，正在检查本机缓存。'
@@ -127,6 +132,7 @@ async function sampleRouteWeather() {
     if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : '区域天气查询失败。')
     if (controller.signal.aborted || controller !== sampleController) return
     forecast.value = payload
+    emit('point-risk-changed', payload.point_risk?.level ?? null)
     displayedForecastJob.value = completedJob.value
     groundSeries.value = null
     error.value = ''
@@ -208,6 +214,7 @@ function applyJob(job: Job, controller: AbortController) {
     if (!forecast.value || new Date(job.forecast.generated_at_utc).getTime()
       > new Date(forecast.value.generated_at_utc).getTime()) {
       forecast.value = job.forecast
+      emit('point-risk-changed', job.forecast.point_risk?.level ?? null)
       displayedForecastJob.value = job.job_id
       groundSeries.value = null
     }
@@ -271,6 +278,7 @@ async function predictWeather(forceRefresh = false) {
 }
 
 onMounted(() => {
+  emit('point-risk-changed', null)
   restoreWeatherCache()
   void predictWeather()
   expiryTimer = setInterval(() => {
