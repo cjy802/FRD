@@ -2,17 +2,25 @@
 import { nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { createMapScene, type BaiduScene, type CameraPose, type MapProvider, type SceneView } from './baiduScene'
 import type { VideoCaptureTarget, VideoTelemetryPoint } from './videoSurvey'
+import type { RouteAssessment, WeatherRiskPoint } from './weatherTypes'
 
 type Point = { longitude: number; latitude: number }
 type AnchorRole = 'start' | 'middle' | 'end'
 type Anchor = Point & { id: string; label?: string; role?: AnchorRole }
 type OverlayPoint = { x: number; y: number; index?: number; id?: string; label?: string; role?: AnchorRole; selected?: boolean }
+type WeatherOverlayPoint = {
+  index: number; x: number; y: number; lane: number; time: string; level: string; reasons: string
+  temperature: string; groundWind: string; heightWind: string; gust: string; visibility: string; rain: string
+}
 const props = defineProps<{
   active: boolean; provider: MapProvider; viewMode: '2d' | '3d'; start: Point; end: Point; route: number[][] | null
   anchors?: Anchor[]
   selectedAnchorId?: string
   selectedIndex: number | null; editMode: 'route' | 'node'; footprint: number[][]
   weatherSegments: { start: number[]; end: number[]; level: string }[]
+  weatherSamples?: RouteAssessment['samples'] | null
+  weatherRiskPoints?: WeatherRiskPoint[] | null
+  weatherAltitudeM?: number
   showStartRange: boolean; showEndRange: boolean; rangeMeters: number
   flightPose?: (CameraPose & { follow?: boolean; playing?: boolean }) | null
   flightFootprint?: number[][]
@@ -33,6 +41,7 @@ const overlay = reactive({
   drone: null as { x: number; y: number; angle: number } | null,
   videoPosition: null as { x: number; y: number; time_seconds: number; altitude_m: number | null } | null,
   captureTargets: [] as { id: string; x: number; y: number; label: string; marker: string; time_seconds: number }[],
+  weatherPoints: [] as WeatherOverlayPoint[],
 })
 let scene: BaiduScene | null = null
 let resizeObserver: ResizeObserver | null = null
@@ -62,6 +71,18 @@ function sameDrone(first: { x: number; y: number; angle: number } | null, second
 function sameVideoPosition(first: typeof overlay.videoPosition, second: typeof overlay.videoPosition) {
   return first === second || (!!first && !!second && first.x === second.x && first.y === second.y
     && first.time_seconds === second.time_seconds && first.altitude_m === second.altitude_m)
+}
+
+function sameWeatherPoints(first: WeatherOverlayPoint[], second: WeatherOverlayPoint[]) {
+  if (first.length !== second.length) return false
+  return first.every((point, index) => {
+    const previous = second[index]
+    return point.index === previous.index && point.x === previous.x && point.y === previous.y
+      && point.lane === previous.lane && point.time === previous.time && point.level === previous.level
+      && point.reasons === previous.reasons && point.temperature === previous.temperature
+      && point.groundWind === previous.groundWind && point.heightWind === previous.heightWind
+      && point.gust === previous.gust && point.visibility === previous.visibility && point.rain === previous.rain
+  })
 }
 
 function anchorPoints(): Anchor[] {
@@ -142,6 +163,31 @@ function renderOverlay() {
     const marker = label.match(/候选\s*(\d+)/)?.[1] ?? (label.replace(/[^0-9]/g, '').slice(0, 2) || '拍')
     return pixel ? [{ ...pixel, id: target.id, label, marker, time_seconds: target.time_seconds }] : []
   })
+  const riskByIndex = new Map((props.weatherRiskPoints ?? []).map(point => [point.index, point]))
+  const weatherPoints = (props.weatherSamples ?? []).flatMap((sample, index) => {
+    const routePoint = props.route?.[sample.index]
+    const altitude = props.viewMode === '2d' ? 3 : (routePoint?.[2] ?? props.weatherAltitudeM ?? 100)
+    const pixel = scene!.project([sample.coordinate[0], sample.coordinate[1], altitude])
+    if (!pixel) return []
+    const pointRisk = riskByIndex.get(sample.index)
+    const level = pointRisk?.level ?? 'no_trigger'
+    const reasons = pointRisk?.triggers.map(trigger => trigger.reason).join('；') ?? ''
+    const visibility = sample.height_weather?.visibility_surface_m
+    return [{
+      index: sample.index,
+      ...pixel,
+      lane: index % 3,
+      time: new Date(sample.eta_utc).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false }),
+      level,
+      reasons,
+      temperature: `${(sample.weather.values.t2m_K - 273.15).toFixed(1)}°C`,
+      groundWind: `${sample.weather.derived.wind_speed_10m_m_s.toFixed(1)} m/s`,
+      heightWind: sample.height_weather ? `${sample.height_weather.wind_speed_m_s.toFixed(1)} m/s` : '缺测',
+      gust: sample.height_weather ? `${sample.height_weather.gust_surface_m_s.toFixed(1)} m/s` : '缺测',
+      visibility: visibility === undefined || visibility === null ? '缺测' : `${(visibility / 1000).toFixed(1)} km`,
+      rain: `${sample.weather.values.tp_6h_mm.toFixed(2)} mm/6h`,
+    }]
+  })
   if (!sameOverlayPoints(nodes, overlay.nodes)) overlay.nodes = nodes
   if (!sameOverlayPoints(groundNodes, overlay.groundNodes)) overlay.groundNodes = groundNodes
   if (!sameOverlayPoints(anchors, overlay.anchors)) overlay.anchors = anchors
@@ -150,6 +196,7 @@ function renderOverlay() {
   if (!sameDrone(drone, overlay.drone)) overlay.drone = drone
   if (!sameVideoPosition(videoPosition, overlay.videoPosition)) overlay.videoPosition = videoPosition
   if (!sameOverlayPoints(captureTargets, overlay.captureTargets)) overlay.captureTargets = captureTargets
+  if (!sameWeatherPoints(weatherPoints, overlay.weatherPoints)) overlay.weatherPoints = weatherPoints
 }
 function refreshRoute() {
   if (!scene) return
@@ -320,7 +367,7 @@ watch(() => [props.route, props.start, props.end, props.anchors, props.weatherSe
 watch(() => props.selectedAnchorId, renderOverlay, { flush: 'sync' })
 watch(() => [props.footprint, props.selectedIndex, props.editMode], () => { refreshFootprint(); renderOverlay() }, { deep: true, flush: 'sync' })
 watch(() => props.videoTrack, refreshVideoTrack, { deep: true })
-watch(() => [props.videoPosition, props.captureTargets], renderOverlay, { deep: true, flush: 'sync' })
+watch(() => [props.videoPosition, props.captureTargets, props.weatherSamples, props.weatherRiskPoints], renderOverlay, { deep: true, flush: 'sync' })
 watch(() => props.flightPose, (pose, previous) => {
   if (pose?.playing) { finishDrag(); finishCtrlRotate() }
   scene?.setInputs(props.active && !pose?.playing)
@@ -346,6 +393,11 @@ onBeforeUnmount(() => {
       <div v-if="videoTrack?.length" class="earth-video-legend" aria-label="视频轨迹图例"><span><i class="track-key"></i>SRT 轨迹</span><span><i class="position-key">V</i>当前画面</span><span><i class="target-key">拍</i>近拍点</span></div>
       <span v-for="anchor in overlay.anchors" :key="anchor.id" class="earth-endpoint" :class="[anchor.role, { selected: anchor.selected }]" :style="{ left: `${anchor.x}px`, top: `${anchor.y}px` }">{{ anchor.label }}</span>
       <span v-for="target in overlay.captureTargets" :key="`video-target-${target.id}`" class="earth-capture-target" :title="`${target.label} · ${Math.floor(target.time_seconds / 60)}:${String(Math.floor(target.time_seconds % 60)).padStart(2, '0')}`" :aria-label="`${target.label} 拍摄位置`" :style="{ left: `${target.x}px`, top: `${target.y}px` }">{{ target.marker }}</span>
+      <article v-for="point in overlay.weatherPoints" :key="`weather-point-${point.index}`" class="earth-weather-popover" :class="`is-${point.level}`" :title="point.reasons" :aria-label="`航线点 ${point.index + 1} 天气，${point.reasons || '没有触发提醒'}`" :style="{ left: `${point.x}px`, top: `${point.y - 8 - point.lane * 68}px` }">
+        <header><strong>点 {{ point.index + 1 }}</strong><span>{{ point.time }}</span><b v-if="point.level === 'elevated'">较强提醒</b><b v-else-if="point.level === 'attention'">需要留意</b></header>
+        <div class="earth-weather-values"><span>温度 <b>{{ point.temperature }}</b></span><span>高度风 <b>{{ point.heightWind }}</b></span><span>10 米风 <b>{{ point.groundWind }}</b></span><span>阵风 <b>{{ point.gust }}</b></span><span>能见度 <b>{{ point.visibility }}</b></span><span>6 小时雨 <b>{{ point.rain }}</b></span></div>
+        <small v-if="point.reasons">{{ point.reasons }}</small>
+      </article>
       <span v-for="node in overlay.autoNodes" :key="`auto-${node.index}`" class="earth-auto-node" aria-hidden="true" :style="{ left: `${node.x}px`, top: `${node.y}px` }"></span>
       <span v-for="node in overlay.groundNodes" :key="`ground-${node.index}`" class="earth-ground-node" aria-hidden="true" :style="{ left: `${node.x}px`, top: `${node.y}px` }"><span></span></span>
       <button v-for="node in overlay.nodes" :key="node.index" type="button" class="earth-node" :class="{ selected: node.index === selectedIndex }" :aria-label="`选择航点 ${node.index + 1}`" :aria-pressed="node.index === selectedIndex" :data-waypoint-index="node.index" :disabled="flightPose?.playing" :style="{ left: `${node.x}px`, top: `${node.y}px` }" @pointerdown="onNodeDown($event, node.index)" @pointermove="onNodeMove" @pointerup="onNodeUp" @pointercancel="onNodeUp" @lostpointercapture="onNodeUp" @click.stop="onNodeClick(node.index)"><span></span></button>
@@ -370,6 +422,18 @@ onBeforeUnmount(() => {
 .earth-video-legend .track-key { width: 16px; height: 3px; border-radius: 0; background: #d97706; }
 .earth-video-legend .position-key { background: #0f6cbd; }
 .earth-video-legend .target-key { background: #d97706; }
+.earth-weather-popover { position: absolute; z-index: 4; display: grid; gap: 4px; width: 164px; transform: translate(-50%, -100%); padding: 6px 7px; border: 1px solid #cbd5df; border-radius: 7px; background: rgb(255 255 255 / .97); box-shadow: 0 2px 8px rgb(15 23 42 / .2); color: #344455; font-size: 9px; line-height: 1.3; pointer-events: none; }
+.earth-weather-popover.is-elevated { border: 2px solid #c4312b; background: #fff8f7; }
+.earth-weather-popover.is-attention { border: 2px solid #d68100; background: #fffaf1; }
+.earth-weather-popover.is-incomplete { border-color: #8795a1; background: #f8fafc; }
+.earth-weather-popover header { display: flex; align-items: center; justify-content: space-between; gap: 4px; border-bottom: 1px solid #e5e7eb; padding-bottom: 3px; }
+.earth-weather-popover header strong { color: #173b5c; font-size: 10px; }
+.earth-weather-popover header span { color: #526273; font-variant-numeric: tabular-nums; }
+.earth-weather-popover header b { color: #a4262c; font-size: 8px; }
+.earth-weather-values { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 6px; }
+.earth-weather-values span { display: flex; justify-content: space-between; gap: 3px; color: #667788; white-space: nowrap; }
+.earth-weather-values b { color: #26394c; font-weight: 600; }
+.earth-weather-popover > small { display: -webkit-box; overflow: hidden; color: #a4262c; font-size: 8px; line-height: 1.25; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .earth-node { position: absolute; width: 32px; height: 32px; transform: translate(-50%, -50%); display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: transparent; pointer-events: auto; cursor: pointer; touch-action: none; }
 .earth-node:hover:not(:disabled), .earth-node:active:not(:disabled) { transform: translate(-50%, -50%); box-shadow: none; }
 .earth-node span { width: 12px; height: 12px; border: 2px solid #fff; border-radius: 50%; background: #00e5a8; box-shadow: 0 1px 5px #12343b; }
@@ -393,4 +457,5 @@ onBeforeUnmount(() => {
 .earth-map-status button { padding: 5px 12px; border: 1px solid #0f6cbd; border-radius: 4px; background: #fff; color: #0f6cbd; cursor: pointer; }
 .earth-attribution { position: absolute; bottom: 4px; right: 6px; color: #fff; text-shadow: 0 1px 2px #000; font-size: 11px; }
 @media (max-width: 900px) { .earth-tilt-control { top: 164px; right: 10px; } }
+@media (max-width: 600px) { .earth-weather-popover { width: 140px; padding: 5px; font-size: 8px; } }
 </style>

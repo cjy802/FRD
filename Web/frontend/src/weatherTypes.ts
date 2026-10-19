@@ -5,10 +5,16 @@ export type WeatherLimits = {
 export type WeatherAlert = {
   field: string; reason: string; point_index: number; coordinate: number[]; eta_utc: string; level: string
 }
+export type WeatherRiskPoint = {
+  index: number; coordinate: number[]; eta_utc: string; level: string; score_0_100: number
+  covered: boolean
+  triggers: { field: string; reason: string; level: string }[]
+}
 export type WeatherRisk = {
   level: string; label: string; hazard_level: string; score_0_100: number | null
   score_definition: string; rule_mode: string; limits: WeatherLimits; coverage_complete: boolean
   alerts: WeatherAlert[]; triggered_point_count: number; limitations: string[]
+  points?: WeatherRiskPoint[]
   segments: { index: number; start: number[]; end: number[]; covered: boolean; level: string; score_0_100: number | null }[]
   summary: { max_wind_m_s: number | null; max_crosswind_m_s: number | null; max_headwind_m_s: number | null
     max_tailwind_m_s: number | null; max_surface_gust_m_s: number | null; min_surface_visibility_m: number | null; max_rain_6h_mm: number | null }

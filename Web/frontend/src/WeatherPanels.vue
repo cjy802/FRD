@@ -169,6 +169,14 @@ function localTime(time: string) {
 function metricValue(field: Field, value: number) {
   return (field === 't2m_K' ? value - 273.15 : value).toFixed(2)
 }
+function metricTone(field: 'wind' | 'rain') {
+  const value = field === 'wind' ? forecast.value?.derived.wind_speed_10m_m_s : forecast.value?.values.tp_6h_mm
+  const rules = forecast.value?.point_risk.rules
+  if (value === undefined || value === null || !rules) return ''
+  const attention = field === 'wind' ? rules.wind_attention_m_s : rules.rain_attention_6h_mm
+  const elevated = field === 'wind' ? rules.wind_elevated_m_s : rules.rain_elevated_6h_mm
+  return value >= elevated ? 'is-danger' : value >= attention ? 'is-attention' : ''
+}
 async function readJob(response: Response): Promise<Job> {
   const payload = await response.json()
   if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : '天气预测接口暂时不可用。')
@@ -290,8 +298,7 @@ onBeforeUnmount(() => {
     <div class="status-title"><span>路线中点参考天气</span><b :class="forecast ? `risk-${forecast.point_risk.level}` : 'pending'">{{ forecast ? riskLabel(forecast.point_risk.level, forecast.point_risk.label) : (loading ? '等待预测' : '待评估') }}</b></div>
     <template v-if="forecast">
       <p class="plain-summary">{{ groundSummary }}</p>
-      <div class="weather-mini-grid"><div><span>温度</span><strong>{{ (forecast.values.t2m_K - 273.15).toFixed(1) }}°C</strong></div><div><span>地面风</span><strong>{{ forecast.derived.wind_speed_10m_m_s.toFixed(1) }} m/s</strong></div><div><span>6 小时降雨</span><strong>{{ forecast.values.tp_6h_mm.toFixed(1) }} mm</strong></div></div>
-      <details v-if="forecast.point_risk.triggers.length" class="weather-rule-details"><summary>查看需要留意的原因</summary><ul class="weather-triggers"><li v-for="trigger in forecast.point_risk.triggers" :key="trigger.field">{{ trigger.label }}：{{ trigger.value.toFixed(2) }} {{ trigger.unit }}（提醒线 {{ trigger.threshold }}）</li></ul></details>
+      <div class="weather-mini-grid"><div><span>温度</span><strong>{{ (forecast.values.t2m_K - 273.15).toFixed(1) }}°C</strong></div><div :class="metricTone('wind')"><span>地面风</span><strong>{{ forecast.derived.wind_speed_10m_m_s.toFixed(1) }} m/s</strong></div><div :class="metricTone('rain')"><span>6 小时降雨</span><strong>{{ forecast.values.tp_6h_mm.toFixed(1) }} mm</strong></div></div>
       <small class="weather-scope">这里看的是起终点之间一个参考位置的地面天气；整条路线和任务高度请看“沿线天气检查”。</small>
       <details class="weather-rule-details"><summary>查看提醒规则</summary><p>风速达到 {{ forecast.point_risk.rules.wind_attention_m_s }} / {{ forecast.point_risk.rules.wind_elevated_m_s }} m/s，或 6 小时降雨达到 {{ forecast.point_risk.rules.rain_attention_6h_mm }} / {{ forecast.point_risk.rules.rain_elevated_6h_mm }} mm，会分别显示关注 / 较强提醒。</p><small>{{ forecast.point_risk.message }}</small></details>
     </template>
