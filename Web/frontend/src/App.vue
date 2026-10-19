@@ -308,7 +308,11 @@ async function createCurrentTask() {
       taskCreateProgress.value = '正在检测 DJI RC 2…'
       await refreshRc2Connection()
       if (!rc2Status.value?.available || rc2Status.value.busy) {
-        fallbackReason = rc2Error.value || rc2Status.value?.message || '未检测到可用的 DJI RC 2。'
+        const detectionError = rc2Error.value || rc2Status.value?.message || '未检测到可用的 DJI RC 2。'
+        if (isRc2DeviceUnavailable(detectionError)) {
+          markRc2DeviceUnavailable()
+          fallbackReason = '未检测到已解锁的 DJI RC 2。'
+        } else fallbackReason = detectionError
       } else {
         const selectedTarget = rc2Targets.value.find((target) => target.name === rc2TargetName.value)
         const target = selectedTarget ?? (rc2Targets.value.length === 1 ? rc2Targets.value[0] : null)
@@ -322,10 +326,19 @@ async function createCurrentTask() {
             const queued = await startRc2Import(target.name)
             const result = await waitForRc2Job(queued.job_id)
             if (result.status === 'succeeded') importedToRc2 = true
-            else fallbackReason = result.message || 'DJI RC 2 导入未完成。'
+            else if (isRc2DeviceUnavailable(result.message)) {
+              markRc2DeviceUnavailable()
+              fallbackReason = '未检测到已解锁的 DJI RC 2。'
+            } else fallbackReason = result.message || 'DJI RC 2 导入未完成。'
           } catch (cause) {
-            fallbackReason = cause instanceof Error ? cause.message : 'DJI RC 2 导入失败。'
-            rc2Error.value = fallbackReason
+            const message = cause instanceof Error ? cause.message : 'DJI RC 2 导入失败。'
+            if (isRc2DeviceUnavailable(message)) {
+              markRc2DeviceUnavailable()
+              fallbackReason = '未检测到已解锁的 DJI RC 2。'
+            } else {
+              fallbackReason = message
+              rc2Error.value = fallbackReason
+            }
           }
         }
       }
@@ -334,6 +347,8 @@ async function createCurrentTask() {
     if (importedToRc2) {
       taskCreateNotice.value = `任务已创建；KMZ 已归档并导入到 DJI RC 2（${rc2Job.value?.target_file_name ?? ''}）。`
     } else {
+      rc2Error.value = ''
+      if (rc2Job.value?.status === 'failed') rc2Job.value = null
       taskCreateProgress.value = '无法完成设备导入，正在下载 KMZ…'
       downloadKmz(kmz)
       taskCreateNotice.value = `任务已创建；KMZ 已归档并下载。${fallbackReason}`
@@ -1582,6 +1597,21 @@ async function rc2ResponseError(response: Response, fallback: string) {
   return new Error(typeof payload.detail === 'string' ? payload.detail : fallback)
 }
 
+function isRc2DeviceUnavailable(message: string) {
+  return /未找到设备|找不到设备|请先解锁\s*RC\s*2|资源管理器可见|device.{0,20}not found|no device/i.test(message)
+}
+
+function markRc2DeviceUnavailable() {
+  if (rc2Status.value) {
+    rc2Status.value = { ...rc2Status.value, available: false, busy: false,
+      message: '未检测到已解锁的 DJI RC 2。任务 KMZ 会下载到本机。' }
+  }
+  rc2Targets.value = []
+  rc2TargetName.value = ''
+  rc2Job.value = null
+  rc2Error.value = ''
+}
+
 function refreshRc2Connection(): Promise<void> {
   if (rc2JobRunning.value) return Promise.resolve()
   if (rc2ConnectionPromise) return rc2ConnectionPromise
@@ -1671,7 +1701,7 @@ async function waitForRc2Job(jobId: string): Promise<Rc2Job> {
       rc2Error.value = ''
       pollFailures = 0
       if (job.status === 'succeeded' || job.status === 'failed') {
-        void refreshRc2Connection()
+        if (job.status === 'succeeded') void refreshRc2Connection()
         return job
       }
     } catch (cause) {
