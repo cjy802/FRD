@@ -618,6 +618,7 @@ onBeforeUnmount(() => {
 .earth-video-legend .target-key { background: #d97706; }
 .earth-weather-hint { position: absolute; z-index: 4; top: 12px; right: 12px; padding: 6px 9px; border: 1px solid #d8e0e7; border-radius: 6px; background: rgb(255 255 255 / .96); color: #526273; font-size: 11px; }
 .earth-weather-marker { position: absolute; z-index: 6; display: grid; width: 26px; height: 26px; transform: translate(-50%, -50%); place-items: center; padding: 0; border: 2px solid #fff; border-radius: 50%; background: #0f6cbd; box-shadow: 0 1px 5px rgb(15 23 42 / .45); color: #fff; font-family: inherit; font-size: 10px; font-weight: 700; line-height: 1; pointer-events: auto; cursor: pointer; }
+.earth-weather-marker:hover:not(:disabled), .earth-weather-marker:active:not(:disabled) { transform: translate(-50%, -50%); box-shadow: 0 1px 5px rgb(15 23 42 / .45); }
 .earth-weather-marker.is-attention { background: #c77900; }
 .earth-weather-marker.is-elevated { background: #bd302b; }
 .earth-weather-marker.is-incomplete { background: #667788; }
