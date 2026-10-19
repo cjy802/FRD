@@ -173,8 +173,15 @@ function toggleMapAnchorMenu() {
 }
 function chooseMapAnchor(id: string) {
   if (mapAnchorPickerDisabled.value) return
+  choosePlanningMode('anchors')
   selectedAnchorId.value = id
   closeMapAnchorMenu(true)
+}
+function chooseMapAreaMode() {
+  if (mapAnchorPickerDisabled.value) return
+  closeMapAnchorMenu(true)
+  choosePlanningMode('area')
+  startCoverageDraw()
 }
 function onMapAnchorPickerKeydown(event: KeyboardEvent) {
   if (mapAnchorPickerDisabled.value) return
@@ -2751,7 +2758,33 @@ onBeforeUnmount(() => {
         </div>
         <div class="map-view-switch map-source-switch view-mode-switch" aria-label="地图视图"><button type="button" :class="{ active: mapViewMode === '2d' }" :aria-pressed="mapViewMode === '2d'" @click="chooseMapViewMode('2d')">2D 平面</button><button type="button" :class="{ active: mapViewMode === '3d' }" :aria-pressed="mapViewMode === '3d'" @click="chooseMapViewMode('3d')">3D 视角</button></div>
         <div v-if="error" class="map-alert" role="alert">{{ error }}</div>
-         <div class="map-bottom"><div v-if="planningMode === 'anchors'" ref="mapAnchorPicker" class="map-anchor-picker" :class="{ 'is-open': mapAnchorMenuOpen }"><span class="svg-icon icon-map-pin" aria-hidden="true"></span><span class="map-anchor-label">地图选点</span><button ref="mapAnchorPickerButton" class="map-anchor-trigger" type="button" :disabled="mapAnchorPickerDisabled" :aria-expanded="mapAnchorMenuOpen" aria-haspopup="listbox" aria-controls="map-anchor-options" @click="toggleMapAnchorMenu" @keydown="onMapAnchorPickerKeydown"><span>{{ selectedAnchorChoice?.label }} · {{ selectedAnchorChoice?.title }}</span><span class="map-anchor-chevron" aria-hidden="true"></span></button><Transition name="map-anchor-menu"><div v-if="mapAnchorMenuOpen" id="map-anchor-options" class="map-anchor-options" role="listbox" aria-label="选择地图选点"><button v-for="choice in anchorChoices" :key="choice.id" class="map-anchor-option" :class="{ selected: choice.id === selectedAnchorId }" type="button" role="option" :aria-selected="choice.id === selectedAnchorId" @click="chooseMapAnchor(choice.id)"><span class="map-anchor-option-key">{{ choice.label }}</span><span>{{ choice.title }}</span><span v-if="choice.id === selectedAnchorId" class="map-anchor-check" aria-hidden="true">✓</span></button></div></Transition></div><span v-else class="coverage-map-hint">{{ coveragePolygon.length }} 个边界点 · {{ coverageRoadClasses.length }} 类道路</span><span class="map-radius"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>{{ planningMode === 'area' ? '区域道路覆盖' : `接路判定 ${landingSearchRadiusM} m` }}</span><span class="map-scale"><span class="svg-icon icon-wind" aria-hidden="true"></span>任务高度 {{ form.altitude_m }} m</span></div>
+        <div class="map-bottom">
+          <div ref="mapAnchorPicker" class="map-anchor-picker" :class="{ 'is-open': mapAnchorMenuOpen }">
+            <span class="svg-icon icon-map-pin" aria-hidden="true"></span>
+            <span class="map-anchor-label">{{ planningMode === 'area' ? '规划模式' : '地图选点' }}</span>
+            <button ref="mapAnchorPickerButton" class="map-anchor-trigger" type="button" :disabled="mapAnchorPickerDisabled" :aria-expanded="mapAnchorMenuOpen" aria-haspopup="listbox" aria-controls="map-anchor-options" @click="toggleMapAnchorMenu" @keydown="onMapAnchorPickerKeydown">
+              <span>{{ planningMode === 'area' ? '区域划分模式' : `${selectedAnchorChoice?.label} · ${selectedAnchorChoice?.title}` }}</span>
+              <span class="map-anchor-chevron" aria-hidden="true"></span>
+            </button>
+            <Transition name="map-anchor-menu">
+              <div v-if="mapAnchorMenuOpen" id="map-anchor-options" class="map-anchor-options" role="listbox" aria-label="选择地图规划模式">
+                <button v-for="choice in anchorChoices" :key="choice.id" class="map-anchor-option" :class="{ selected: planningMode === 'anchors' && choice.id === selectedAnchorId }" type="button" role="option" :aria-selected="planningMode === 'anchors' && choice.id === selectedAnchorId" @click="chooseMapAnchor(choice.id)">
+                  <span class="map-anchor-option-key">{{ choice.label }}</span>
+                  <span>{{ choice.title }}</span>
+                  <span v-if="planningMode === 'anchors' && choice.id === selectedAnchorId" class="map-anchor-check" aria-hidden="true">✓</span>
+                </button>
+                <button class="map-anchor-option" :class="{ selected: planningMode === 'area' }" type="button" role="option" :aria-selected="planningMode === 'area'" @click="chooseMapAreaMode">
+                  <span class="map-anchor-option-key">区</span>
+                  <span>区域划分模式</span>
+                  <span v-if="planningMode === 'area'" class="map-anchor-check" aria-hidden="true">✓</span>
+                </button>
+              </div>
+            </Transition>
+          </div>
+          <span v-if="planningMode === 'area'" class="coverage-map-hint">{{ coveragePolygon.length }} 个边界点 · {{ coverageRoadClasses.length }} 类道路</span>
+          <span class="map-radius"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>{{ planningMode === 'area' ? '区域道路覆盖' : `接路判定 ${landingSearchRadiusM} m` }}</span>
+          <span class="map-scale"><span class="svg-icon icon-wind" aria-hidden="true"></span>任务高度 {{ form.altitude_m }} m</span>
+        </div>
         <div v-if="!flightActive && mapEditMode === 'node' && selectedWaypointIndex !== null && selectedWaypointSetting()" class="node-controller" aria-label="航点控制器"><div class="node-controller-head"><strong>节点 {{ selectedWaypointIndex + 1 }} · 视角控制</strong><span>{{ Math.round(waypointHeading(selectedWaypointIndex)) }}° · {{ selectedWaypointSetting()?.altitude_m ?? form.altitude_m }}m</span></div><div class="node-controller-body"><div class="wasd-pad" aria-label="WASD 平面移动控制"><button type="button" @click="moveSelectedWaypoint(0, 1)">W</button><button type="button" @click="moveSelectedWaypoint(-1, 0)">A</button><button type="button" @click="moveSelectedWaypoint(0, -1)">S</button><button type="button" @click="moveSelectedWaypoint(1, 0)">D</button></div><div class="node-dial"><button type="button" aria-label="逆时针旋转" @click="rotateSelectedWaypoint(-15)">↺</button><strong>{{ Math.round(waypointHeading(selectedWaypointIndex)) }}°</strong><button type="button" aria-label="顺时针旋转" @click="rotateSelectedWaypoint(15)">↻</button></div><div class="node-axis"><button type="button" @click="rotateSelectedWaypoint(0, 5)">镜头上</button><button type="button" @click="rotateSelectedWaypoint(0, -5)">镜头下</button><button type="button" @click="adjustSelectedWaypoint({ altitude_m: Math.min(1500, (selectedWaypointSetting()?.altitude_m ?? form.altitude_m) + 5) })">高度 +</button><button type="button" @click="adjustSelectedWaypoint({ altitude_m: Math.max(1, (selectedWaypointSetting()?.altitude_m ?? form.altitude_m) - 5) })">高度 −</button></div></div><small>W/S 平面前后 ±1m，A/D 平面左右 ±1m，Q/E 航向 ±5°，Z/C 俯仰 ±5°可直接调整水平朝向。</small></div>
         <div v-if="routeAssessment" class="weather-map-legend">沿线初筛：蓝 · 未触发，橙 · 关注，红 · 较强，灰 · 缺测<br />基于 0.25° 场，不是街道级风险，也不代表飞行许可。</div>
         <div class="camera-preview" :class="{ visible: (flightActive || (mapEditMode === 'node' && selectedWaypointIndex !== null)) && (baseMap === 'earth' || cameraPreviewReady) }" aria-label="当前节点相机视角预览"><div ref="cameraPreviewElement" class="camera-preview-map" :data-base-map="baseMap" @pointerdown.capture="handleCameraPreviewPointerDown" @pointermove="handleCameraPreviewPointerMove" @pointerup="handleCameraPreviewPointerEnd" @pointercancel="handleCameraPreviewPointerEnd" @lostpointercapture="handleCameraPreviewPointerEnd"><div ref="cesiumCameraElement" :style="{ position: 'absolute', inset: '0', visibility: baseMap === 'current' ? 'visible' : 'hidden' }"></div><BaiduCameraPreview v-if="baseMap === 'earth' && (flightActive || (mapEditMode === 'node' && selectedWaypointIndex !== null))" :active="baseMap === 'earth' && (flightActive || (mapEditMode === 'node' && selectedWaypointIndex !== null))" :pose="currentCameraPose" /></div><div class="camera-preview-head"><strong>当前视角</strong><span v-if="flightActive">{{ flightNodeLabel }} / {{ Math.round(flightSample?.pitch ?? 0) }}&deg;</span><span v-else-if="selectedWaypointIndex !== null">节点 {{ selectedWaypointIndex + 1 }} · {{ Math.round(selectedWaypointSetting()?.gimbal_pitch_angle ?? 0) }}°</span></div><small>地图模拟视角 · 不是实时相机视频</small></div>
