@@ -11,7 +11,7 @@
 /app/prepared/gfs_cache/
 /app/prepared/gfs_aux_cache/
 /Web/mode/output_year_transfer_*/
-/Web/mode/output_production/
+/Web/mode/output_production/*
 /help/backfill/
 /help/data/
 /help/output/
@@ -44,3 +44,7 @@
 /model/测试成效/
 /model/.zcode/
 /app/backfill_batches - 副本.py
+
+# 例外：上线订正模型很小且必需，随仓库分发
+!/Web/mode/output_production/corrector_ridge.npz
+!/Web/mode/output_production/training_metadata.json

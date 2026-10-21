@@ -1,0 +1,62 @@
+{
+  "purpose": "deployment_refit",
+  "model_fit_scope": "all deduplicated available paired rows",
+  "trained_at_utc": "2026-10-08T01:17:43.025050+00:00",
+  "data_path": "D:\\低空经济\\app\\point_data\\fuxi_era5_features.csv",
+  "history_data_path": "D:\\低空经济\\app\\point_data\\fuxi_era5_pairs_6h.csv",
+  "source_rows": {
+    "history": 979,
+    "features": 3279
+  },
+  "duplicate_rows_removed": 365,
+  "train_rows": 3893,
+  "held_out_rows": 0,
+  "training_profile": {
+    "rows": 3893,
+    "initializations": 1708,
+    "dates": 979,
+    "init_start_utc": "2024-01-01T06:00:00+00:00",
+    "init_end_utc": "2026-09-06T06:00:00+00:00",
+    "valid_start_utc": "2024-01-01T12:00:00+00:00",
+    "valid_end_utc": "2026-09-06T12:00:00+00:00",
+    "rows_by_init_year": {
+      "2024": 366,
+      "2025": 3279,
+      "2026": 248
+    },
+    "rows_by_init_hour": {
+      "6": 1708,
+      "12": 1093,
+      "18": 1092
+    },
+    "rows_by_lead_hours": {
+      "6": 1708,
+      "12": 1093,
+      "24": 1092
+    }
+  },
+  "features": [
+    "fuxi_t2m_K",
+    "fuxi_u10_m_s",
+    "fuxi_v10_m_s",
+    "fuxi_msl_Pa",
+    "fuxi_tp_6h_mm",
+    "lead_hours",
+    "doy_sin",
+    "doy_cos"
+  ],
+  "alpha": 10.0,
+  "field_policy": {
+    "t2m_K": "ridge",
+    "u10_m_s": "ridge",
+    "v10_m_s": "fuxi",
+    "msl_Pa": "fuxi",
+    "tp_6h_mm": "ridge"
+  },
+  "notes": [
+    "All available 2024/2025/2026 rows are used; no new validation split is made.",
+    "Rich predictors absent from the history table are not zero-filled or used.",
+    "Previous year-transfer validation is separate; this refit has no independent test score.",
+    "Prediction still requires a current FuXi raw forecast or fresh global initial field."
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "task": "road ponding YOLO seg baseline (ultralytics best.pt)",
+  "weights": "/root/model/output/yolo_seg/mix4joint_seg/weights/best.pt",
+  "task_type": "seg",
+  "dataset": "puddle1000",
+  "mask_merge": "union of instance masks",
+  "predict_conf": 0.25,
+  "predict_imgsz": 640,
+  "parameters": 3390771,
+  "images": 198,
+  "evaluated_pixels": 45619200,
+  "water_metrics": {
+    "iou": 0.73865002754557,
+    "precision": 0.8367858073199322,
+    "recall": 0.8629824173548515,
+    "dice": 0.849682242939153
+  },
+  "confusion_rows_true_columns_predicted_background_water": [
+    [
+      44784220,
+      120298
+    ],
+    [
+      97924,
+      616758
+    ]
+  ],
+  "per_image_water_iou": {
+    "median": 0.6828555570066606,
+    "min": 0.0,
+    "max": 0.9495269546590503
+  },
+  "ultralytics_native_val_mAP50": null,
+  "inference_seconds_per_image": 0.025,
+  "elapsed_seconds": 5.0
+}

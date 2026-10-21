@@ -1,6 +1,10 @@
 data/
-artifacts/
-output/
+artifacts/*
+!artifacts/onnx/
+artifacts/onnx/*
+output/*
+!output/4090_champions/
+output/4090_champions/*
 runs/
 third_party/
 pipcache/
@@ -20,3 +24,9 @@ __pycache__/
 .pytest_cache/
 .venv/
 demo/outbox/
+
+# 例外：小体积权重与模型清单随仓库分发；大模型（*.onnx.data、cmnext、joblib、fuxi 目录）仍留本地。
+!artifacts/onnx/registry.json
+!artifacts/onnx/abcdwavenet_ponding.onnx.json
+!output/4090_champions/yoloj_mix4_best.pt
+!output/4090_champions/report_*.json

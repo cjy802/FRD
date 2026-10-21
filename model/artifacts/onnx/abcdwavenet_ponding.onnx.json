@@ -1,0 +1,30 @@
+{
+  "model": "abcdwavenet",
+  "checkpoint": "D:\\低空经济\\model\\output\\abcdwavenet_puddle1000\\UNet_train_best_0.7751.pth",
+  "checkpoint_sha256": "0d1c84f2dfe192891a38fd471d99be4c56455c56b08e2869477646f7dfaafbd5",
+  "onnx": "D:\\低空经济\\model\\artifacts\\onnx\\abcdwavenet_ponding.onnx",
+  "onnx_sha256": "c0961e195445a4194f8538c56a9afabad6e56c12c29fbb8d307b6f11ccfe08a9",
+  "input": [
+    "input_0",
+    [
+      1,
+      3,
+      256,
+      256
+    ]
+  ],
+  "output": [
+    "logits",
+    [
+      1,
+      2,
+      256,
+      256
+    ],
+    "class 1 = water (argmax or softmax[:,1] threshold)"
+  ],
+  "verification": {
+    "max_abs_logit_deviation": 9.5367431640625e-06,
+    "mean_abs_logit_deviation": 1.5111018001334742e-06
+  }
+}

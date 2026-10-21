@@ -1,0 +1,12 @@
+{
+  "default_model": "abcdwavenet_local.onnx",
+  "task": "ponding",
+  "water_class": 1,
+  "input_size": 256,
+  "normalize": "div255",
+  "training_source": "FRED flooded roads (812 pairs) + 3 hand-seeded local urban photos (flip-augmented, oversampled), fine-tuned from the FRED checkpoint; location-disjoint val water IoU 0.7691",
+  "water_iou_on_val": 0.7691,
+  "notes": "Detects both reflective flood water and murky asphalt potholes on local photos; FRED val improved over the FRED-only model (0.6513 -> 0.7691). Base models kept: abcdwavenet_ponding.onnx (Puddle-1000), artifacts/onnx_fred (FRED-only).",
+  "fine_tuned_at": "2026-10-16",
+  "seed_labels": "waterwatch/seed_local_labels.py polygons are seed labels drawn after visual review; replace with reviewed labelme annotations as more local photos arrive"
+}
