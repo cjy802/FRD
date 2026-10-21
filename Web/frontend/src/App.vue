@@ -3047,7 +3047,7 @@ onBeforeUnmount(() => {
  .coverage-endpoints { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin: 10px 0 4px; }
  .coverage-endpoints button { display: flex; align-items: center; gap: 7px; min-width: 0; min-height: 48px; padding: 7px 8px; border: 1px solid #d7e1ea; border-radius: 7px; background: #fff; color: #344455; text-align: left; cursor: pointer; }
  .coverage-endpoints button:hover:not(:disabled) { border-color: #88bcea; background: #f5faff; }
- .coverage-endpoints button.active { border-color: #4f9bd7; background: #eaf5fd; color: #1265a7; box-shadow: inset 3px 0 #1769aa; }
+ .coverage-endpoints button.active { border-color: #4f9bd7; background: #eaf5fd; color: #1265a7; }
  .coverage-endpoints button:disabled { cursor: default; opacity: .55; }
  .coverage-endpoint-key { display: grid; flex: none; width: 24px; height: 24px; place-items: center; border-radius: 50%; background: #1769aa; color: #fff; font-size: 12px; font-weight: 800; }
  .coverage-endpoints button:nth-child(2) .coverage-endpoint-key { background: #bd5a2b; }
@@ -3071,8 +3071,7 @@ onBeforeUnmount(() => {
 .batch-range-guide { margin: 2px 4px 6px; color: var(--ui-muted); font-size: var(--font-caption); line-height: 1.4; }
 .major-point-card { container-type: inline-size; padding: 12px 4px; border-bottom: 1px solid var(--ui-line); }
 .major-point-card.is-batch-range { background: #f0faf9; }
-.major-point-card.is-batch-boundary { box-shadow: inset 3px 0 #168782; }
-.major-point-card.is-selected { margin-left: -7px; padding-left: 8px; border-left: 3px solid var(--ui-accent); background: #f8fbff; }
+.major-point-card.is-selected { background: #f8fbff; }
 .major-point-card .point-heading { margin-bottom: 8px; }
 .batch-boundary-checkbox { flex: none; width: 20px; height: 20px; margin: 0; accent-color: #168782; cursor: pointer; }
 .batch-boundary-checkbox:disabled { cursor: default; opacity: .5; }
