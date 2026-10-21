@@ -7,6 +7,7 @@ import PlaceSearch from './PlaceSearch.vue'
 import BaiduCameraPreview from './BaiduCameraPreview.vue'
 import PhotoAnalysisPanel from './PhotoAnalysisPanel.vue'
 import VideoSurveyPanel from './VideoSurveyPanel.vue'
+import CustomSelect from './CustomSelect.vue'
 import type { VideoCaptureTarget, VideoTelemetryPoint } from './videoSurvey'
 import type { CameraPose } from './baiduScene'
 import type { RouteAssessment, WeatherLimits } from './weatherTypes'
@@ -89,6 +90,18 @@ const coverageRoadClassOptions = [
   { value: 'residential', label: '住宅道路' },
   { value: 'unclassified', label: '普通道路' },
   { value: 'service', label: '服务道路' },
+]
+const headingModeOptions = [
+  { value: 'followWayline', label: '沿航线' },
+  { value: 'fixed', label: '固定角度' },
+  { value: 'smoothTransition', label: '平滑转向' },
+  { value: 'manually', label: '手动控制' },
+]
+const flightSpeedOptions = [0.5, 1, 2, 4, 8].map(speed => ({ value: speed, label: `${speed}×` }))
+const djiModelOptions = [
+  { value: 'fly', label: 'DJI Fly · Air 3 / Air 3S / Mini 4 Pro' },
+  { value: 'm30', label: 'DJI Pilot 2 · M30 / M30T' },
+  { value: 'm3e', label: 'DJI Pilot 2 · Mavic 3E / 3T / 3M' },
 ]
 const anchors = ref<MajorPoint[]>([
   { id: 'anchor-1', latitude: form.start.latitude, longitude: form.start.longitude },
@@ -324,6 +337,10 @@ type Rc2Job = {
 }
 const rc2Status = ref<Rc2Status | null>(null)
 const rc2Targets = ref<Rc2Target[]>([])
+const rc2TargetOptions = computed(() => [
+  { value: '', label: '请选择遥控器上的 .kmz 文件' },
+  ...rc2Targets.value.map(target => ({ value: target.name, label: target.name })),
+])
 const rc2DeviceName = ref('')
 const rc2WaypointPath = ref('')
 const rc2TargetName = ref('')
@@ -2779,7 +2796,7 @@ onBeforeUnmount(() => {
               <div v-for="{ setting, index } in editorWaypoints" :key="index" class="waypoint-row" :data-waypoint-index="index">
                 <strong>点 {{ index + 1 }}</strong>
                 <label>高度（m）<input v-model.number="setting.altitude_m" type="number" min="1" max="1500" step="1" /></label>
-                <label>机头方向<select v-model="setting.heading_mode"><option value="followWayline">沿航线</option><option value="fixed">固定角度</option><option value="smoothTransition">平滑转向</option><option value="manually">手动控制</option></select></label>
+                <label>机头方向<CustomSelect v-model="setting.heading_mode" :options="headingModeOptions" aria-label="机头方向" /></label>
                 <label v-if="setting.heading_mode === 'fixed' || setting.heading_mode === 'smoothTransition'">机头角度（°）<input v-model.number="setting.heading_angle" type="number" step="1" /></label>
                 <label>摄像头俯仰（°）<input v-model.number="setting.gimbal_pitch_angle" type="number" min="-90" max="45" step="1" /></label>
               </div>
@@ -2880,7 +2897,7 @@ onBeforeUnmount(() => {
           <button v-if="!flightActive" class="flight-entry" type="button" :disabled="!flightTimeline" aria-label="开始模拟飞行" title="模拟飞行" @click="toggleFlight"><span class="svg-icon icon-drone" aria-hidden="true"></span></button>
           <div v-if="flightActive" class="flight-controls" aria-label="模拟飞行回放">
             <button class="flight-toggle" type="button" :disabled="!flightTimeline" :aria-label="flightPlaying ? '暂停模拟飞行' : flightProgress >= 1 ? '重新播放模拟飞行' : flightActive ? '继续模拟飞行' : '开始模拟飞行'" :aria-pressed="flightPlaying" :title="flightPlaying ? '暂停' : flightProgress >= 1 ? '重播' : flightActive ? '继续' : '模拟飞行'" @click="toggleFlight"><span class="svg-icon icon-drone" aria-hidden="true"></span></button>
-            <label class="flight-speed">倍率<select v-model.number="flightSpeed" aria-label="模拟飞行倍率" :disabled="!flightTimeline"><option :value="0.5">0.5×</option><option :value="1">1×</option><option :value="2">2×</option><option :value="4">4×</option><option :value="8">8×</option></select></label>
+            <label class="flight-speed">倍率<CustomSelect v-model="flightSpeed" :options="flightSpeedOptions" aria-label="模拟飞行倍率" :disabled="!flightTimeline" /></label>
             <label class="flight-progress-wrap"><span class="sr-only">模拟飞行进度</span><input class="flight-progress" type="range" min="0" max="1000" step="1" :value="Math.round(flightProgress * 1000)" :disabled="!flightTimeline" :aria-valuetext="`${Math.round(flightProgress * 100)}%，${flightTimeLabel}`" :title="flightTimeLabel" @pointerdown="beginFlightSeek" @pointerup="endFlightSeek" @pointercancel="endFlightSeek" @input="seekFlight" /></label>
             <span class="flight-percent">{{ Math.round(flightProgress * 100) }}%</span>
           </div>
@@ -2985,7 +3002,7 @@ onBeforeUnmount(() => {
             <span>{{ distance }} · 预计用时 {{ elapsed }}</span>
             <details v-if="!preview.area_coverage"><summary><span class="svg-icon icon-eye" aria-hidden="true"></span>查看路线数据</summary><small>直线 {{ preview.straight_distance_km.toFixed(2) }} km · {{ preview.building_clearance_m === null ? '在线模式未检查建筑缓冲' : `建筑缓冲 ${preview.building_clearance_m} m` }}</small><small>首末主点到道路分别约 {{ preview.start_snap_m }} m / {{ preview.end_snap_m }} m</small><small>手动主点 {{ anchors.length }} 个 · 自动生成小点 {{ generatedPointCount }} 个 · {{ preview.segments?.length ?? 1 }} 段</small><small v-for="segment in preview.segments" :key="segment.id">{{ majorPointLabel(segment.index) }} → {{ majorPointLabel(segment.index + 1) }}：{{ segment.distance_km.toFixed(2) }} km</small><small>{{ preview.data_source }}</small><small>路线数据 © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap contributors</a></small></details>
             <div v-else class="coverage-route-detail"><strong>区域道路覆盖 · {{ preview.area_coverage.route_closed ? '闭环' : 'A → B' }}</strong><span>目标道路 {{ (preview.area_coverage.target_road_m / 1000).toFixed(2) }} km · 重复经过 {{ (preview.area_coverage.repeated_road_m / 1000).toFixed(2) }} km</span><span>连接道路 {{ (preview.area_coverage.connector_m / 1000).toFixed(2) }} km · 道路等级 {{ preview.area_coverage.road_classes.join('、') }}</span><small>{{ preview.data_source }} · A/B 吸附 {{ preview.start_snap_m.toFixed(1) }} / {{ preview.end_snap_m.toFixed(1) }} m。</small></div>
-            <div class="route-export"><label>DJI 机型模板<select v-model="djiModel"><option value="fly">DJI Fly · Air 3 / Air 3S / Mini 4 Pro</option><option value="m30">DJI Pilot 2 · M30 / M30T</option><option value="m3e">DJI Pilot 2 · Mavic 3E / 3T / 3M</option></select></label><button type="button" class="weather-refresh" :disabled="!flightTimeline" @click="toggleFlight"><span class="svg-icon icon-drone" aria-hidden="true"></span>{{ flightPlaying ? '暂停巡航动画' : flightProgress >= 1 ? '重播巡航动画' : flightActive ? '继续巡航动画' : '查看巡航路线动画' }}</button><button type="button" class="weather-refresh task-flight-start" :disabled="!activeTask || !taskRouteMatches || !activeTask.export_file_name || activeTask.status === 'in_flight'" @click="markTaskFlightStarted">{{ activeTask?.status === 'in_flight' ? '已标记本次任务开始' : '标记本次任务已开始' }}</button><small v-if="activeTask?.export_file_name">KMZ 已保存在任务目录：{{ activeTask.export_file_name }}</small><small>按相对起飞点高度生成。路线折点会先抽稀，减少 DJI 中高度标签和航点标记重叠。{{ preview.area_coverage ? '此路线用于道路区域巡查；起点是道路中心线参考点，仍需现场选择合适起降位置。' : roadSource === 'online' ? '当前是在线机动车道路参考，不应直接作为飞行线。' : '当前是道路走廊参考，不代表已核实飞行航线。' }}{{ djiModel === 'fly' ? 'DJI Fly 需先创建一条占位航线，再用相同 UUID 文件名替换 waypoint 目录中的 KMZ。' : '导入 DJI Pilot 2 后仍需核对机型、动作、返航、空域和现场条件。' }}文件不是放飞许可。</small><small v-if="djiModel === 'fly'">Air 3/Air 3S 使用 DJI Fly 消费级 WPML；当前通用机型枚举按 RC 2 航线格式生成，若设备拒绝文件需要用设备原生占位 KMZ 校验。</small><small v-if="kmzError" class="form-error" role="alert">{{ kmzError }}</small></div>
+            <div class="route-export"><label>DJI 机型模板<CustomSelect v-model="djiModel" :options="djiModelOptions" aria-label="DJI 机型模板" /></label><button type="button" class="weather-refresh" :disabled="!flightTimeline" @click="toggleFlight"><span class="svg-icon icon-drone" aria-hidden="true"></span>{{ flightPlaying ? '暂停巡航动画' : flightProgress >= 1 ? '重播巡航动画' : flightActive ? '继续巡航动画' : '查看巡航路线动画' }}</button><button type="button" class="weather-refresh task-flight-start" :disabled="!activeTask || !taskRouteMatches || !activeTask.export_file_name || activeTask.status === 'in_flight'" @click="markTaskFlightStarted">{{ activeTask?.status === 'in_flight' ? '已标记本次任务开始' : '标记本次任务已开始' }}</button><small v-if="activeTask?.export_file_name">KMZ 已保存在任务目录：{{ activeTask.export_file_name }}</small><small>按相对起飞点高度生成。路线折点会先抽稀，减少 DJI 中高度标签和航点标记重叠。{{ preview.area_coverage ? '此路线用于道路区域巡查；起点是道路中心线参考点，仍需现场选择合适起降位置。' : roadSource === 'online' ? '当前是在线机动车道路参考，不应直接作为飞行线。' : '当前是道路走廊参考，不代表已核实飞行航线。' }}{{ djiModel === 'fly' ? 'DJI Fly 需先创建一条占位航线，再用相同 UUID 文件名替换 waypoint 目录中的 KMZ。' : '导入 DJI Pilot 2 后仍需核对机型、动作、返航、空域和现场条件。' }}文件不是放飞许可。</small><small v-if="djiModel === 'fly'">Air 3/Air 3S 使用 DJI Fly 消费级 WPML；当前通用机型枚举按 RC 2 航线格式生成，若设备拒绝文件需要用设备原生占位 KMZ 校验。</small><small v-if="kmzError" class="form-error" role="alert">{{ kmzError }}</small></div>
           </div>
          <section v-if="activeModule === 'dji' && ((preview && djiModel === 'fly') || rc2Job)" class="rc2-import-panel" aria-label="导入 DJI RC 2">
           <div class="rc2-import-heading">
@@ -2999,10 +3016,7 @@ onBeforeUnmount(() => {
             <small v-if="rc2DeviceName">遥控器：{{ rc2DeviceName }}</small>
             <small v-if="rc2WaypointPath">占位航线目录：{{ rc2WaypointPath }}</small>
             <label>选择已有占位航线
-              <select v-model="rc2TargetName" :disabled="rc2Loading || rc2JobRunning || !rc2Targets.length">
-                <option value="">请选择遥控器上的 .kmz 文件</option>
-                <option v-for="target in rc2Targets" :key="target.name" :value="target.name">{{ target.name }}</option>
-              </select>
+              <CustomSelect v-model="rc2TargetName" :options="rc2TargetOptions" aria-label="选择已有占位航线" :disabled="rc2Loading || rc2JobRunning || !rc2Targets.length" />
             </label>
             <small v-if="!rc2Targets.length && !rc2Loading">没有可替换的占位航线；创建任务时会下载 KMZ 文件。</small>
             <small v-else-if="rc2Targets.length > 1 && !rc2TargetName">请选择要替换的占位航线；未选择时创建任务会下载 KMZ 文件。</small>
@@ -3150,8 +3164,9 @@ onBeforeUnmount(() => {
 .flight-toggle .svg-icon { width: 22px; height: 22px; }
 .icon-drone { -webkit-mask-image: url('/svg/drone.svg'); mask-image: url('/svg/drone.svg'); }
 .flight-speed { display: inline-flex; align-items: center; gap: 3px; flex: none; color: #526273; font-size: 11px; white-space: nowrap; }
-.flight-speed select { width: 68px; min-height: 30px; padding: 0 22px 0 5px; border: 1px solid #dbe2ea; border-radius: 6px; background-color: #f7fafc; background-position: right 6px center; background-size: 11px 11px; color: #1769aa; font: inherit; font-weight: 700; }
-.flight-speed select:disabled { opacity: .5; }
+.flight-speed .custom-select { display: inline-block; width: 68px; }
+.flight-speed :deep(.custom-select-trigger) { min-height: 30px; padding: 0 8px; border-color: #dbe2ea; border-radius: 6px; background-color: #f7fafc; color: #1769aa; font-size: 11px; font-weight: 700; }
+.flight-speed :deep(.custom-select-trigger:disabled) { opacity: .5; background-color: #f7fafc; }
 .flight-progress-wrap { display: flex; align-items: center; flex: 1; min-width: 60px; min-height: 30px; }
 .flight-progress { width: 100%; margin: 0; accent-color: #126cb7; cursor: pointer; }
 .flight-progress:disabled { opacity: .4; cursor: default; }
@@ -3175,7 +3190,8 @@ onBeforeUnmount(() => {
 .rc2-import-panel p, .rc2-import-panel small, .rc2-job span { display: block; margin: 0; color: #53677c; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
 .rc2-import-panel .form-error { color: #a4262c; }
 .rc2-import-panel label { display: block; color: #344455; font-size: 12px; font-weight: 600; }
-.rc2-import-panel select { display: block; width: 100%; min-height: 34px; margin-top: 5px; padding: 5px 32px 5px 7px; border: 1px solid #b8cddd; border-radius: 6px; background-color: #fff; color: #25394d; font: inherit; font-weight: 400; }
+.rc2-import-panel .custom-select { display: block; margin-top: 5px; }
+.rc2-import-panel :deep(.custom-select-trigger) { border-color: #b8cddd; border-radius: 6px; color: #25394d; font-size: 12px; }
 .rc2-import-panel button:disabled { cursor: default; opacity: .55; }
 .rc2-job { display: grid; gap: 6px; padding: 10px; border: 1px solid #bdd7ed; border-radius: 7px; background: #fff; }
 .rc2-job > strong { color: #1265a7; font-size: 12px; }

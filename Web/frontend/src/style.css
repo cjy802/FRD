@@ -327,7 +327,8 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .road-summary a { color: var(--ui-accent); }
 .route-export { display: grid; gap: 7px; margin-top: 12px; padding-top: 12px; border-top: 1px solid #edf0f2; }
 .route-export label { color: var(--ui-muted); font-size: var(--font-caption); font-weight: 600; }
-.route-export select { display: block; width: 100%; margin-top: 5px; padding: 7px 32px 7px 8px; border: 1px solid var(--ui-line); border-radius: var(--ui-radius); background-color: #fff; color: inherit; font: inherit; font-size: var(--font-caption); }
+.route-export .custom-select { display: block; margin-top: 5px; }
+.route-export .custom-select-trigger { font-size: var(--font-caption); }
 .waypoint-editor-trigger { display: grid; grid-template-columns: minmax(0, 1fr) auto 16px; align-items: center; gap: 8px; width: 100%; min-height: 40px; margin-top: 8px; padding: 8px 10px; border: 1px solid #d7dfe8; border-radius: 7px; background: #fff; color: var(--ui-accent); font-size: var(--font-caption); font-weight: 600; text-align: left; cursor: pointer; }
 .waypoint-editor-trigger:hover:not(:disabled) { border-color: #9fc5e4; background: #f6faff; }
 .waypoint-editor-trigger small { color: var(--ui-muted); font-size: 10px; font-weight: 500; }
@@ -358,8 +359,9 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .waypoint-row > label:nth-of-type(3):not(:last-child) { grid-column: 2; grid-row: 2; }
 .waypoint-row > label:last-child { grid-column: 3; grid-row: 2; }
 .waypoint-row label { color: var(--ui-muted); font-size: 10px; font-weight: 600; }
-.waypoint-row input, .waypoint-row select { display: block; width: 100%; margin-top: 3px; padding: 5px; border: 1px solid var(--ui-line); border-radius: 4px; background-color: #fff; color: inherit; font: inherit; font-size: 11px; }
-.waypoint-row select { padding-right: 30px; }
+.waypoint-row input { display: block; width: 100%; margin-top: 3px; padding: 5px; border: 1px solid var(--ui-line); border-radius: 4px; background-color: #fff; color: inherit; font: inherit; font-size: 11px; }
+.waypoint-row .custom-select { margin-top: 3px; }
+.waypoint-row .custom-select-trigger { min-height: 0; padding: 5px 8px; border-radius: 4px; font-size: 11px; }
 .map-edit-switch { display: inline-flex; align-items: center; gap: 2px; margin-left: 0; min-height: var(--map-control-height); padding: 3px; border: 1px solid var(--map-control-border); border-radius: var(--map-control-radius); overflow: hidden; background: #fff; box-shadow: var(--map-control-shadow); pointer-events: auto; }
 .map-edit-switch button { min-height: 30px; border: 0; border-radius: 6px; padding: 0 10px; color: #526273; background: transparent; font: inherit; font-size: var(--font-caption); cursor: pointer; }
 .map-edit-switch button.active { color: #fff; background: #1769aa; }

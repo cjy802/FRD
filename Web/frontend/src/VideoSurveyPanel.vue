@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import CustomSelect from './CustomSelect.vue'
 import {
   addVideoCaptureTarget,
   browseVideoSurveyFiles,
@@ -353,7 +354,7 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
         <div class="adaptive-selector-fields">
           <label>直线段最大重叠 · %<input v-model.number="straightOverlapPercent" type="number" min="0" max="50" step="1" :disabled="selectingFrames" /></label>
           <label>转弯处保留重叠 · %<input v-model.number="turnOverlapPercent" type="number" min="20" max="90" step="1" :disabled="selectingFrames" /></label>
-          <label>画面扫描频率<select v-model.number="scanFps" :disabled="selectingFrames"><option :value="1">1 次 / 秒</option><option :value="2">2 次 / 秒</option><option :value="4">4 次 / 秒</option></select></label>
+          <label>画面扫描频率<CustomSelect v-model="scanFps" :options="[{ value: 1, label: '1 次 / 秒' }, { value: 2, label: '2 次 / 秒' }, { value: 4, label: '4 次 / 秒' }]" :disabled="selectingFrames" aria-label="画面扫描频率" /></label>
           <label>转弯识别角度 · °<input v-model.number="turnAngleDegrees" type="number" min="10" max="90" step="5" :disabled="selectingFrames" /></label>
           <label>镜头角度变化阈值 · °<input v-model.number="cameraChangeDegrees" type="number" min="5" max="45" step="1" :disabled="selectingFrames" /></label>
           <label class="adaptive-blur-toggle"><input v-model="blurFilterEnabled" type="checkbox" :disabled="selectingFrames" />过滤明显模糊帧</label>
