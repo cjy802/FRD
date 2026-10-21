@@ -175,7 +175,11 @@ export class BaiduScene {
   }
 
   setView(view: SceneView, coordinates: Coordinate[]) {
-    const projection = this.geoDatum === 'wgs84' ? 'EPSG:3857' : view === '3d' ? 'ecef' : 'EPSG:3857'
+    // Both OSM/WGS84 and Baidu/BD-09 scenes need the same projection switch.
+    // Keeping WGS84 in EPSG:3857 made the 3D control change state without
+    // changing the actual map projection, which was especially visible in
+    // area coverage mode where the OSM map is used by default.
+    const projection = view === '3d' ? 'ecef' : 'EPSG:3857'
     this.engine.map.setProjection(projection)
     this.engine.controller.enableTilt = view === '3d'
     this.engine.controller.enableRotate = view === '3d'
