@@ -95,6 +95,9 @@ class MissionRouteRequest(BaseModel):
 class AreaCoverageRequest(BaseModel):
     polygon: list[Point] = Field(min_length=3, max_length=128)
     road_classes: list[str] = Field(default_factory=lambda: ["trunk", "primary", "secondary"], min_length=1, max_length=10)
+    start: Point | None = None
+    end: Point | None = None
+    endpoint_snap_m: float = Field(default=100, ge=1, le=500, allow_inf_nan=False)
     altitude_m: float = Field(default=100, ge=0, le=1000, allow_inf_nan=False)
     speed_kmh: float = Field(default=45, gt=0, le=200, allow_inf_nan=False)
 
@@ -111,6 +114,8 @@ class AreaCoverageRequest(BaseModel):
         unique = {(round(point.latitude, 7), round(point.longitude, 7)) for point in self.polygon}
         if len(unique) < 3:
             raise ValueError("区域边界至少需要三个不同的顶点。")
+        if (self.start is None) != (self.end is None):
+            raise ValueError("区域起点和终点需要同时设置。")
         return self
 
 
@@ -684,20 +689,23 @@ def plan_area_coverage(route: AreaCoverageRequest):
         planner = local_road_store() if LOCAL_INDEX_FILE.is_file() else road_network()
         result = planner.plan_area_coverage(
             [(point.longitude, point.latitude) for point in route.polygon], set(route.road_classes),
+            start=(route.start.latitude, route.start.longitude) if route.start else None,
+            end=(route.end.latitude, route.end.longitude) if route.end else None,
+            endpoint_snap_m=route.endpoint_snap_m,
         )
     except RouteUnavailable as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
     distance_km = result["distance_m"] / 1000
     for segment in result["segments"]:
-        segment["estimated_minutes"] = round(distance_km / route.speed_kmh * 60, 1)
+        segment["estimated_minutes"] = round(segment["distance_km"] / route.speed_kmh * 60, 1)
     return {
         **result,
         "distance_km": round(distance_km, 3),
         "straight_distance_km": 0,
         "estimated_minutes": round(distance_km / route.speed_kmh * 60, 1),
         "altitude_m": route.altitude_m,
-        "route_type": "area_road_coverage_reference",
+        "route_type": "area_road_coverage_open",
         "risk": {
             "level": "unassessed",
             "score": None,

@@ -318,10 +318,17 @@ class CampusRoadNetwork:
             "data_source": self.data_source,
         }
 
-    def plan_area_coverage(self, polygon: list[tuple[float, float]], road_classes: set[str]) -> dict:
+    def plan_area_coverage(
+        self,
+        polygon: list[tuple[float, float]],
+        road_classes: set[str],
+        start: tuple[float, float] | None = None,
+        end: tuple[float, float] | None = None,
+        endpoint_snap_m: float = 100.0,
+    ) -> dict:
         from road_coverage import plan_area_coverage
 
-        return plan_area_coverage(self, polygon, road_classes)
+        return plan_area_coverage(self, polygon, road_classes, start, end, endpoint_snap_m)
 
 
 class LocalRoadStore:
@@ -443,7 +450,14 @@ class LocalRoadStore:
             roads, [json.loads(row[0]) for row in buildings], center_lat, center_lon, self.data_source
         )
 
-    def plan_area_coverage(self, polygon: list[tuple[float, float]], road_classes: set[str]) -> dict:
+    def plan_area_coverage(
+        self,
+        polygon: list[tuple[float, float]],
+        road_classes: set[str],
+        start: tuple[float, float] | None = None,
+        end: tuple[float, float] | None = None,
+        endpoint_snap_m: float = 100.0,
+    ) -> dict:
         if len(polygon) < 3:
             raise RouteUnavailable("请先在地图上框选至少三个边界点。")
         latitudes = [point[1] for point in polygon]
@@ -462,7 +476,7 @@ class LocalRoadStore:
         west, east = min(longitudes) - lon_padding, max(longitudes) + lon_padding
         south, north = min(latitudes) - lat_padding, max(latitudes) + lat_padding
         network = self._network_for_bounds(west, east, south, north, center_lat, center_lon)
-        return network.plan_area_coverage(polygon, road_classes)
+        return network.plan_area_coverage(polygon, road_classes, start, end, endpoint_snap_m)
 
     def plan(
         self, start_lat: float, start_lon: float, end_lat: float, end_lon: float, clearance_m: float = 2.0,

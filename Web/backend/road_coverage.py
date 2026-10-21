@@ -1,4 +1,4 @@
-"""Road-following area coverage routes using an undirected rural-postman approximation."""
+"""Road-following area coverage routes using an undirected postman approximation."""
 
 from __future__ import annotations
 
@@ -183,7 +183,7 @@ def _components(edges: list[CoverageEdge], start: str) -> list[set[str]]:
     return components
 
 
-def _euler_trail(edges: list[CoverageEdge], start: str) -> list[tuple[CoverageEdge, str, str]]:
+def _euler_trail(edges: list[CoverageEdge], start: str, end: str | None = None) -> list[tuple[CoverageEdge, str, str]]:
     adjacency: dict[str, list[int]] = {}
     for index, edge in enumerate(edges):
         adjacency.setdefault(edge.a, []).append(index)
@@ -224,12 +224,73 @@ def _euler_trail(edges: list[CoverageEdge], start: str) -> list[tuple[CoverageEd
         next_node = edge.b if edge.a == current else edge.a
         oriented.append((edge, current, next_node))
         current = next_node
-    if current != start:
-        raise RouteUnavailable("道路覆盖路线无法闭合，请检查该区域的道路连通情况。")
+    expected_end = end or start
+    if current != expected_end:
+        raise RouteUnavailable("道路覆盖路线无法连接指定的起终点，请检查该区域的道路连通情况。")
     return oriented
 
 
-def plan_area_coverage(network, polygon_coordinates: list[tuple[float, float]], road_classes: set[str]) -> dict:
+def _split_edge_at_point(
+    edges: list[CoverageEdge],
+    positions: dict[str, tuple[float, float]],
+    point_xy: tuple[float, float],
+    endpoint_id: str,
+    endpoint_name: str,
+    max_snap_m: float,
+) -> tuple[str, tuple[float, float], float]:
+    """Attach a requested point to the nearest indexed edge without leaving the road graph."""
+    requested = Point(point_xy)
+    nearest_index = -1
+    nearest_point: tuple[float, float] | None = None
+    nearest_distance = math.inf
+    for index, edge in enumerate(edges):
+        line = LineString(edge.coordinates)
+        projected = line.interpolate(line.project(requested))
+        distance = requested.distance(projected)
+        if distance < nearest_distance:
+            nearest_index = index
+            nearest_distance = distance
+            nearest_point = (float(projected.x), float(projected.y))
+    if nearest_index < 0 or nearest_point is None:
+        raise RouteUnavailable(f"{endpoint_name}附近没有已收录道路，无法设置区域端点。")
+    if nearest_distance > max_snap_m:
+        raise RouteUnavailable(
+            f"{endpoint_name}距最近道路 {nearest_distance:.1f} 米，超过 {max_snap_m:.0f} 米吸附范围。"
+        )
+
+    edge = edges[nearest_index]
+    for node_id in (edge.a, edge.b):
+        if length(positions[node_id], nearest_point) <= 0.05:
+            return node_id, positions[node_id], nearest_distance
+
+    positions[endpoint_id] = nearest_point
+    first_distance = length(edge.coordinates[0], nearest_point)
+    second_distance = length(nearest_point, edge.coordinates[1])
+    replacements: list[CoverageEdge] = []
+    if first_distance > 0.05:
+        replacements.append(CoverageEdge(
+            f"{edge.edge_id}:start", edge.a, endpoint_id,
+            (edge.coordinates[0], nearest_point), first_distance,
+            edge.required, edge.name, edge.highway,
+        ))
+    if second_distance > 0.05:
+        replacements.append(CoverageEdge(
+            f"{edge.edge_id}:end", endpoint_id, edge.b,
+            (nearest_point, edge.coordinates[1]), second_distance,
+            edge.required, edge.name, edge.highway,
+        ))
+    edges[nearest_index:nearest_index + 1] = replacements
+    return endpoint_id, nearest_point, nearest_distance
+
+
+def plan_area_coverage(
+    network,
+    polygon_coordinates: list[tuple[float, float]],
+    road_classes: set[str],
+    start: tuple[float, float] | None = None,
+    end: tuple[float, float] | None = None,
+    endpoint_snap_m: float = 100.0,
+) -> dict:
     if not road_classes or not road_classes.issubset(ROAD_KINDS):
         raise RouteUnavailable("请选择有效的 OSM 道路等级。")
     if len(polygon_coordinates) < 3 or len(polygon_coordinates) > 128:
@@ -241,9 +302,16 @@ def plan_area_coverage(network, polygon_coordinates: list[tuple[float, float]], 
     if polygon.area > MAX_COVERAGE_AREA_M2:
         raise RouteUnavailable("框选区域超过 80 平方公里，请缩小范围后重试。")
 
+    if (start is not None) != (end is not None):
+        raise RouteUnavailable("区域起点和终点需要同时设置。")
+    requested_start_xy = network._to_xy(start[0], start[1]) if start is not None else None
+    requested_end_xy = network._to_xy(end[0], end[1]) if end is not None else None
+    for point, label in ((requested_start_xy, "区域起点 A"), (requested_end_xy, "区域终点 B")):
+        if point is not None and not polygon.covers(Point(point)):
+            raise RouteUnavailable(f"{label}必须位于框选区域内。")
+
     positions: dict[str, tuple[float, float]] = dict(network.positions)
     all_edges: list[CoverageEdge] = []
-    required_edges: list[CoverageEdge] = []
     for segment_index, segment in enumerate(network.segments):
         a = positions.get(segment.a)
         b = positions.get(segment.b)
@@ -286,11 +354,35 @@ def plan_area_coverage(network, polygon_coordinates: list[tuple[float, float]], 
                 distance, required, segment.name, segment.highway,
             )
             all_edges.append(edge)
-            if required:
-                required_edges.append(edge)
+    available_classes = sorted({
+        edge.highway for edge in all_edges
+        if edge.highway and polygon.covers(Point(
+            (edge.coordinates[0][0] + edge.coordinates[1][0]) / 2,
+            (edge.coordinates[0][1] + edge.coordinates[1][1]) / 2,
+        ))
+    })
+
+    endpoint_snap: dict[str, tuple[float, float, float]] = {}
+    start_node: str | None = None
+    end_node: str | None = None
+    if requested_start_xy is not None and requested_end_xy is not None:
+        start_node, snapped_start_xy, start_snap_m = _split_edge_at_point(
+            all_edges, positions, requested_start_xy, "__area_start__", "区域起点 A", endpoint_snap_m,
+        )
+        endpoint_snap["start"] = (snapped_start_xy[0], snapped_start_xy[1], start_snap_m)
+        end_node, snapped_end_xy, end_snap_m = _split_edge_at_point(
+            all_edges, positions, requested_end_xy, "__area_end__", "区域终点 B", endpoint_snap_m,
+        )
+        endpoint_snap["end"] = (snapped_end_xy[0], snapped_end_xy[1], end_snap_m)
+
+    required_edges = [edge for edge in all_edges if edge.required]
 
     if not required_edges:
-        raise RouteUnavailable("选区内没有找到所选道路等级的道路中心线，请扩大选区或调整筛选等级。")
+        available = "、".join(available_classes) if available_classes else "无"
+        raise RouteUnavailable(
+            f"选区内没有找到所选道路等级的道路中心线。当前选中的等级：{ '、'.join(sorted(road_classes)) }；"
+            f"选区内检测到的道路等级：{available}。请扩大选区或调整道路等级。"
+        )
     if len(required_edges) > MAX_COVERAGE_EDGES:
         raise RouteUnavailable(f"选区道路数量超过 {MAX_COVERAGE_EDGES} 段，请缩小范围。")
 
@@ -301,8 +393,18 @@ def plan_area_coverage(network, polygon_coordinates: list[tuple[float, float]], 
 
     required_nodes = {node for edge in required_edges for node in (edge.a, edge.b)}
     center = polygon.centroid
-    start_node = min(required_nodes, key=lambda node: math.hypot(positions[node][0] - center.x, positions[node][1] - center.y))
+    if start_node is None:
+        start_node = min(required_nodes, key=lambda node: math.hypot(positions[node][0] - center.x, positions[node][1] - center.y))
+        end_node = start_node
+    assert end_node is not None
     work_edges = list(required_edges)
+
+    # Reach each requested endpoint from the selected-road graph along roads.
+    for endpoint_node in (start_node, end_node):
+        if endpoint_node in {node for edge in work_edges for node in (edge.a, edge.b)}:
+            continue
+        connector_path = _shortest_path(road_adjacency, all_edges, {endpoint_node}, required_nodes)
+        work_edges.extend(all_edges[index] for index in connector_path)
 
     # Join disconnected selected-road components with the shortest paths found
     # on the complete local road graph. These connector roads are tracked separately.
@@ -319,10 +421,11 @@ def plan_area_coverage(network, polygon_coordinates: list[tuple[float, float]], 
     for edge in work_edges:
         degree[edge.a] = degree.get(edge.a, 0) + 1
         degree[edge.b] = degree.get(edge.b, 0) + 1
-    unmatched = {node for node, value in degree.items() if value % 2}
+    desired_odd = {start_node, end_node} if start_node != end_node else set()
+    unmatched = {node for node, value in degree.items() if value % 2} ^ desired_odd
     work_edges.extend(all_edges[index] for index in _pair_odd_nodes(unmatched, road_adjacency, all_edges))
 
-    trail = _euler_trail(work_edges, start_node)
+    trail = _euler_trail(work_edges, start_node, end_node)
     route_xy: list[tuple[float, float]] = []
     road_names: list[str] = []
     total_distance = 0.0
@@ -345,17 +448,30 @@ def plan_area_coverage(network, polygon_coordinates: list[tuple[float, float]], 
         raise RouteUnavailable(f"规划路线超过 {MAX_COVERAGE_VERTICES} 个航点，请缩小框选范围。")
     if len(route_xy) < 2:
         raise RouteUnavailable("选区内没有足够的道路节点生成路线。")
+    snapped_start_lon_lat = network._to_lon_lat(*route_xy[0])
+    snapped_end_lon_lat = network._to_lon_lat(*route_xy[-1])
+    entry_distance = 0.0
+    exit_distance = 0.0
+    if requested_start_xy is not None and requested_end_xy is not None:
+        entry_distance = length(requested_start_xy, route_xy[0])
+        exit_distance = length(route_xy[-1], requested_end_xy)
+        if entry_distance > 0.05:
+            route_xy.insert(0, requested_start_xy)
+        if exit_distance > 0.05:
+            route_xy.append(requested_end_xy)
     start_lon_lat = network._to_lon_lat(*route_xy[0])
     end_lon_lat = network._to_lon_lat(*route_xy[-1])
     route_coordinates = [network._to_lon_lat(*point) for point in route_xy]
+    total_distance += entry_distance + exit_distance
+    connector_distance += entry_distance + exit_distance
     required_distance = sum(edge.distance_m for edge in required_edges)
     unique_names = road_names
     return {
         "geometry": {"type": "LineString", "coordinates": route_coordinates},
         "distance_m": round(total_distance, 1),
-        "straight_distance_m": 0.0,
-        "start_snap_m": 0.0,
-        "end_snap_m": 0.0,
+        "straight_distance_m": round(length(requested_start_xy, requested_end_xy), 1) if requested_start_xy is not None and requested_end_xy is not None else 0.0,
+        "start_snap_m": round(endpoint_snap.get("start", (0.0, 0.0, 0.0))[2], 1),
+        "end_snap_m": round(endpoint_snap.get("end", (0.0, 0.0, 0.0))[2], 1),
         "road_names": unique_names,
         "building_clearance_m": None,
         "data_source": network.data_source,
@@ -378,5 +494,13 @@ def plan_area_coverage(network, polygon_coordinates: list[tuple[float, float]], 
             "connector_m": round(connector_distance, 1),
             "coverage_ratio": 1.0,
             "road_edge_count": len(required_edges),
+            "start_snap_m": round(endpoint_snap.get("start", (0.0, 0.0, 0.0))[2], 1),
+            "end_snap_m": round(endpoint_snap.get("end", (0.0, 0.0, 0.0))[2], 1),
+            "available_road_classes": available_classes,
+            "route_closed": start_node == end_node,
         },
+        "requested_start": {"latitude": start_lon_lat[1], "longitude": start_lon_lat[0]},
+        "requested_end": {"latitude": end_lon_lat[1], "longitude": end_lon_lat[0]},
+        "snapped_start": {"latitude": snapped_start_lon_lat[1], "longitude": snapped_start_lon_lat[0]},
+        "snapped_end": {"latitude": snapped_end_lon_lat[1], "longitude": snapped_end_lon_lat[0]},
     }

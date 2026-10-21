@@ -69,17 +69,26 @@ const form = reactive({
   clearance_m: 2,
 })
 type PlanningMode = 'anchors' | 'area'
+type CoverageEndpoint = 'start' | 'end'
 const planningMode = ref<PlanningMode>('anchors')
 const coveragePolygon = ref<number[][]>([])
-const coverageRoadClasses = ref<string[]>(['trunk', 'primary', 'secondary'])
+const defaultCoverageRoadClasses = ['motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'service']
+const coverageRoadClasses = ref<string[]>([...defaultCoverageRoadClasses])
 const coverageDrawEnabled = ref(false)
 const coverageStartPoint = ref<Point | null>(null)
+const coverageEndPoint = ref<Point | null>(null)
+const coverageStartSnapPoint = ref<Point | null>(null)
+const coverageEndSnapPoint = ref<Point | null>(null)
+const coverageEndpointTarget = ref<CoverageEndpoint | null>(null)
 const coverageRoadClassOptions = [
   { value: 'motorway', label: '高速道路' },
   { value: 'trunk', label: '快速 / 主干道' },
   { value: 'primary', label: '一级道路' },
   { value: 'secondary', label: '二级道路' },
   { value: 'tertiary', label: '三级道路' },
+  { value: 'residential', label: '住宅道路' },
+  { value: 'unclassified', label: '普通道路' },
+  { value: 'service', label: '服务道路' },
 ]
 const anchors = ref<MajorPoint[]>([
   { id: 'anchor-1', latitude: form.start.latitude, longitude: form.start.longitude },
@@ -113,13 +122,22 @@ function choosePlanningMode(mode: PlanningMode) {
     if (validMajorPoint(last)) Object.assign(form.end, { latitude: last.latitude, longitude: last.longitude })
   }
   coverageDrawEnabled.value = false
-  if (mode === 'anchors') coverageStartPoint.value = null
+  if (mode === 'anchors') {
+    coverageStartPoint.value = null
+    coverageEndPoint.value = null
+    coverageStartSnapPoint.value = null
+    coverageEndSnapPoint.value = null
+    coverageEndpointTarget.value = null
+  }
   planningMode.value = mode
 }
 function updateCoveragePolygon(polygon: number[][]) {
   coveragePolygon.value = polygon.map(([longitude, latitude]) => [Number(longitude.toFixed(7)), Number(latitude.toFixed(7))])
   syncAreaWeatherBounds(coveragePolygon.value)
   coverageDrawEnabled.value = false
+  coverageStartSnapPoint.value = null
+  coverageEndSnapPoint.value = null
+  coverageEndpointTarget.value = coverageStartPoint.value ? coverageEndPoint.value ? null : 'end' : 'start'
   clearBatchRange()
 }
 function syncAreaWeatherBounds(polygon: number[][]) {
@@ -135,11 +153,17 @@ function startCoverageDraw() {
   workspacePanel.value = 'map'
   mapEditMode.value = 'route'
   if (mapViewMode.value !== '2d') chooseMapViewMode('2d')
+  if (!coverageStartPoint.value) coverageEndpointTarget.value = 'start'
+  else if (!coverageEndPoint.value) coverageEndpointTarget.value = 'end'
   coverageDrawEnabled.value = true
 }
 function clearCoveragePolygon() {
   coveragePolygon.value = []
   coverageStartPoint.value = null
+  coverageEndPoint.value = null
+  coverageStartSnapPoint.value = null
+  coverageEndSnapPoint.value = null
+  coverageEndpointTarget.value = null
   coverageDrawEnabled.value = false
   preview.value = null
   previewKey.value = ''
@@ -151,16 +175,26 @@ function validMajorPoint(anchor: MajorPoint | undefined): anchor is MajorPoint &
     && Number.isFinite(anchor.longitude) && Math.abs(anchor.longitude) <= 180
 }
 const allAnchorsReady = computed(() => anchors.value.length >= 2 && anchors.value.every(validMajorPoint))
+const coverageEndpointsReady = computed(() => !!coverageStartPoint.value && !!coverageEndPoint.value)
 const routeDefinitionReady = computed(() => planningMode.value === 'area'
-  ? coveragePolygon.value.length >= 3 && coverageRoadClasses.value.length > 0
+  ? coveragePolygon.value.length >= 3 && coverageRoadClasses.value.length > 0 && coverageEndpointsReady.value
   : allAnchorsReady.value)
 const anchorChoices = computed(() => anchors.value.map((anchor, index) => ({ id: anchor.id, label: majorPointLabel(index), title: majorPointTitle(index) })))
 const mapAnchors = computed(() => planningMode.value === 'area'
-  ? coverageStartPoint.value ? [{ id: 'coverage-start', ...coverageStartPoint.value, label: '起终', role: 'start' as const }] : []
+  ? [
+      [coverageStartSnapPoint.value ?? coverageStartPoint.value, 'coverage-start', 'A', 'start'] as const,
+      [coverageEndSnapPoint.value ?? coverageEndPoint.value, 'coverage-end', 'B', 'end'] as const,
+    ].flatMap(([point, id, label, role]) => point ? [{ id, ...point, label, role }] : [])
   : anchors.value.flatMap((anchor, index) => validMajorPoint(anchor)
     ? [{ id: anchor.id, latitude: anchor.latitude, longitude: anchor.longitude, label: majorPointLabel(index),
       role: (index === 0 ? 'start' : index === anchors.value.length - 1 ? 'end' : 'middle') as 'start' | 'middle' | 'end' }] : []))
 const selectedAnchorChoice = computed(() => anchorChoices.value.find((choice) => choice.id === selectedAnchorId.value) ?? anchorChoices.value[0])
+const coverageEndpointPickerLabel = computed(() => {
+  if (coverageEndpointTarget.value === 'start') return '设置区域起点 A'
+  if (coverageEndpointTarget.value === 'end') return '设置区域终点 B'
+  if (coverageStartPoint.value && coverageEndPoint.value) return 'A 起点 · B 终点'
+  return coverageStartPoint.value ? '设置区域终点 B' : '设置区域起点 A'
+})
 function closeMapAnchorMenu(restoreFocus = false) {
   if (!mapAnchorMenuOpen.value) return
   mapAnchorMenuOpen.value = false
@@ -182,6 +216,19 @@ function chooseMapAreaMode() {
   closeMapAnchorMenu(true)
   choosePlanningMode('area')
   startCoverageDraw()
+}
+function chooseMapCoverageEndpoint(endpoint: CoverageEndpoint) {
+  if (mapAnchorPickerDisabled.value) return
+  choosePlanningMode('area')
+  coverageEndpointTarget.value = endpoint
+  coverageDrawEnabled.value = false
+  mapEditMode.value = 'route'
+  workspacePanel.value = 'map'
+  settingsPage.value = 'points'
+  closeMapAnchorMenu(true)
+}
+function keepCoverageMode() {
+  closeMapAnchorMenu(true)
 }
 function onMapAnchorPickerKeydown(event: KeyboardEvent) {
   if (mapAnchorPickerDisabled.value) return
@@ -580,24 +627,36 @@ function applyMissionTask(task: MissionTask) {
   previewKey.value = ''
   settingsRoute.value = null
   waypointSettings.value = []
-  const savedCoverage = task.route.coverage_area as { polygon?: unknown; road_classes?: unknown; start?: unknown; point_anchors?: unknown } | null | undefined
+  const savedCoverage = task.route.coverage_area as { polygon?: unknown; road_classes?: unknown; start?: unknown; end?: unknown; point_anchors?: unknown } | null | undefined
   if (savedCoverage && Array.isArray(savedCoverage.polygon) && savedCoverage.polygon.length >= 3) {
     planningMode.value = 'area'
     coveragePolygon.value = (savedCoverage.polygon as number[][]).map(([longitude, latitude]) => [Number(longitude), Number(latitude)])
     syncAreaWeatherBounds(coveragePolygon.value)
     coverageRoadClasses.value = Array.isArray(savedCoverage.road_classes)
       ? savedCoverage.road_classes.filter((value): value is string => typeof value === 'string')
-      : ['trunk', 'primary', 'secondary']
+      : [...defaultCoverageRoadClasses]
     const routeStart = savedCoverage.start && typeof savedCoverage.start === 'object'
       ? savedCoverage.start as Record<string, unknown>
       : Array.isArray(task.route.anchors) ? (task.route.anchors as Array<Record<string, unknown>>)[0] : null
+    const routeEnd = savedCoverage.end && typeof savedCoverage.end === 'object'
+      ? savedCoverage.end as Record<string, unknown>
+      : Array.isArray(task.route.anchors) ? (task.route.anchors as Array<Record<string, unknown>>)[task.route.anchors.length - 1] ?? null : null
     coverageStartPoint.value = routeStart && typeof routeStart.latitude === 'number' && typeof routeStart.longitude === 'number'
       ? { latitude: routeStart.latitude, longitude: routeStart.longitude } : null
+    coverageEndPoint.value = routeEnd && typeof routeEnd.latitude === 'number' && typeof routeEnd.longitude === 'number'
+      ? { latitude: routeEnd.latitude, longitude: routeEnd.longitude } : null
+    coverageStartSnapPoint.value = null
+    coverageEndSnapPoint.value = null
+    coverageEndpointTarget.value = coverageStartPoint.value && coverageEndPoint.value ? null : coverageStartPoint.value ? 'end' : 'start'
   } else {
     planningMode.value = 'anchors'
     coveragePolygon.value = []
-    coverageRoadClasses.value = ['trunk', 'primary', 'secondary']
+    coverageRoadClasses.value = [...defaultCoverageRoadClasses]
     coverageStartPoint.value = null
+    coverageEndPoint.value = null
+    coverageStartSnapPoint.value = null
+    coverageEndSnapPoint.value = null
+    coverageEndpointTarget.value = null
   }
   taskFrames.value = []
   analysisMapTargets.value = (task.analysis_targets ?? []) as unknown as VideoCaptureTarget[]
@@ -784,14 +843,14 @@ const elapsed = computed(() => preview.value && form.speed_kmh > 0 ? `${(preview
 const distance = computed(() => preview.value ? `${preview.value.distance_km.toFixed(2)} km` : '待计算')
 const layoutStyle = computed(() => ({ '--sidebar-width': `${sidebarWidth.value}px`, '--insights-width': `${insightsWidth.value}px` }))
 const routeKey = computed(() => planningMode.value === 'area'
-  ? JSON.stringify(['area', coveragePolygon.value, [...coverageRoadClasses.value].sort()])
+  ? JSON.stringify(['area', coveragePolygon.value, [...coverageRoadClasses.value].sort(), coverageStartPoint.value, coverageEndPoint.value])
   : JSON.stringify(['anchors', anchors.value.map((anchor) => [anchor.id, anchor.latitude, anchor.longitude]), roadSource.value, form.clearance_m]))
 const taskRouteSnapshot = computed(() => ({
   fingerprint: JSON.stringify({ routeKey: routeKey.value, altitude_m: form.altitude_m, speed_kmh: form.speed_kmh }),
   geometry: preview.value?.geometry ?? null,
   road_names: preview.value?.road_names ?? [],
   data_source: preview.value?.data_source ?? '',
-  route_type: planningMode.value === 'area' ? 'area_road_coverage_reference'
+  route_type: planningMode.value === 'area' ? 'area_road_coverage_open'
     : roadSource.value === 'online' ? 'online_driving_reference' : 'road_corridor_demo',
   distance_km: preview.value?.distance_km ?? null,
   anchors: planningMode.value === 'area' && preview.value?.anchors?.length
@@ -802,6 +861,7 @@ const taskRouteSnapshot = computed(() => ({
     polygon: coveragePolygon.value,
     road_classes: [...coverageRoadClasses.value],
     start: coverageStartPoint.value,
+    end: coverageEndPoint.value,
     point_anchors: anchors.value.map(({ id, latitude, longitude }) => ({ id, latitude, longitude })),
     metrics: preview.value?.area_coverage ?? null,
   } : null,
@@ -1021,7 +1081,10 @@ const taskWeatherAdvisories = computed(() => {
 
 watch(routeKey, () => {
   clearBatchRange()
-  if (planningMode.value === 'area') coverageStartPoint.value = null
+  if (planningMode.value === 'area') {
+    coverageStartSnapPoint.value = null
+    coverageEndSnapPoint.value = null
+  }
   if (routeRefreshTimer) clearTimeout(routeRefreshTimer)
   routeRefreshTimer = null
   cancelCalculation()
@@ -1863,7 +1926,11 @@ async function calculate(flyToRoute: boolean | SubmitEvent = true) {
   if (!routeDefinitionReady.value) {
     settingsPage.value = 'points'
     if (planningMode.value === 'area') {
-      error.value = '请先在地图上框选一个有效的巡查区域。'
+      error.value = coveragePolygon.value.length < 3
+        ? '请先在地图上框选一个有效的巡查区域。'
+        : !coverageEndpointsReady.value
+          ? '请先在地图上设置区域起点 A 和终点 B。'
+          : '请至少选择一种要覆盖的道路等级。'
     } else {
       const missingIndex = anchors.value.findIndex((anchor) => !validMajorPoint(anchor))
       error.value = missingIndex >= 0 ? `请先填写主点 ${majorPointLabel(missingIndex)} 的有效经纬度。` : '至少需要两个有效主点。'
@@ -1886,6 +1953,9 @@ async function calculate(flyToRoute: boolean | SubmitEvent = true) {
       ? {
           polygon: coveragePolygon.value.map(([longitude, latitude]) => ({ longitude, latitude })),
           road_classes: coverageRoadClasses.value,
+          start: coverageStartPoint.value,
+          end: coverageEndPoint.value,
+          endpoint_snap_m: 100,
           altitude_m: form.altitude_m,
           speed_kmh: form.speed_kmh,
         }
@@ -1906,8 +1976,12 @@ async function calculate(flyToRoute: boolean | SubmitEvent = true) {
     }
     const result: Preview = await response.json()
     if (controller.signal.aborted || requestVersion !== routeRequestVersion) return
-    if (planningMode.value === 'area' && result.anchors?.[0]) {
-      coverageStartPoint.value = { latitude: result.anchors[0].latitude, longitude: result.anchors[0].longitude }
+    if (planningMode.value === 'area') {
+      if (result.requested_start) coverageStartPoint.value = result.requested_start
+      if (result.requested_end) coverageEndPoint.value = result.requested_end
+      coverageStartSnapPoint.value = result.snapped_start ?? null
+      coverageEndSnapPoint.value = result.snapped_end ?? null
+      coverageEndpointTarget.value = null
     }
     syncWaypointSettings(result)
     preview.value = result
@@ -2017,7 +2091,29 @@ function chooseSearchedPoint(selection: { target: string; point: Point }) {
   void chooseMapPoint(selection.point, selection.target, true)
 }
 
+function chooseCoveragePoint(point: Point, endpoint: CoverageEndpoint) {
+  if (loading.value || checkingPoint.value) return
+  if (!Number.isFinite(point.latitude) || Math.abs(point.latitude) > 90 || !Number.isFinite(point.longitude) || Math.abs(point.longitude) > 180) {
+    error.value = '区域端点经纬度无效，请重新选择。'
+    return
+  }
+  const selected = { latitude: Number(point.latitude.toFixed(7)), longitude: Number(point.longitude.toFixed(7)) }
+  if (endpoint === 'start') coverageStartPoint.value = selected
+  else coverageEndPoint.value = selected
+  if (endpoint === 'start') coverageStartSnapPoint.value = null
+  else coverageEndSnapPoint.value = null
+  coverageEndpointTarget.value = endpoint === 'start' && !coverageEndPoint.value ? 'end' : endpoint === 'end' && !coverageStartPoint.value ? 'start' : null
+  error.value = ''
+  routeAssessment.value = null
+  settingsPage.value = 'points'
+  workspacePanel.value = 'map'
+}
+
 async function chooseMapPoint(point: Point, target: string = selectedAnchorId.value, fromPlaceSearch = false) {
+  if (planningMode.value === 'area' && coverageEndpointTarget.value) {
+    chooseCoveragePoint(point, coverageEndpointTarget.value)
+    return
+  }
   if (loading.value || checkingPoint.value || locatingPoint.value) {
     if (fromPlaceSearch) placeSelectionFeedback.value = { message: '正在处理其他点位，请稍后重试。', error: true }
     return
@@ -2700,6 +2796,11 @@ onBeforeUnmount(() => {
 
           <div v-else class="settings-group area-coverage-settings" data-settings-page="points" :class="{ 'settings-active': settingsPage === 'points' }">
             <p class="form-scope-note">路线覆盖本地道路数据里符合筛选等级的中心线，连接段也沿已收录道路规划。道路等级是宽度的近似，不等同于现场实测；覆盖率不包含数据中未收录的道路。</p>
+            <div class="coverage-endpoints" role="group" aria-label="区域巡查起终点">
+              <button type="button" :class="{ active: coverageEndpointTarget === 'start' }" :disabled="loading || checkingPoint" @click="chooseMapCoverageEndpoint('start')"><span class="coverage-endpoint-key">A</span><span><strong>区域起点</strong><small>{{ coverageStartPoint ? `${coverageStartPoint.latitude.toFixed(5)}, ${coverageStartPoint.longitude.toFixed(5)}` : '点击地图设置' }}</small></span></button>
+              <button type="button" :class="{ active: coverageEndpointTarget === 'end' }" :disabled="loading || checkingPoint" @click="chooseMapCoverageEndpoint('end')"><span class="coverage-endpoint-key">B</span><span><strong>区域终点</strong><small>{{ coverageEndPoint ? `${coverageEndPoint.latitude.toFixed(5)}, ${coverageEndPoint.longitude.toFixed(5)}` : '点击地图设置' }}</small></span></button>
+            </div>
+            <p class="coverage-area-note">起终点会吸附到附近道路；吸附距离超过 100 米或点位在区域外时，路线不会生成。</p>
             <div class="coverage-road-classes" role="group" aria-label="选择要覆盖的道路等级">
               <label v-for="option in coverageRoadClassOptions" :key="option.value"><input v-model="coverageRoadClasses" type="checkbox" :value="option.value" :disabled="loading" />{{ option.label }}</label>
             </div>
@@ -2708,13 +2809,13 @@ onBeforeUnmount(() => {
               <button v-if="coveragePolygon.length" type="button" class="coverage-area-clear" :disabled="loading" @click="clearCoveragePolygon">清除范围</button>
             </div>
             <p v-if="coveragePolygon.length" class="coverage-area-note">已选 {{ coveragePolygon.length }} 个边界点。可拖动边界点调整范围，双击顶点删除，点击边线中点可增加顶点。</p>
-            <p v-else class="coverage-area-note">框选完成后会自动计算闭环路线，从区域中心附近的道路出发并返回起点。</p>
+            <p v-else class="coverage-area-note">框选完成后，设置 A、B 两个端点，系统会沿区域内道路生成从 A 到 B 的覆盖路线。</p>
             <div v-if="preview?.area_coverage && previewKey === routeKey" class="coverage-area-summary" aria-live="polite">
-              <strong>道路覆盖路线已生成 · {{ (preview.area_coverage.coverage_ratio * 100).toFixed(0) }}% 覆盖</strong>
+              <strong>道路覆盖路线已生成 · {{ preview.area_coverage.route_closed ? '闭环' : 'A → B' }} · {{ (preview.area_coverage.coverage_ratio * 100).toFixed(0) }}% 覆盖</strong>
               <div><span>目标道路</span><b>{{ (preview.area_coverage.target_road_m / 1000).toFixed(2) }} km · {{ preview.area_coverage.road_edge_count }} 段</b></div>
               <div><span>重复经过</span><b>{{ (preview.area_coverage.repeated_road_m / 1000).toFixed(2) }} km</b></div>
               <div><span>连接道路</span><b>{{ (preview.area_coverage.connector_m / 1000).toFixed(2) }} km</b></div>
-              <small>路线总长 {{ preview.distance_km.toFixed(2) }} km · 估计 {{ elapsed }}</small>
+              <small>路线总长 {{ preview.distance_km.toFixed(2) }} km · 估计 {{ elapsed }} · A/B 吸附 {{ preview.start_snap_m.toFixed(1) }} / {{ preview.end_snap_m.toFixed(1) }} m</small>
             </div>
           </div>
 
@@ -2743,7 +2844,7 @@ onBeforeUnmount(() => {
 
       <section id="route-map" class="map-panel" :class="{ 'panel-active': workspacePanel === 'map' }" aria-label="航线地图">
         <div ref="mapElement" class="cesium-map" aria-hidden="true"></div>
-        <EarthMap ref="earthMapRef" :active="true" :provider="baseMap === 'earth' ? 'baidu' : 'osm'" :view-mode="mapViewMode" :start="form.start" :end="form.end" :anchors="mapAnchors" :selected-anchor-id="selectedAnchorId" :route="earthRoute" :coverage-polygon="coveragePolygon" :coverage-draw-enabled="coverageDrawEnabled" :coverage-edit-enabled="planningMode === 'area' && coveragePolygon.length >= 3" :suppress-map-point-selection="planningMode === 'area'" :selected-index="selectedWaypointIndex" :edit-mode="mapEditMode" :footprint="earthFootprint" :flight-pose="mapFlightPose" :flight-footprint="flightFootprint" :weather-segments="routeAssessment?.weather_risk.segments ?? []" :weather-samples="showRouteWeatherPoints ? routeAssessment?.samples : null" :weather-risk-points="showRouteWeatherPoints ? routeAssessment?.weather_risk.points : null" :weather-altitude-m="form.altitude_m" :show-start-range="showStartRange" :show-end-range="showEndRange" :range-meters="landingSearchRadiusM" :video-track="activeModule === 'photos' ? videoTelemetryTrack : []" :video-position="activeModule === 'photos' ? videoTelemetryPosition : null" :capture-targets="activeModule === 'photos' ? mapCaptureTargets : []" @select-waypoint="selectWaypoint" @choose-point="chooseMapPoint" @rotate-waypoint="setSelectedWaypointOrientation($event, undefined, true)" @coverage-polygon-created="updateCoveragePolygon" @coverage-polygon-updated="updateCoveragePolygon" />
+        <EarthMap ref="earthMapRef" :active="true" :provider="baseMap === 'earth' ? 'baidu' : 'osm'" :view-mode="mapViewMode" :start="form.start" :end="form.end" :anchors="mapAnchors" :selected-anchor-id="selectedAnchorId" :route="earthRoute" :coverage-polygon="coveragePolygon" :coverage-draw-enabled="coverageDrawEnabled" :coverage-edit-enabled="planningMode === 'area' && coveragePolygon.length >= 3" :suppress-map-point-selection="planningMode === 'area' && !coverageEndpointTarget" :selected-index="selectedWaypointIndex" :edit-mode="mapEditMode" :footprint="earthFootprint" :flight-pose="mapFlightPose" :flight-footprint="flightFootprint" :weather-segments="routeAssessment?.weather_risk.segments ?? []" :weather-samples="showRouteWeatherPoints ? routeAssessment?.samples : null" :weather-risk-points="showRouteWeatherPoints ? routeAssessment?.weather_risk.points : null" :weather-altitude-m="form.altitude_m" :show-start-range="showStartRange" :show-end-range="showEndRange" :range-meters="landingSearchRadiusM" :video-track="activeModule === 'photos' ? videoTelemetryTrack : []" :video-position="activeModule === 'photos' ? videoTelemetryPosition : null" :capture-targets="activeModule === 'photos' ? mapCaptureTargets : []" @select-waypoint="selectWaypoint" @choose-point="chooseMapPoint" @rotate-waypoint="setSelectedWaypointOrientation($event, undefined, true)" @coverage-polygon-created="updateCoveragePolygon" @coverage-polygon-updated="updateCoveragePolygon" />
         <div class="map-top">
           <div v-if="!flightActive" class="map-title-group"><span class="map-badge"><span class="svg-icon icon-layers" aria-hidden="true"></span>{{ (baseMap === 'earth' ? '地球模式' : '当前底图') + (mapViewMode === '3d' ? ' · 3D 航线' : ' · 2D 平面') }}</span><span class="map-mode-chip">{{ form.altitude_m }} m AGL</span><div class="map-source-switch base-map-switch" aria-label="底图"><button type="button" :class="{ active: baseMap === 'current' }" :aria-pressed="baseMap === 'current'" @click="chooseBaseMap('current')">当前底图</button><button type="button" :class="{ active: baseMap === 'earth' }" :aria-pressed="baseMap === 'earth'" @click="chooseBaseMap('earth')">地球模式</button></div><div class="map-edit-switch" aria-label="编辑对象"><button type="button" :class="{ active: mapEditMode === 'route' }" :aria-pressed="mapEditMode === 'route'" @click="mapEditMode = 'route'">路径 / 主点</button><button type="button" :class="{ active: mapEditMode === 'node' }" :aria-pressed="mapEditMode === 'node'" @click="mapEditMode = 'node'">节点 / 视角</button></div></div>
           <button v-if="!flightActive" class="flight-entry" type="button" :disabled="!flightTimeline" aria-label="开始模拟飞行" title="模拟飞行" @click="toggleFlight"><span class="svg-icon icon-drone" aria-hidden="true"></span></button>
@@ -2754,7 +2855,7 @@ onBeforeUnmount(() => {
             <span class="flight-percent">{{ Math.round(flightProgress * 100) }}%</span>
           </div>
           <button v-if="flightActive" class="flight-exit" type="button" @click="stopFlight">退出模拟飞行</button>
-           <span v-if="!flightTimeline" class="map-caption">{{ coverageDrawEnabled ? '拖动地图框选道路巡查区域' : planningMode === 'area' ? '拖动边界点调整范围，双击删除，点击边线中点加点' : checkingPoint ? '正在检查点位…' : mapEditMode === 'node' ? '点击节点选中，拖动橙色镜头调整朝向' : `地图点击可设置 ${selectedAnchorChoice?.title} ${selectedAnchorChoice?.label}` }}</span>
+           <span v-if="!flightTimeline" class="map-caption">{{ coverageDrawEnabled ? '拖动地图框选道路巡查区域' : planningMode === 'area' && coverageEndpointTarget ? `点击地图设置区域${coverageEndpointTarget === 'start' ? '起点 A' : '终点 B'}` : planningMode === 'area' ? '拖动边界点调整范围，双击删除，点击边线中点加点' : checkingPoint ? '正在检查点位…' : mapEditMode === 'node' ? '点击节点选中，拖动橙色镜头调整朝向' : `地图点击可设置 ${selectedAnchorChoice?.title} ${selectedAnchorChoice?.label}` }}</span>
         </div>
         <div class="map-view-switch map-source-switch view-mode-switch" aria-label="地图视图"><button type="button" :class="{ active: mapViewMode === '2d' }" :aria-pressed="mapViewMode === '2d'" @click="chooseMapViewMode('2d')">2D 平面</button><button type="button" :class="{ active: mapViewMode === '3d' }" :aria-pressed="mapViewMode === '3d'" @click="chooseMapViewMode('3d')">3D 视角</button></div>
         <div v-if="error" class="map-alert" role="alert">{{ error }}</div>
@@ -2763,20 +2864,32 @@ onBeforeUnmount(() => {
             <span class="svg-icon icon-map-pin" aria-hidden="true"></span>
             <span class="map-anchor-label">{{ planningMode === 'area' ? '规划模式' : '地图选点' }}</span>
             <button ref="mapAnchorPickerButton" class="map-anchor-trigger" type="button" :disabled="mapAnchorPickerDisabled" :aria-expanded="mapAnchorMenuOpen" aria-haspopup="listbox" aria-controls="map-anchor-options" @click="toggleMapAnchorMenu" @keydown="onMapAnchorPickerKeydown">
-              <span>{{ planningMode === 'area' ? '区域划分模式' : `${selectedAnchorChoice?.label} · ${selectedAnchorChoice?.title}` }}</span>
+              <span>{{ planningMode === 'area' ? coverageEndpointPickerLabel : `${selectedAnchorChoice?.label} · ${selectedAnchorChoice?.title}` }}</span>
               <span class="map-anchor-chevron" aria-hidden="true"></span>
             </button>
             <Transition name="map-anchor-menu">
               <div v-if="mapAnchorMenuOpen" id="map-anchor-options" class="map-anchor-options" role="listbox" aria-label="选择地图规划模式">
-                <button v-for="choice in anchorChoices" :key="choice.id" class="map-anchor-option" :class="{ selected: planningMode === 'anchors' && choice.id === selectedAnchorId }" type="button" role="option" :aria-selected="planningMode === 'anchors' && choice.id === selectedAnchorId" @click="chooseMapAnchor(choice.id)">
-                  <span class="map-anchor-option-key">{{ choice.label }}</span>
-                  <span>{{ choice.title }}</span>
-                  <span v-if="planningMode === 'anchors' && choice.id === selectedAnchorId" class="map-anchor-check" aria-hidden="true">✓</span>
-                </button>
-                <button class="map-anchor-option" :class="{ selected: planningMode === 'area' }" type="button" role="option" :aria-selected="planningMode === 'area'" @click="chooseMapAreaMode">
+                <template v-if="planningMode === 'anchors'">
+                  <button v-for="choice in anchorChoices" :key="choice.id" class="map-anchor-option" :class="{ selected: choice.id === selectedAnchorId }" type="button" role="option" :aria-selected="choice.id === selectedAnchorId" @click="chooseMapAnchor(choice.id)">
+                    <span class="map-anchor-option-key">{{ choice.label }}</span>
+                    <span>{{ choice.title }}</span>
+                    <span v-if="choice.id === selectedAnchorId" class="map-anchor-check" aria-hidden="true">✓</span>
+                  </button>
+                </template>
+                <template v-if="planningMode === 'area'">
+                  <button class="map-anchor-option" :class="{ selected: coverageEndpointTarget === 'start' }" type="button" role="option" :aria-selected="coverageEndpointTarget === 'start'" @click="chooseMapCoverageEndpoint('start')">
+                    <span class="map-anchor-option-key">A</span><span>区域起点</span><span v-if="coverageEndpointTarget === 'start'" class="map-anchor-check" aria-hidden="true">✓</span>
+                  </button>
+                  <button class="map-anchor-option" :class="{ selected: coverageEndpointTarget === 'end' }" type="button" role="option" :aria-selected="coverageEndpointTarget === 'end'" @click="chooseMapCoverageEndpoint('end')">
+                    <span class="map-anchor-option-key">B</span><span>区域终点</span><span v-if="coverageEndpointTarget === 'end'" class="map-anchor-check" aria-hidden="true">✓</span>
+                  </button>
+                </template>
+                <button v-if="planningMode === 'anchors'" class="map-anchor-option" type="button" role="option" aria-selected="false" @click="chooseMapAreaMode">
                   <span class="map-anchor-option-key">区</span>
                   <span>区域划分模式</span>
-                  <span v-if="planningMode === 'area'" class="map-anchor-check" aria-hidden="true">✓</span>
+                </button>
+                <button v-else class="map-anchor-option selected" type="button" role="option" aria-selected="true" @click="keepCoverageMode">
+                  <span class="map-anchor-option-key">区</span><span>区域划分模式</span><span class="map-anchor-check" aria-hidden="true">✓</span>
                 </button>
               </div>
             </Transition>
@@ -2841,7 +2954,7 @@ onBeforeUnmount(() => {
             <strong><span class="svg-icon icon-route" aria-hidden="true"></span>当前路线：{{ preview.road_names.join(' → ') || '未命名道路' }}</strong>
             <span>{{ distance }} · 预计用时 {{ elapsed }}</span>
             <details v-if="!preview.area_coverage"><summary><span class="svg-icon icon-eye" aria-hidden="true"></span>查看路线数据</summary><small>直线 {{ preview.straight_distance_km.toFixed(2) }} km · {{ preview.building_clearance_m === null ? '在线模式未检查建筑缓冲' : `建筑缓冲 ${preview.building_clearance_m} m` }}</small><small>首末主点到道路分别约 {{ preview.start_snap_m }} m / {{ preview.end_snap_m }} m</small><small>手动主点 {{ anchors.length }} 个 · 自动生成小点 {{ generatedPointCount }} 个 · {{ preview.segments?.length ?? 1 }} 段</small><small v-for="segment in preview.segments" :key="segment.id">{{ majorPointLabel(segment.index) }} → {{ majorPointLabel(segment.index + 1) }}：{{ segment.distance_km.toFixed(2) }} km</small><small>{{ preview.data_source }}</small><small>路线数据 © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap contributors</a></small></details>
-            <div v-else class="coverage-route-detail"><strong>区域道路闭环</strong><span>目标道路 {{ (preview.area_coverage.target_road_m / 1000).toFixed(2) }} km · 重复经过 {{ (preview.area_coverage.repeated_road_m / 1000).toFixed(2) }} km</span><span>连接道路 {{ (preview.area_coverage.connector_m / 1000).toFixed(2) }} km · 道路等级 {{ preview.area_coverage.road_classes.join('、') }}</span><small>{{ preview.data_source }} · 起终点位于道路中心线。</small></div>
+            <div v-else class="coverage-route-detail"><strong>区域道路覆盖 · {{ preview.area_coverage.route_closed ? '闭环' : 'A → B' }}</strong><span>目标道路 {{ (preview.area_coverage.target_road_m / 1000).toFixed(2) }} km · 重复经过 {{ (preview.area_coverage.repeated_road_m / 1000).toFixed(2) }} km</span><span>连接道路 {{ (preview.area_coverage.connector_m / 1000).toFixed(2) }} km · 道路等级 {{ preview.area_coverage.road_classes.join('、') }}</span><small>{{ preview.data_source }} · A/B 吸附 {{ preview.start_snap_m.toFixed(1) }} / {{ preview.end_snap_m.toFixed(1) }} m。</small></div>
             <div class="route-export"><label>DJI 机型模板<select v-model="djiModel"><option value="fly">DJI Fly · Air 3 / Air 3S / Mini 4 Pro</option><option value="m30">DJI Pilot 2 · M30 / M30T</option><option value="m3e">DJI Pilot 2 · Mavic 3E / 3T / 3M</option></select></label><button type="button" class="weather-refresh" :disabled="!flightTimeline" @click="toggleFlight"><span class="svg-icon icon-drone" aria-hidden="true"></span>{{ flightPlaying ? '暂停巡航动画' : flightProgress >= 1 ? '重播巡航动画' : flightActive ? '继续巡航动画' : '查看巡航路线动画' }}</button><button type="button" class="weather-refresh task-flight-start" :disabled="!activeTask || !taskRouteMatches || !activeTask.export_file_name || activeTask.status === 'in_flight'" @click="markTaskFlightStarted">{{ activeTask?.status === 'in_flight' ? '已标记本次任务开始' : '标记本次任务已开始' }}</button><small v-if="activeTask?.export_file_name">KMZ 已保存在任务目录：{{ activeTask.export_file_name }}</small><small>按相对起飞点高度生成。路线折点会先抽稀，减少 DJI 中高度标签和航点标记重叠。{{ preview.area_coverage ? '此路线用于道路区域巡查；起点是道路中心线参考点，仍需现场选择合适起降位置。' : roadSource === 'online' ? '当前是在线机动车道路参考，不应直接作为飞行线。' : '当前是道路走廊参考，不代表已核实飞行航线。' }}{{ djiModel === 'fly' ? 'DJI Fly 需先创建一条占位航线，再用相同 UUID 文件名替换 waypoint 目录中的 KMZ。' : '导入 DJI Pilot 2 后仍需核对机型、动作、返航、空域和现场条件。' }}文件不是放飞许可。</small><small v-if="djiModel === 'fly'">Air 3/Air 3S 使用 DJI Fly 消费级 WPML；当前通用机型枚举按 RC 2 航线格式生成，若设备拒绝文件需要用设备原生占位 KMZ 校验。</small><small v-if="kmzError" class="form-error" role="alert">{{ kmzError }}</small></div>
           </div>
          <section v-if="activeModule === 'dji' && ((preview && djiModel === 'fly') || rc2Job)" class="rc2-import-panel" aria-label="导入 DJI RC 2">
@@ -2901,6 +3014,17 @@ onBeforeUnmount(() => {
  .coverage-road-classes { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 8px; margin: 10px 0; }
  .coverage-road-classes label { display: flex; align-items: center; gap: 6px; min-height: 28px; color: #394b5e; font-size: 11px; }
  .coverage-road-classes input { width: 15px; height: 15px; margin: 0; accent-color: var(--ui-accent); }
+ .coverage-endpoints { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin: 10px 0 4px; }
+ .coverage-endpoints button { display: flex; align-items: center; gap: 7px; min-width: 0; min-height: 48px; padding: 7px 8px; border: 1px solid #d7e1ea; border-radius: 7px; background: #fff; color: #344455; text-align: left; cursor: pointer; }
+ .coverage-endpoints button:hover:not(:disabled) { border-color: #88bcea; background: #f5faff; }
+ .coverage-endpoints button.active { border-color: #4f9bd7; background: #eaf5fd; color: #1265a7; box-shadow: inset 3px 0 #1769aa; }
+ .coverage-endpoints button:disabled { cursor: default; opacity: .55; }
+ .coverage-endpoint-key { display: grid; flex: none; width: 24px; height: 24px; place-items: center; border-radius: 50%; background: #1769aa; color: #fff; font-size: 12px; font-weight: 800; }
+ .coverage-endpoints button:nth-child(2) .coverage-endpoint-key { background: #bd5a2b; }
+ .coverage-endpoints button > span:last-child { display: grid; min-width: 0; gap: 1px; }
+ .coverage-endpoints strong, .coverage-endpoints small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+ .coverage-endpoints strong { font-size: 11px; }
+ .coverage-endpoints small { color: var(--ui-muted); font-size: 10px; }
  .coverage-area-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px; }
  .coverage-area-actions .major-point-add { margin-top: 0; }
  .coverage-area-actions .major-point-add.is-drawing { border-color: #0f6cbd; background: #e9f4fd; }
