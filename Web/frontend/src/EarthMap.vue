@@ -530,6 +530,15 @@ watch(() => [props.route, props.start, props.end, props.anchors, props.weatherSe
 watch(() => [props.coveragePolygon, props.coverageDrawEnabled], () => {
   renderOverlay()
 }, { deep: true, flush: 'sync' })
+watch(() => props.coverageEditEnabled, enabled => {
+  if (enabled || (!coverageDraw && !coverageVertexDrag && !coverageDraft)) return
+  // Leaving area mode cancels an in-flight coverage drag; the draft would bypass the filtered coveragePolygon prop and linger on the map.
+  coverageDraw = null
+  coverageVertexDrag = null
+  coverageDraft = null
+  scene?.setInputs(props.active && !props.flightPose?.playing)
+  renderOverlay()
+}, { flush: 'sync' })
 watch(() => props.selectedAnchorId, renderOverlay, { flush: 'sync' })
 watch(() => [props.footprint, props.selectedIndex, props.editMode], () => { refreshFootprint(); renderOverlay() }, { deep: true, flush: 'sync' })
 watch(() => props.videoTrack, refreshVideoTrack, { deep: true })
