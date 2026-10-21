@@ -179,12 +179,6 @@ class VideoCaptureTargetRequest(BaseModel):
     label: str = Field(default="", max_length=60)
 
 
-class VideoSurveyPathRequest(BaseModel):
-    video_path: str = Field(min_length=1, max_length=2048)
-    srt_path: str = Field(min_length=1, max_length=2048)
-    task_id: str = Field(min_length=23, max_length=23)
-
-
 class AdaptiveFrameSelectionRequest(BaseModel):
     survey_id: str = Field(min_length=23, max_length=23)
     straight_overlap_percent: float = Field(default=12, ge=0, le=50, allow_inf_nan=False)
@@ -898,30 +892,15 @@ def photo_analysis_file(request: Request, job_id: str, file_name: str):
 
 
 @app.post("/api/video-surveys", status_code=status.HTTP_201_CREATED)
-async def video_survey_create(request: Request, video: UploadFile = File(...), srt: UploadFile = File(...)):
+async def video_survey_create(request: Request, video: UploadFile = File(...), srt: UploadFile = File(...),
+                              task_id: str = Form(default="")):
     require_local_request(request, mutation=True, label="视频定位")
     try:
-        return await video_surveys.create(video, srt)
-    except VideoSurveyError as error:
-        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
-
-
-@app.get("/api/video-surveys/browse")
-def video_survey_browse(request: Request, kind: Literal["video", "srt"] = "video", path: str | None = Query(default=None)):
-    require_local_request(request, label="本机文件选择")
-    try:
-        return video_surveys.browse(path, kind)
-    except VideoSurveyError as error:
-        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
-
-
-@app.post("/api/video-surveys/import", status_code=status.HTTP_201_CREATED)
-async def video_survey_import(request: Request, payload: VideoSurveyPathRequest):
-    require_local_request(request, mutation=True, label="视频定位")
-    try:
-        tasks.get(payload.task_id)
-        result = await asyncio.to_thread(video_surveys.create_from_paths, payload.video_path, payload.srt_path, payload.task_id)
-        tasks.update(payload.task_id, {"video_survey_id": result["job_id"]})
+        if task_id:
+            tasks.get(task_id)
+        result = await video_surveys.create(video, srt, task_id or None)
+        if task_id:
+            tasks.update(task_id, {"video_survey_id": result["job_id"]})
         return result
     except VideoSurveyError as error:
         raise HTTPException(status_code=error.http_status, detail=str(error)) from error

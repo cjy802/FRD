@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import json
 import re
-import os
-import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -169,108 +167,6 @@ class VideoSurveyStore:
         self.storage_dir = storage_dir
         self.task_storage_dir = BACKEND_ROOT / "user_data" / "tasks"
 
-    @staticmethod
-    def _allowed_roots() -> list[dict[str, str]]:
-        candidates: list[tuple[str, Path]] = []
-        home = Path.home()
-        candidates.extend((label, home / folder) for label, folder in (
-            ("桌面", "Desktop"), ("下载", "Downloads"), ("视频", "Videos"), ("文档", "Documents"),
-        ))
-        if os.name == "nt":
-            try:
-                import ctypes
-
-                drive_mask = ctypes.windll.kernel32.GetLogicalDrives()
-                candidates.extend((f"{chr(65 + index)} 盘", Path(f"{chr(65 + index)}:/"))
-                                  for index in range(26) if drive_mask & (1 << index))
-            except (AttributeError, OSError):
-                candidates.append(("D 盘", Path("D:/")))
-        else:
-            candidates.append(("项目文件夹", BACKEND_ROOT.parents[1]))
-
-        roots: list[dict[str, str]] = []
-        seen: set[str] = set()
-        for label, candidate in candidates:
-            try:
-                if not candidate.is_dir():
-                    continue
-                resolved = candidate.resolve()
-            except OSError:
-                continue
-            key = os.path.normcase(str(resolved))
-            if key in seen:
-                continue
-            seen.add(key)
-            roots.append({"label": label, "path": str(resolved)})
-        return roots
-
-    def _root_for(self, path: Path) -> dict[str, str] | None:
-        for root in sorted(self._allowed_roots(), key=lambda item: len(item["path"]), reverse=True):
-            try:
-                path.relative_to(Path(root["path"]))
-                return root
-            except ValueError:
-                continue
-        return None
-
-    def browse(self, path: str | None, kind: str) -> dict[str, Any]:
-        if kind not in {"video", "srt"}:
-            raise VideoSurveyError("文件类型无效。")
-        roots = self._allowed_roots()
-        if not roots:
-            raise VideoSurveyError("找不到可浏览的本机文件夹。", http_status=503)
-        if path:
-            try:
-                current = Path(path).resolve(strict=True)
-            except (OSError, RuntimeError) as error:
-                raise VideoSurveyError("该文件夹不存在或无法访问。") from error
-        else:
-            desktop = next((root for root in roots if root["label"] == "桌面"), roots[0])
-            current = Path(desktop["path"])
-        root = self._root_for(current)
-        if root is None or not current.is_dir():
-            raise VideoSurveyError("只能浏览桌面、下载、视频、文档或本机磁盘目录。", http_status=403)
-
-        suffixes = ALLOWED_VIDEO_SUFFIXES if kind == "video" else {".srt"}
-        directories: list[dict[str, Any]] = []
-        files: list[dict[str, Any]] = []
-        try:
-            for child in current.iterdir():
-                if child.name.startswith("."):
-                    continue
-                try:
-                    resolved = child.resolve(strict=True)
-                    resolved.relative_to(Path(root["path"]))
-                    if resolved.is_dir():
-                        directories.append({"name": child.name, "path": str(resolved), "is_directory": True})
-                    elif resolved.is_file() and resolved.suffix.lower() in suffixes:
-                        files.append({"name": child.name, "path": str(resolved), "is_directory": False,
-                                      "size_bytes": resolved.stat().st_size})
-                except (OSError, RuntimeError, ValueError):
-                    continue
-        except OSError as error:
-            raise VideoSurveyError(f"无法读取该文件夹：{error}", http_status=403) from error
-        directories.sort(key=lambda item: item["name"].casefold())
-        files.sort(key=lambda item: item["name"].casefold())
-        entries = directories + files
-        truncated = len(entries) > 2000
-        entries = entries[:2000]
-        parent = current.parent if current != Path(root["path"]) else None
-        return {"kind": kind, "roots": roots, "root": root, "current_path": str(current),
-                "parent_path": str(parent) if parent is not None else None,
-                "entries": entries, "truncated": truncated}
-
-    def _selected_file(self, raw_path: str, suffixes: set[str], description: str) -> Path:
-        try:
-            path = Path(raw_path).resolve(strict=True)
-        except (OSError, RuntimeError) as error:
-            raise VideoSurveyError(f"找不到所选{description}文件。") from error
-        if self._root_for(path) is None or not path.is_file():
-            raise VideoSurveyError(f"所选{description}必须位于可浏览的本机文件夹内。", http_status=403)
-        if path.suffix.lower() not in suffixes:
-            raise VideoSurveyError(f"所选文件不是支持的{description}格式。")
-        return path
-
     def _directory(self, job_id: str) -> Path:
         if not _JOB_ID.fullmatch(job_id):
             raise VideoSurveyError("视频任务编号无效。", http_status=404)
@@ -282,7 +178,7 @@ class VideoSurveyStore:
                 return candidate
         raise VideoSurveyError("找不到该视频任务。", http_status=404)
 
-    async def create(self, video: UploadFile, srt: UploadFile) -> dict[str, Any]:
+    async def create(self, video: UploadFile, srt: UploadFile, task_id: str | None = None) -> dict[str, Any]:
         video_name = Path(video.filename or "").name
         srt_name = Path(srt.filename or "").name
         if Path(video_name).suffix.lower() not in ALLOWED_VIDEO_SUFFIXES:
@@ -303,7 +199,8 @@ class VideoSurveyStore:
                 raise VideoSurveyError("无法读取 SRT 编码，请另存为 UTF-8 后重试。") from error
 
         job_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S") + "-" + uuid.uuid4().hex[:8]
-        directory = self.storage_dir / job_id
+        directory = (self.task_storage_dir / task_id / "media" / "video-surveys" / job_id
+                     if task_id else self.storage_dir / job_id)
         directory.mkdir(parents=True, exist_ok=False)
         video_path = directory / ("video" + Path(video_name).suffix.lower())
         total_bytes = 0
@@ -323,6 +220,7 @@ class VideoSurveyStore:
             points = parse_srt_telemetry(srt_text)
             metadata = {
                 "job_id": job_id,
+                "task_id": task_id,
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "video_name": video_name,
                 "srt_name": srt_name,
@@ -345,69 +243,6 @@ class VideoSurveyStore:
             except OSError:
                 pass
             raise
-
-    def create_from_paths(self, video_path: str, srt_path: str, task_id: str | None = None) -> dict[str, Any]:
-        video_source = self._selected_file(video_path, ALLOWED_VIDEO_SUFFIXES, "视频")
-        srt_source = self._selected_file(srt_path, {".srt"}, "SRT")
-        video_size = video_source.stat().st_size
-        if not video_size:
-            raise VideoSurveyError("视频文件为空。")
-        if video_size > MAX_VIDEO_BYTES:
-            raise VideoSurveyError("视频文件不能超过 8 GiB。")
-        srt_size = srt_source.stat().st_size
-        if not srt_size:
-            raise VideoSurveyError("SRT 文件为空。")
-        if srt_size > MAX_SRT_BYTES:
-            raise VideoSurveyError("SRT 文件不能超过 32 MiB。")
-        try:
-            srt_bytes = srt_source.read_bytes()
-            srt_text = srt_bytes.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            try:
-                srt_text = srt_bytes.decode("gb18030")
-            except UnicodeDecodeError as error:
-                raise VideoSurveyError("无法读取 SRT 编码，请另存为 UTF-8 后重试。") from error
-        except OSError as error:
-            raise VideoSurveyError(f"无法读取 SRT 文件：{error}") from error
-
-        job_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S") + "-" + uuid.uuid4().hex[:8]
-        directory = (self.task_storage_dir / task_id / "media" / "video-surveys" / job_id
-                     if task_id else self.storage_dir / job_id)
-        directory.mkdir(parents=True, exist_ok=False)
-        video_path_out = directory / ("video" + video_source.suffix.lower())
-        try:
-            with video_source.open("rb") as source, video_path_out.open("wb") as output:
-                shutil.copyfileobj(source, output, length=CHUNK_BYTES)
-            (directory / "telemetry.srt").write_bytes(srt_bytes)
-            points = parse_srt_telemetry(srt_text)
-            metadata = {
-                "job_id": job_id,
-                "task_id": task_id,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "video_name": video_source.name,
-                "srt_name": srt_source.name,
-                "video_file": video_path_out.name,
-                "video_bytes": video_size,
-                "telemetry_points": len(points),
-                "has_gps": bool(points),
-                "message": "已读取 SRT 时间与 GPS，可在视频播放时查看对应地图位置。" if points else
-                    "视频已导入，但 SRT 中没有识别到经纬度；请确认该视频生成了带 GPS 的视频字幕 SRT。",
-            }
-            (directory / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            (directory / "telemetry.json").write_text(json.dumps(points, ensure_ascii=False) + "\n", encoding="utf-8")
-            (directory / "targets.json").write_text("[]\n", encoding="utf-8")
-            return self.job(job_id)
-        except OSError as error:
-            for path in directory.iterdir():
-                try:
-                    path.unlink(missing_ok=True)
-                except OSError:
-                    pass
-            try:
-                directory.rmdir()
-            except OSError:
-                pass
-            raise VideoSurveyError(f"无法保存所选视频或 SRT：{error}") from error
 
     def job(self, job_id: str) -> dict[str, Any]:
         directory = self._directory(job_id)

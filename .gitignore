@@ -40,6 +40,7 @@
 !**/.env.example
 
 # Local test images and model evaluation outputs
+/Web/.playwright-mcp/
 /Test_image/
 /model/测试成效/
 /model/.zcode/
