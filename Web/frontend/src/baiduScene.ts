@@ -52,6 +52,7 @@ export class BaiduScene {
   private viewMeshes: Mesh<BufferGeometry, MeshBasicMaterial>[] = []
   private frameListeners = new Set<() => void>()
   private disposed = false
+  private activeProjection: string | null = null
   private beforeRender = () => { for (const callback of this.frameListeners) callback() }
 
   constructor(readonly engine: any, private sdk: any, private element: HTMLElement, private interactive = true, private geoDatum: 'bd09' | 'wgs84' = 'bd09') {
@@ -180,10 +181,20 @@ export class BaiduScene {
     // changing the actual map projection, which was especially visible in
     // area coverage mode where the OSM map is used by default.
     const projection = view === '3d' ? 'ecef' : 'EPSG:3857'
-    this.engine.map.setProjection(projection)
+    // setProjection rebuilds the map asynchronously and drops a camera pitch
+    // applied in the same tick, which read as "the 3D button does nothing".
+    // Skip redundant switches and re-apply the tilt once the rebuild settles.
+    const switched = this.activeProjection !== projection
+    this.activeProjection = projection
+    if (switched) this.engine.map.setProjection(projection)
     this.engine.controller.enableTilt = view === '3d'
     this.engine.controller.enableRotate = view === '3d'
-    this.fit(coordinates, view)
+    // 2D/3D 只切换摄像头角度（2D=0° 俯视，3D=52°），中心与缩放保持不动。
+    // 倾角必须走 setPitch（观察角度滑杆同一接口）：lookAt 自带的 pitch 同样
+    // 会被引擎静默丢弃。
+    const tilt = view === '2d' ? 0 : 52
+    this.setTilt(tilt)
+    if (switched) setTimeout(() => { if (!this.disposed) this.setTilt(tilt) }, 450)
   }
 
   fit(coordinates: Coordinate[], view: SceneView) {
@@ -195,13 +206,9 @@ export class BaiduScene {
     const bounds = this.element.getBoundingClientRect()
     const aspectFactor = Math.max(1, bounds.height / Math.max(1, bounds.width))
     const sceneCenter = this.geoDatum === 'bd09' ? toBaiduSceneCoordinate(center) : center
-    // mapv-three renders the requested camera pitch unreliably below ~1 km:
-    // at close range the tiles stay top-down even though getPitch() reports
-    // the tilt, which read as "the 3D button does nothing" in area coverage
-    // mode where the default span fits the map at the 2D floor distance.
-    const rangeFloor = view === '3d' ? 1800 : 650
-    this.engine.map.lookAt(sceneCenter, { heading: 0, pitch: view === '2d' ? 0 : 52, range: Math.max(rangeFloor, span * 2.5 * aspectFactor, height * 6) })
-    this.engine.requestRender()
+    // 取景只负责位置；倾角同样走 setPitch，避免 lookAt 的 pitch 被引擎丢弃。
+    this.engine.map.lookAt(sceneCenter, { heading: 0, pitch: 0, range: Math.max(650, span * 2.5 * aspectFactor, height * 6) })
+    this.setTilt(view === '2d' ? 0 : 52)
   }
 
   focus(coordinate: Coordinate, view: SceneView) {
