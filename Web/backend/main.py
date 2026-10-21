@@ -94,7 +94,11 @@ class MissionRouteRequest(BaseModel):
 
 class AreaCoverageRequest(BaseModel):
     polygon: list[Point] = Field(min_length=3, max_length=128)
-    road_classes: list[str] = Field(default_factory=lambda: ["trunk", "primary", "secondary"], min_length=1, max_length=10)
+    road_classes: list[str] = Field(
+        default_factory=lambda: ["motorway", "trunk", "primary", "secondary", "tertiary", "residential", "unclassified", "service"],
+        min_length=1,
+        max_length=10,
+    )
     start: Point | None = None
     end: Point | None = None
     endpoint_snap_m: float = Field(default=100, ge=1, le=500, allow_inf_nan=False)
