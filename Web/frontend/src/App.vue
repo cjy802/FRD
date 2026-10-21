@@ -111,7 +111,6 @@ function majorPointTitle(index: number) {
 }
 function choosePlanningMode(mode: PlanningMode) {
   if (planningMode.value === mode) return
-  if (mode === 'area' && areaRouteViewMode.value === null) areaRouteViewMode.value = pointRouteViewMode.value
   if (mode === 'area') {
     roadSource.value = 'local'
     mapEditMode.value = 'route'
@@ -368,10 +367,8 @@ const placeSelectionFeedback = ref<{ message: string; error: boolean } | null>(n
 const baseMap = ref<'current' | 'earth'>('current')
 const earthMapRef = ref<InstanceType<typeof EarthMap> | null>(null)
 const pointRouteViewMode = ref<'2d' | '3d'>('3d')
-const areaRouteViewMode = ref<'2d' | '3d' | null>(null)
-const mapViewMode = computed<'2d' | '3d'>(() => planningMode.value === 'area'
-  ? areaRouteViewMode.value ?? pointRouteViewMode.value
-  : pointRouteViewMode.value)
+const areaRouteViewMode = ref<'2d' | '3d'>('2d')
+const mapViewMode = computed<'2d' | '3d'>(() => planningMode.value === 'area' ? areaRouteViewMode.value : pointRouteViewMode.value)
 const mapEditMode = ref<'route' | 'node'>('route')
 const videoTelemetryTrack = ref<number[][]>([])
 const videoTelemetryPosition = ref<VideoTelemetryPoint | null>(null)
