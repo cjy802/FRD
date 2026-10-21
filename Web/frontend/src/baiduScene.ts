@@ -195,7 +195,12 @@ export class BaiduScene {
     const bounds = this.element.getBoundingClientRect()
     const aspectFactor = Math.max(1, bounds.height / Math.max(1, bounds.width))
     const sceneCenter = this.geoDatum === 'bd09' ? toBaiduSceneCoordinate(center) : center
-    this.engine.map.lookAt(sceneCenter, { heading: 0, pitch: view === '2d' ? 0 : 52, range: Math.max(650, span * 2.5 * aspectFactor, height * 6) })
+    // mapv-three renders the requested camera pitch unreliably below ~1 km:
+    // at close range the tiles stay top-down even though getPitch() reports
+    // the tilt, which read as "the 3D button does nothing" in area coverage
+    // mode where the default span fits the map at the 2D floor distance.
+    const rangeFloor = view === '3d' ? 1800 : 650
+    this.engine.map.lookAt(sceneCenter, { heading: 0, pitch: view === '2d' ? 0 : 52, range: Math.max(rangeFloor, span * 2.5 * aspectFactor, height * 6) })
     this.engine.requestRender()
   }
 
