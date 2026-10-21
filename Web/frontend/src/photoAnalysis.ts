@@ -21,8 +21,8 @@ export type TaskVideoFrame = {
   frame_id?: string
   file: File
   time_seconds: number
-  latitude: number
-  longitude: number
+  latitude: number | null
+  longitude: number | null
   altitude_m: number | null
   gimbal_pitch_deg?: number | null
   selection_reason?: string | null
@@ -69,7 +69,7 @@ export type PhotoAnalysisJob = {
   context: {
     site_name?: string
     note?: string
-    frames?: Array<{ time_seconds: number; latitude: number; longitude: number; altitude_m: number | null; gimbal_pitch_deg?: number | null; [key: string]: unknown }>
+    frames?: Array<{ time_seconds: number; latitude: number | null; longitude: number | null; altitude_m: number | null; gimbal_pitch_deg?: number | null; [key: string]: unknown }>
   }
   inputs: { name: string; original_name: string; bytes: number }[]
   results: {

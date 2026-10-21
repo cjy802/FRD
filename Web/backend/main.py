@@ -309,17 +309,19 @@ async def save_task_frame(
     task_id: str,
     frame: UploadFile = File(...),
     time_seconds: float = Form(ge=0),
-    latitude: float = Form(ge=-90, le=90),
-    longitude: float = Form(ge=-180, le=180),
+    latitude: float | None = Form(default=None, ge=-90, le=90),
+    longitude: float | None = Form(default=None, ge=-180, le=180),
     altitude_m: float | None = Form(default=None),
     gimbal_pitch_deg: float | None = Form(default=None, ge=-90, le=45),
+    selection_reason: str = Form(default="", max_length=40),
 ):
     require_local_request(request, mutation=True, label="任务关键帧")
     try:
         return tasks.add_frame(task_id, frame.filename or "frame.jpg", await frame.read(),
                                {"time_seconds": time_seconds, "latitude": latitude,
                                 "longitude": longitude, "altitude_m": altitude_m,
-                                "gimbal_pitch_deg": gimbal_pitch_deg})
+                                "gimbal_pitch_deg": gimbal_pitch_deg,
+                                "selection_reason": selection_reason.strip() or None})
     except TaskError as error:
         raise HTTPException(status_code=error.http_status, detail=str(error)) from error
 

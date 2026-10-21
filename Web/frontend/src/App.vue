@@ -570,7 +570,7 @@ async function recordTaskAnalysis(job: PhotoAnalysisJob) {
   const images = job.results?.images ?? []
   const frames = job.context.frames ?? []
   const targets = images.map((image, index) => ({ image, frame: frames[index] }))
-    .filter((item) => {
+    .filter((item): item is typeof item & { frame: { time_seconds: number; latitude: number; longitude: number; altitude_m: number | null; gimbal_pitch_deg?: number | null } } => {
       if (!item.frame || !Number.isFinite(item.frame.latitude) || !Number.isFinite(item.frame.longitude)) return false
       return assessWaterAlert(item.image, waterAlertThresholds.value).level !== 'none'
     })
@@ -582,12 +582,12 @@ async function recordTaskAnalysis(job: PhotoAnalysisJob) {
         id: `analysis-${job.job_id}-${index}`,
         label: `积水候选 ${index + 1} · ${assessment.areaText ?? `占比 ${(image.suspected_fraction * 100).toFixed(1)}%`}`,
         created_at: new Date().toISOString(),
-        time_seconds: frame!.time_seconds,
-        latitude: frame!.latitude,
-        longitude: frame!.longitude,
-        altitude_m: frame!.altitude_m,
+        time_seconds: frame.time_seconds,
+        latitude: frame.latitude,
+        longitude: frame.longitude,
+        altitude_m: frame.altitude_m,
         heading_deg: null,
-        gimbal_pitch_deg: frame!.gimbal_pitch_deg ?? null,
+        gimbal_pitch_deg: frame.gimbal_pitch_deg ?? null,
       }
     })
   analysisMapTargets.value = [...targets, ...analysisMapTargets.value].slice(0, 50)
@@ -612,6 +612,16 @@ async function addTaskFrame(frame: TaskVideoFrame) {
     taskError.value = cause instanceof Error ? cause.message : '保存任务关键帧失败。'
   } finally {
     taskBusy.value = false
+  }
+}
+
+async function addManualTaskFrames(frames: TaskVideoFrame[]) {
+  for (const frame of frames) {
+    if (taskFrames.value.length >= 30) {
+      taskError.value = '每个任务最多保留 30 张关键帧；余下照片没有加入。'
+      break
+    }
+    await addTaskFrame(frame)
   }
 }
 
@@ -2891,7 +2901,7 @@ onBeforeUnmount(() => {
           <p class="form-scope-note">当前任务导入视频与对应 SRT。拖动时间线核对无人机位置，只截取需要分析的关键帧。</p>
           <VideoSurveyPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frame-count="taskFrames.length" @track-change="setVideoTelemetryTrack" @position-change="setVideoTelemetryPosition" @targets-change="setVideoCaptureTargets" @frame-capture="addTaskFrame" @frames-added="onAdaptiveFramesAdded" @survey-change="onTaskSurveyChange" />
           <p class="form-scope-note">关键帧会保存在任务文件夹中。模型只分析勾选的帧，SRT 位置会随结果一同记录。</p>
-          <PhotoAnalysisPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frames="taskFrames" :thresholds="waterAlertThresholds" @remove-frame="removeTaskFrame" @analysis-complete="recordTaskAnalysis" @thresholds-change="updateWaterAlertThresholds" />
+          <PhotoAnalysisPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frames="taskFrames" :thresholds="waterAlertThresholds" @remove-frame="removeTaskFrame" @frames-add="addManualTaskFrames" @analysis-complete="recordTaskAnalysis" @thresholds-change="updateWaterAlertThresholds" />
           </div>
           </div>
             <fluent-button v-if="activeModule === 'route'" class="primary-button" appearance="primary" type="button" :disabled="!weatherCoordinates || loading || checkingPoint || locatingPoint !== null" @click="selectModule('status')"><span class="svg-icon icon-cloud-rain" aria-hidden="true"></span><span>继续查看天气</span></fluent-button>

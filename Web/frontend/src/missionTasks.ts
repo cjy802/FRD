@@ -99,10 +99,11 @@ export async function saveMissionTaskFrame(taskId: string, frame: TaskVideoFrame
   const form = new FormData()
   form.append('frame', frame.file, frame.file.name)
   form.append('time_seconds', String(frame.time_seconds))
-  form.append('latitude', String(frame.latitude))
-  form.append('longitude', String(frame.longitude))
+  if (frame.latitude !== null) form.append('latitude', String(frame.latitude))
+  if (frame.longitude !== null) form.append('longitude', String(frame.longitude))
   if (frame.altitude_m !== null) form.append('altitude_m', String(frame.altitude_m))
   if (frame.gimbal_pitch_deg !== null && frame.gimbal_pitch_deg !== undefined) form.append('gimbal_pitch_deg', String(frame.gimbal_pitch_deg))
+  if (frame.selection_reason) form.append('selection_reason', frame.selection_reason)
   return request<StoredMissionFrame>(`/api/tasks/${encodeURIComponent(taskId)}/frames`, { method: 'POST', body: form })
 }
 

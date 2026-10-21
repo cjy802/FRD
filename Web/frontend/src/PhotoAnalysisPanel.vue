@@ -13,7 +13,7 @@ import type { PhotoAnalysisHealth, PhotoAnalysisJob, PhotoAnalysisResultImage, W
 import type { TaskVideoFrame } from './photoAnalysis'
 
 const props = defineProps<{ taskId: string | null; frames: TaskVideoFrame[]; thresholds: WaterAlertThresholds }>()
-const emit = defineEmits<{ 'remove-frame': [index: number]; 'analysis-complete': [job: PhotoAnalysisJob]; 'thresholds-change': [thresholds: WaterAlertThresholds] }>()
+const emit = defineEmits<{ 'remove-frame': [index: number]; 'frames-add': [frames: TaskVideoFrame[]]; 'analysis-complete': [job: PhotoAnalysisJob]; 'thresholds-change': [thresholds: WaterAlertThresholds] }>()
 
 const health = ref<PhotoAnalysisHealth | null>(null)
 const healthError = ref('')
@@ -32,6 +32,7 @@ const status = ref('')
 const viewMode = ref<'overlay' | 'original'>('overlay')
 const previewDialog = ref<HTMLDialogElement | null>(null)
 const preview = ref<{ image: PhotoAnalysisResultImage; index: number } | null>(null)
+const photoInput = ref<HTMLInputElement | null>(null)
 let pollTimer: number | null = null
 
 const localThresholds = ref<WaterAlertThresholds>({ ...props.thresholds })
@@ -40,6 +41,7 @@ watch(localThresholds, value => emit('thresholds-change', sanitizeWaterAlertThre
 
 watch(() => props.frames.map(frame => `${frame.file.name}:${frame.time_seconds}`).join('|'), () => {
   excludedFrames.value = []
+  if (status.value.endsWith('加入任务关键帧…')) status.value = ''
 })
 
 const selectedModelOption = computed(() => health.value?.models?.find(model => model.id === selectedModel.value) ?? null)
@@ -52,8 +54,8 @@ const canSubmit = computed(() => Boolean(health.value?.available && selectedMode
 const interpretation = computed(() => job.value?.results?.interpretation ?? '')
 const selectedFileSummary = computed(() => {
   if (selectedFiles.value.length === 1) return selectedFiles.value[0].name
-  if (selectedFiles.value.length > 1) return `${selectedFiles.value.length} 个视频关键帧已选择`
-  return '先从任务视频中截取需要分析的关键帧'
+  if (selectedFiles.value.length > 1) return `${selectedFiles.value.length} 个关键帧已选择`
+  return '从任务视频截取关键帧，或选择本机照片'
 })
 const previewUrl = computed(() => {
   if (!preview.value) return ''
@@ -185,6 +187,24 @@ function removeFrame(index: number) {
   emit('remove-frame', index)
 }
 
+function choosePhotos() { photoInput.value?.click() }
+
+function onPhotosPicked(event: Event) {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files ?? []).filter(file => /\.(jpe?g|png|webp)$/i.test(file.name) || ['image/jpeg', 'image/png', 'image/webp'].includes(file.type))
+  input.value = ''
+  if (!files.length || !props.taskId) return
+  emit('frames-add', files.map(file => ({
+    file,
+    time_seconds: 0,
+    latitude: null,
+    longitude: null,
+    altitude_m: null,
+    selection_reason: '手动上传',
+  })))
+  status.value = files.length > 1 ? `正在把 ${files.length} 张照片加入任务关键帧…` : '正在把照片加入任务关键帧…'
+}
+
 function setFrameIncluded(index: number, event: Event) {
   const checked = (event.target as HTMLInputElement).checked
   excludedFrames.value = checked
@@ -296,7 +316,7 @@ onUnmounted(() => {
       <p v-else-if="health && !health.available" class="photo-feedback is-error" role="alert">{{ health.message }}</p>
 
       <div class="photo-toolbar">
-        <small>只分析当前任务视频中手动截取的关键帧；SRT 按时间提供无人机位置，不逐帧调用模型。</small>
+        <small>只分析勾选的任务关键帧。关键帧可从任务视频截取，也可直接选择本机照片；没有拍摄高度的帧不换算积水面积。</small>
         <button type="button" aria-label="刷新照片分析状态" @click="refreshHealth">刷新</button>
       </div>
 
@@ -322,17 +342,22 @@ onUnmounted(() => {
           </div>
           <small class="weather-threshold-note">面积是“平坦地面 + 近垂直俯拍”假设下的估算；SRT 高度相对起飞点，斜拍帧（云台俯角不足）精度低、只降级为“注意”。面积不代表水深或淹没范围，仍需现场核查。</small>
         </details>
-        <label>任务关键帧（{{ selectedFiles.length }} / {{ frames.length }}）</label>
+        <div class="photo-frame-heading">
+          <label>任务关键帧（{{ selectedFiles.length }} / {{ frames.length }}）</label>
+          <input ref="photoInput" class="photo-file-native" type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" multiple :disabled="busy || !taskId" @change="onPhotosPicked" />
+          <button type="button" class="photo-file-trigger" :disabled="busy || !taskId" @click="choosePhotos">选择文件</button>
+        </div>
         <p v-if="!taskId" class="photo-file-selection">先在“选定航线”中创建当前任务。</p>
         <p v-else-if="!frames.length" class="photo-file-selection">{{ selectedFileSummary }}</p>
         <ul v-else class="photo-frame-list">
           <li v-for="(frame, index) in frames" :key="`${frame.file.name}-${index}`" :class="{ 'is-excluded': excludedFrames.includes(index) }">
             <label><input type="checkbox" :checked="!excludedFrames.includes(index)" :disabled="busy" @change="setFrameIncluded(index, $event)" />
-              <span><strong>{{ frame.file.name }}</strong><small>{{ Math.floor(frame.time_seconds / 60).toString().padStart(2, '0') }}:{{ Math.floor(frame.time_seconds % 60).toString().padStart(2, '0') }} · {{ frame.latitude.toFixed(6) }}, {{ frame.longitude.toFixed(6) }}<template v-if="frame.altitude_m !== null"> · {{ frame.altitude_m.toFixed(0) }} m</template></small><small>{{ frame.selection_reason ?? '手动截取' }}<template v-if="frame.estimated_overlap_percent !== null && frame.estimated_overlap_percent !== undefined"> · 上一选帧重叠约 {{ frame.estimated_overlap_percent }}%</template><template v-if="frame.sharpness_ratio_percent !== null && frame.sharpness_ratio_percent !== undefined"> · 清晰度比值 {{ frame.sharpness_ratio_percent }}%</template></small></span>
+              <span><strong>{{ frame.file.name }}</strong><small>{{ Math.floor(frame.time_seconds / 60).toString().padStart(2, '0') }}:{{ Math.floor(frame.time_seconds % 60).toString().padStart(2, '0') }}<template v-if="frame.latitude !== null && frame.longitude !== null"> · {{ frame.latitude.toFixed(6) }}, {{ frame.longitude.toFixed(6) }}</template><template v-else> · 无 GPS</template><template v-if="frame.altitude_m !== null"> · {{ frame.altitude_m.toFixed(0) }} m</template></small><small>{{ frame.selection_reason ?? '手动截取' }}<template v-if="frame.estimated_overlap_percent !== null && frame.estimated_overlap_percent !== undefined"> · 上一选帧重叠约 {{ frame.estimated_overlap_percent }}%</template><template v-if="frame.sharpness_ratio_percent !== null && frame.sharpness_ratio_percent !== undefined"> · 清晰度比值 {{ frame.sharpness_ratio_percent }}%</template></small></span>
             </label>
             <button type="button" :disabled="busy" :aria-label="`从任务分析队列移除 ${frame.file.name}`" @click="removeFrame(index)">移除</button>
           </li>
         </ul>
+        <small v-if="taskId" class="photo-file-hint">选择文件支持多选 JPG、PNG、WebP；手动照片没有 GPS 和高度，分析时不换算面积、不触发积水警报。</small>
         <div class="photo-context">
           <input v-model="siteName" type="text" maxlength="60" autocomplete="off" placeholder="站点/地点（可选）" :disabled="busy" />
           <input v-model="note" type="text" maxlength="120" autocomplete="off" placeholder="备注（可选）" :disabled="busy" />
@@ -430,6 +455,13 @@ onUnmounted(() => {
 .photo-model-check { flex: 0 0 auto; color: #087b76; font-weight: 800; }
 .photo-model-unavailable { flex: 0 0 auto; color: var(--ui-muted); font-size: 10px; }
 .photo-model-description { display: block; margin: 0 0 8px; color: var(--ui-muted); line-height: 1.4; }
+.photo-frame-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.photo-frame-heading label { margin: 0; }
+.photo-file-native { display: none; }
+.photo-file-trigger { min-height: 28px; padding: 4px 10px; border: 1px solid #d7dfe8; border-radius: 6px; background: #fff; color: #34506c; font-size: 11px; white-space: nowrap; }
+.photo-file-trigger:hover:not(:disabled) { border-color: var(--ui-accent); background: #eff6ff; color: var(--ui-accent); }
+.photo-file-trigger:disabled { opacity: .5; cursor: not-allowed; }
+.photo-file-hint { display: block; margin: 0 0 6px; color: var(--ui-muted); line-height: 1.4; }
 .photo-file-selection { min-width: 0; overflow: hidden; color: var(--ui-muted); text-overflow: ellipsis; white-space: nowrap; }
 .photo-frame-list { display: grid; max-height: 200px; gap: 5px; margin: 5px 0; padding: 0; overflow: auto; list-style: none; }
 .photo-frame-list li { display: flex; align-items: center; justify-content: space-between; gap: 5px; padding: 5px 6px; border: 1px solid var(--ui-line); border-radius: 6px; }
