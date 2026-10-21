@@ -140,10 +140,12 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .sidebar.module-mode-route .settings-group[data-settings-page="photos"] { display: none; }
 .sidebar.module-mode-photos .settings-group[data-settings-page="points"], .sidebar.module-mode-photos .settings-group[data-settings-page="mission"] { display: none; }
 .sidebar.module-mode-photos .route-form { margin-top: 0; }
-.sidebar.module-mode-photos .settings-fields { overflow-y: auto; overscroll-behavior: contain; padding-right: 5px; }
+.sidebar.module-mode-photos .settings-fields { overflow-y: auto; overscroll-behavior: contain; padding-right: 5px; scrollbar-width: none; -ms-overflow-style: none; }
+.sidebar.module-mode-photos .settings-fields::-webkit-scrollbar { display: none; width: 0; height: 0; }
 .sidebar, .insights { background: #fff; padding: 28px 24px; }
 .sidebar { min-height: 0; min-width: 0; overflow: clip; display: flex; flex-direction: column; padding: 20px; border-right: 1px solid var(--ui-line); }
-.insights { min-height: 0; min-width: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: contain; scrollbar-gutter: stable; border-left: 1px solid var(--ui-line); padding: 20px 18px 36px; background: #f7f9fb; }
+.insights { min-height: 0; min-width: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: contain; scrollbar-width: none; -ms-overflow-style: none; border-left: 1px solid var(--ui-line); padding: 20px 18px 36px; background: #f7f9fb; }
+.insights::-webkit-scrollbar { display: none; width: 0; height: 0; }
 .insights:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: -2px; }
 .insights-header { position: sticky; top: -20px; z-index: 3; margin: -20px -18px 14px; padding: 16px 18px 12px; background: #f7f9fbf5; border-bottom: 1px solid var(--ui-line); backdrop-filter: blur(10px); }
 .insights-header h2 { margin: 4px 0 0; }
