@@ -38,3 +38,9 @@
 **/.env
 **/.env.*
 !**/.env.example
+
+# Local test images and model evaluation outputs
+/Test_image/
+/model/测试成效/
+/model/.zcode/
+/app/backfill_batches - 副本.py
