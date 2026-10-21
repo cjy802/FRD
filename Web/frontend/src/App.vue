@@ -354,6 +354,7 @@ const batchBoundaryIds = ref<string[]>([])
 const batchHeadingInput = ref('')
 const batchPitchInput = ref('')
 const batchFeedback = ref<{ message: string; error: boolean } | null>(null)
+const waypointEditorFeedback = ref('')
 const batchPanelElement = ref<HTMLElement | null>(null)
 const checkingPoint = ref(false)
 const locatingPoint = ref<string | null>(null)
@@ -1628,8 +1629,20 @@ function applyBatchCamera() {
   scheduleWaypointRender(true)
 }
 
+function applyAllWaypointPitchDown() {
+  if (!waypointSettings.value.length || loading.value || checkingPoint.value || kmzLoading.value) return
+  waypointSettings.value.forEach((setting) => {
+    setting.gimbal_pitch_angle = -90
+    setting.export_anchor = true
+  })
+  waypointEditorFeedback.value = `已将全部 ${waypointSettings.value.length} 个航点设为镜头垂直向下（-90°）。`
+  kmzError.value = ''
+  scheduleWaypointRender(true)
+}
+
 async function openWaypointEditor() {
   if (!waypointSettings.value.length) return
+  waypointEditorFeedback.value = ''
   waypointEditorExpanded.value = true
   await nextTick()
   waypointEditorDialog.value?.focus({ preventScroll: true })
@@ -2746,6 +2759,11 @@ onBeforeUnmount(() => {
             <div class="waypoint-editor-body">
               <p class="waypoint-editor-note">高度相对起飞点；机头角度控制水平朝向，真北为 0°。摄像头俯仰默认 0°（水平），负数向下。</p>
               <p v-if="waypointSettings.length > 200" class="waypoint-editor-note">此处列出前 200 个点和当前选中点；完整路线仍保留全部 {{ waypointSettings.length }} 个点。</p>
+              <div class="waypoint-editor-bulk-actions" aria-label="批量视角设置">
+                <button type="button" :disabled="loading || checkingPoint || kmzLoading" @click="applyAllWaypointPitchDown">全选航点并视角向下</button>
+                <small>将全部 {{ waypointSettings.length }} 个航点的摄像头俯仰设为 -90°（垂直向下）</small>
+              </div>
+              <p v-if="waypointEditorFeedback" class="waypoint-editor-feedback" role="status">{{ waypointEditorFeedback }}</p>
               <div v-for="{ setting, index } in editorWaypoints" :key="index" class="waypoint-row" :data-waypoint-index="index">
                 <strong>点 {{ index + 1 }}</strong>
                 <label>高度（m）<input v-model.number="setting.altitude_m" type="number" min="1" max="1500" step="1" /></label>
