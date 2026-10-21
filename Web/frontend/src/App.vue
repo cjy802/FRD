@@ -366,7 +366,9 @@ const error = ref('')
 const placeSelectionFeedback = ref<{ message: string; error: boolean } | null>(null)
 const baseMap = ref<'current' | 'earth'>('current')
 const earthMapRef = ref<InstanceType<typeof EarthMap> | null>(null)
-const mapViewMode = ref<'2d' | '3d'>('3d')
+const pointRouteViewMode = ref<'2d' | '3d'>('3d')
+const areaRouteViewMode = ref<'2d' | '3d'>('2d')
+const mapViewMode = computed(() => planningMode.value === 'area' ? areaRouteViewMode.value : pointRouteViewMode.value)
 const mapEditMode = ref<'route' | 'node'>('route')
 const videoTelemetryTrack = ref<number[][]>([])
 const videoTelemetryPosition = ref<VideoTelemetryPoint | null>(null)
@@ -1220,10 +1222,20 @@ function chooseMapViewMode(next: '2d' | '3d') {
   if (mapViewMode.value === next) return
   cancelCameraPreviewDrag()
   finishMapCameraDrag()
-  mapViewMode.value = next
+  const mode = planningMode.value === 'area' ? areaRouteViewMode : pointRouteViewMode
+  mode.value = next
   applyCurrentMapView()
+  drawCesiumRoute(false)
   syncCesiumFlight()
 }
+
+watch(mapViewMode, () => {
+  void nextTick(() => {
+    applyCurrentMapView()
+    drawCesiumRoute(false)
+    syncCesiumFlight()
+  })
+})
 
 watch([mapEditMode, selectedWaypointIndex], () => {
   cancelCameraPreviewDrag()
