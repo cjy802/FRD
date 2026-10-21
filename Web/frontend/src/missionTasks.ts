@@ -102,6 +102,7 @@ export async function saveMissionTaskFrame(taskId: string, frame: TaskVideoFrame
   form.append('latitude', String(frame.latitude))
   form.append('longitude', String(frame.longitude))
   if (frame.altitude_m !== null) form.append('altitude_m', String(frame.altitude_m))
+  if (frame.gimbal_pitch_deg !== null && frame.gimbal_pitch_deg !== undefined) form.append('gimbal_pitch_deg', String(frame.gimbal_pitch_deg))
   return request<StoredMissionFrame>(`/api/tasks/${encodeURIComponent(taskId)}/frames`, { method: 'POST', body: form })
 }
 

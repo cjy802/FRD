@@ -103,7 +103,8 @@ def main() -> int:
             )[0]
             water, confidence, instance_count = masks_and_confidence(prediction, width, height)
             suspected_pixels = int(water.sum())
-            count, _ = cv2.connectedComponents(water.astype(np.uint8), connectivity=8)
+            count, labels = cv2.connectedComponents(water.astype(np.uint8), connectivity=8)
+            patch_area_pixels = [int(area) for area in sorted(np.bincount(labels.ravel())[1:], reverse=True)[:10]]
 
             rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
             overlay = rgb.copy()
@@ -122,6 +123,7 @@ def main() -> int:
                 "suspected_pixels": suspected_pixels,
                 "suspected_fraction": suspected_pixels / float(water.size),
                 "suspected_patch_count": max(count - 1, 0),
+                "patch_area_pixels": patch_area_pixels,
                 "mean_confidence_on_suspected": float(confidence[water].mean()) if suspected_pixels else 0.0,
                 "instance_count": instance_count,
                 "overlay": f"{stem}__overlay.png",

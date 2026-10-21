@@ -2,16 +2,18 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   PhotoAnalysisApiError,
+  assessWaterAlert,
   fetchPhotoAnalysisHealth,
   fetchPhotoAnalysisJob,
   photoAnalysisFileUrl,
+  sanitizeWaterAlertThresholds,
   submitPhotoAnalysis,
 } from './photoAnalysis'
-import type { PhotoAnalysisHealth, PhotoAnalysisJob, PhotoAnalysisResultImage } from './photoAnalysis'
+import type { PhotoAnalysisHealth, PhotoAnalysisJob, PhotoAnalysisResultImage, WaterAlertThresholds } from './photoAnalysis'
 import type { TaskVideoFrame } from './photoAnalysis'
 
-const props = defineProps<{ taskId: string | null; frames: TaskVideoFrame[] }>()
-const emit = defineEmits<{ 'remove-frame': [index: number]; 'analysis-complete': [job: PhotoAnalysisJob] }>()
+const props = defineProps<{ taskId: string | null; frames: TaskVideoFrame[]; thresholds: WaterAlertThresholds }>()
+const emit = defineEmits<{ 'remove-frame': [index: number]; 'analysis-complete': [job: PhotoAnalysisJob]; 'thresholds-change': [thresholds: WaterAlertThresholds] }>()
 
 const health = ref<PhotoAnalysisHealth | null>(null)
 const healthError = ref('')
@@ -31,6 +33,10 @@ const viewMode = ref<'overlay' | 'original'>('overlay')
 const previewDialog = ref<HTMLDialogElement | null>(null)
 const preview = ref<{ image: PhotoAnalysisResultImage; index: number } | null>(null)
 let pollTimer: number | null = null
+
+const localThresholds = ref<WaterAlertThresholds>({ ...props.thresholds })
+watch(() => props.thresholds, value => { localThresholds.value = { ...value } })
+watch(localThresholds, value => emit('thresholds-change', sanitizeWaterAlertThresholds(value)), { deep: true })
 
 watch(() => props.frames.map(frame => `${frame.file.name}:${frame.time_seconds}`).join('|'), () => {
   excludedFrames.value = []
@@ -59,6 +65,16 @@ const modelSummary = computed(() => {
   const model = job.value?.results?.model
   if (!model) return ''
   return `${model.display_name ?? model.default_model} · 输入 ${model.input_size}px`
+})
+const imageAssessments = computed(() => (job.value?.results?.images ?? [])
+  .map(image => ({ image, assessment: assessWaterAlert(image, props.thresholds) })))
+const alertSummary = computed(() => {
+  const counts = { elevated: 0, attention: 0 }
+  for (const { assessment } of imageAssessments.value) {
+    if (assessment.level === 'elevated') counts.elevated += 1
+    else if (assessment.level === 'attention') counts.attention += 1
+  }
+  return counts
 })
 
 function fractionPercent(value: number): string {
@@ -187,7 +203,7 @@ async function submit() {
     const submitted = await submitPhotoAnalysis(selectedFiles.value, {
       site_name: siteName.value.trim() || undefined,
       note: note.value.trim() || undefined,
-    }, selectedModel.value, props.taskId ?? '', selectedFrames.value.map(({ file, ...metadata }) => metadata))
+    }, selectedModel.value, props.taskId ?? '', selectedFrames.value.map(({ file, ...metadata }) => metadata), props.thresholds.cameraFovDeg)
     status.value = '已提交，正在分析…'
     pollJob(submitted.job_id)
   } catch (cause) {
@@ -298,6 +314,14 @@ onUnmounted(() => {
         </div>
         <small v-if="selectedModelOption" class="photo-model-description">{{ selectedModelOption.description }}</small>
         <p v-if="isRemoteModel" class="photo-feedback">所选任务关键帧会发送到 BigModel 接口处理；API Key 只保存在本机后端。返回多边形会在本机生成掩膜。</p>
+        <details class="weather-threshold-config photo-threshold-config" aria-label="积水警报阈值配置">
+          <summary class="weather-threshold-config-heading"><strong>设置积水警报阈值</strong><small>结合拍摄高度换算面积，达标才警报</small></summary>
+          <div class="weather-threshold-group">
+            <div class="weather-threshold-item"><strong>警报面积阈值 · m²</strong><label>最大单块水面达到该面积触发警报<input v-model.number="localThresholds.minAlertAreaM2" type="number" min="0.5" max="100000" step="0.5" :disabled="busy" /></label><small>总面积达标但只是破碎小水坑时仅提示“注意”</small></div>
+            <div class="weather-threshold-item"><strong>相机水平视场角 · °</strong><label>按拍摄机型校准（Air 3 约 75）<input v-model.number="localThresholds.cameraFovDeg" type="number" min="30" max="120" step="1" :disabled="busy" /></label><small>面积 = 疑似像素 × GSD²，GSD 由该帧高度与视场角换算</small></div>
+          </div>
+          <small class="weather-threshold-note">面积是“平坦地面 + 近垂直俯拍”假设下的估算；SRT 高度相对起飞点，斜拍帧（云台俯角不足）精度低、只降级为“注意”。面积不代表水深或淹没范围，仍需现场核查。</small>
+        </details>
         <label>任务关键帧（{{ selectedFiles.length }} / {{ frames.length }}）</label>
         <p v-if="!taskId" class="photo-file-selection">先在“选定航线”中创建当前任务。</p>
         <p v-else-if="!frames.length" class="photo-file-selection">{{ selectedFileSummary }}</p>
@@ -329,15 +353,22 @@ onUnmounted(() => {
           </div>
           <small>{{ modelSummary }}</small>
         </div>
+        <p :class="['photo-alert-summary', { 'is-elevated': alertSummary.elevated > 0 }]" role="status">
+          {{ alertSummary.elevated || alertSummary.attention
+            ? `积水警报 ${alertSummary.elevated} 帧 · 注意 ${alertSummary.attention} 帧`
+            : '未触发积水警报' }}（阈值 {{ thresholds.minAlertAreaM2 }} m² · 视场角 {{ thresholds.cameraFovDeg }}°）
+        </p>
         <ul class="photo-grid">
-          <li v-for="(image, index) in job.results.images" :key="image.name">
+          <li v-for="{ image, assessment }, index in imageAssessments" :key="image.name">
             <button type="button" class="photo-thumbnail" :aria-label="`放大查看 ${image.name}`" @click="openPreview(image, index)">
               <img :src="viewMode === 'overlay' ? fileUrl(image.overlay) : inputUrl(index)" :alt="`${viewMode === 'overlay' ? '疑似积水叠图' : '原始照片'} ${image.name}`" loading="lazy" />
             </button>
             <div class="photo-meta">
               <strong :title="image.name">{{ image.name }}</strong>
-              <small>疑似积水 {{ fractionPercent(image.suspected_fraction) }} · {{ image.suspected_patch_count }} 处</small>
-              <small>平均置信度 {{ fractionPercent(image.mean_confidence_on_suspected) }}</small>
+              <span :class="['photo-alert-badge', `is-${assessment.level}`]">{{ assessment.label }}</span>
+              <small v-if="assessment.areaText">{{ assessment.areaText }} · 高度 {{ image.altitude_m !== null && image.altitude_m !== undefined ? `${image.altitude_m.toFixed(0)} m` : '未知' }}</small>
+              <small>疑似积水 {{ fractionPercent(image.suspected_fraction) }} · {{ image.suspected_patch_count }} 处 · 置信度 {{ fractionPercent(image.mean_confidence_on_suspected) }}</small>
+              <small class="photo-alert-reason" :title="assessment.reason">{{ assessment.reason }}</small>
             </div>
           </li>
         </ul>
@@ -431,6 +462,14 @@ onUnmounted(() => {
 .photo-meta strong { display: block; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .photo-meta small { display: block; margin-top: 2px; color: var(--ui-muted); }
 .photo-warning { margin: 10px 0 0; padding: 6px 8px; border-radius: 6px; background: #fff7ed; color: #9a5b13; line-height: 1.4; }
+.photo-threshold-config { margin: 0 0 10px; }
+.photo-alert-summary { margin: 0 0 8px; padding: 6px 8px; border-radius: 6px; background: #f0f7f1; color: #16794c; line-height: 1.4; }
+.photo-alert-summary.is-elevated { background: #fef2f2; color: #a4262c; font-weight: 700; }
+.photo-alert-badge { display: inline-block; margin-top: 3px; padding: 2px 7px; border-radius: 9px; font-size: 10px; font-weight: 700; }
+.photo-alert-badge.is-none { background: #eef2f6; color: #526273; }
+.photo-alert-badge.is-attention { background: #fff7ed; color: #b45309; }
+.photo-alert-badge.is-elevated { background: #fef2f2; color: #a4262c; }
+.photo-alert-reason { overflow-wrap: anywhere; }
 .photo-lightbox { width: min(96vw, 1400px); max-width: 96vw; max-height: 94vh; margin: auto; padding: 0; overflow: hidden; border: 1px solid var(--ui-line); border-radius: var(--ui-radius); background: #fff; color: #27364a; }
 .photo-lightbox::backdrop { background: rgba(15, 23, 42, .48); }
 .photo-lightbox-content { display: flex; max-height: 94vh; flex-direction: column; }

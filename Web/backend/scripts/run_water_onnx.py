@@ -118,8 +118,10 @@ def main() -> int:
             prediction_full = cv2.resize(prediction, (width, height), interpolation=cv2.INTER_NEAREST)
             confidence_full = cv2.resize(confidence, (width, height), interpolation=cv2.INTER_NEAREST)
             suspected_full = prediction_full == water_class
-            suspected_pixels = int(suspected.sum())
-            count, _ = cv2.connectedComponents((suspected * 255).astype(np.uint8), connectivity=8)
+            # Report pixel stats at photo resolution so downstream area math (GSD) is meaningful.
+            suspected_pixels = int(suspected_full.sum())
+            count, labels = cv2.connectedComponents(suspected_full.astype(np.uint8), connectivity=8)
+            patch_area_pixels = [int(area) for area in sorted(np.bincount(labels.ravel())[1:], reverse=True)[:10]]
             stem = path.stem
             imwrite_unicode(args.output_dir / f"{stem}__classes.png", prediction_full)
             imwrite_unicode(args.output_dir / f"{stem}__suspected.png", np.where(suspected_full, 255, 0).astype(np.uint8))
@@ -135,8 +137,9 @@ def main() -> int:
                 "height": height,
                 "model_input_size": size,
                 "suspected_pixels": suspected_pixels,
-                "suspected_fraction": suspected_pixels / float(suspected.size),
+                "suspected_fraction": suspected_pixels / float(suspected_full.size),
                 "suspected_patch_count": max(count - 1, 0),
+                "patch_area_pixels": patch_area_pixels,
                 "mean_confidence_on_suspected": float(confidence[suspected].mean()) / 255.0 if suspected_pixels else 0.0,
                 "overlay": f"{stem}__overlay.png",
                 "suspected_mask": f"{stem}__suspected.png",

@@ -182,7 +182,8 @@ def _process(path: Path, output_dir: Path, url: str, api_key: str, model: str) -
     _write_png(output_dir / overlay_name, overlay)
     _write_png(output_dir / mask_name, mask)
     _write_png(output_dir / confidence_name, confidence)
-    components, _ = cv2.connectedComponents((mask > 0).astype(np.uint8))
+    components, labels = cv2.connectedComponents((mask > 0).astype(np.uint8))
+    patch_area_pixels = [int(area) for area in sorted(np.bincount(labels.ravel())[1:], reverse=True)[:10]]
     pixels = int(np.count_nonzero(mask))
     return {
         "name": path.name,
@@ -194,6 +195,7 @@ def _process(path: Path, output_dir: Path, url: str, api_key: str, model: str) -
         "suspected_pixels": pixels,
         "suspected_fraction": pixels / (width * height),
         "suspected_patch_count": max(components - 1, 0),
+        "patch_area_pixels": patch_area_pixels,
         "mean_confidence_on_suspected": round(float(confidence[selected].mean()) / 255, 4) if pixels else 0.0,
         "instance_count": len(valid),
         "overlay": overlay_name,

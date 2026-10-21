@@ -174,7 +174,7 @@ async function captureCurrentFrame() {
     const name = `frame-${String(Math.floor(totalSeconds / 60)).padStart(2, '0')}m${String(totalSeconds % 60).padStart(2, '0')}s.jpg`
     const file = new File([blob], name, { type: 'image/jpeg' })
     emit('frame-capture', { file, time_seconds: currentTime.value, latitude: point.latitude,
-      longitude: point.longitude, altitude_m: point.altitude_m })
+      longitude: point.longitude, altitude_m: point.altitude_m, gimbal_pitch_deg: point.gimbal_pitch_deg })
     status.value = `已把 ${formatVideoTime(currentTime.value)} 的画面加入当前任务分析队列。`
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '截取视频帧失败。'

@@ -318,12 +318,14 @@ async def save_task_frame(
     latitude: float = Form(ge=-90, le=90),
     longitude: float = Form(ge=-180, le=180),
     altitude_m: float | None = Form(default=None),
+    gimbal_pitch_deg: float | None = Form(default=None, ge=-90, le=45),
 ):
     require_local_request(request, mutation=True, label="任务关键帧")
     try:
         return tasks.add_frame(task_id, frame.filename or "frame.jpg", await frame.read(),
                                {"time_seconds": time_seconds, "latitude": latitude,
-                                "longitude": longitude, "altitude_m": altitude_m})
+                                "longitude": longitude, "altitude_m": altitude_m,
+                                "gimbal_pitch_deg": gimbal_pitch_deg})
     except TaskError as error:
         raise HTTPException(status_code=error.http_status, detail=str(error)) from error
 
@@ -835,6 +837,7 @@ async def photo_analysis_submit(
     model_id: str = Form(default=""),
     task_id: str = Form(default=""),
     frame_metadata: str = Form(default="[]"),
+    camera_fov_deg: str = Form(default=""),
 ):
     require_local_request(request, mutation=True, label="照片分析")
     if not photos:
@@ -844,6 +847,14 @@ async def photo_analysis_submit(
         collected.append((upload.filename or "photo", await upload.read()))
     try:
         context = {"site_name": site_name, "note": note}
+        if camera_fov_deg.strip():
+            try:
+                fov = float(camera_fov_deg)
+            except ValueError as error:
+                raise PhotoAnalysisError("相机视场角必须是数字。") from error
+            if not 30.0 <= fov <= 120.0:
+                raise PhotoAnalysisError("相机视场角需在 30–120° 之间。")
+            context["camera_fov_deg"] = fov
         try:
             parsed_frame_metadata = json.loads(frame_metadata)
         except ValueError as error:

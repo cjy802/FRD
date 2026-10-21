@@ -12,6 +12,7 @@ manual review, never depth/water-level conclusions.
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import threading
 import uuid
@@ -35,6 +36,8 @@ MAX_PHOTOS_PER_JOB = 200
 MAX_PHOTO_BYTES = 40 * 1024 * 1024
 ALLOWED_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 JOB_TIMEOUT_SECONDS = 900
+DEFAULT_CAMERA_FOV_DEGREES = 75.0
+NADIR_PITCH_DEGREES = -60.0
 
 
 class PhotoAnalysisError(Exception):
@@ -192,6 +195,55 @@ class PhotoAnalysisManager:
         thread.start()
         return job_id
 
+    def _enrich_with_ground_scale(self, payload: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        """Attach per-image ground-scale estimates using SRT altitude + camera FOV.
+
+        Flat-ground, near-nadir assumption. Oblique frames (gimbal pitch above
+        NADIR_PITCH_DEGREES) get a coarse 1/cos^2 correction and are flagged so the
+        UI can downgrade their alert level. Frames without altitude stay null.
+        Frame metadata is matched to images by submission order, mirroring the
+        equal-length check in the submit endpoint.
+        """
+        frames = context.get("frames")
+        frames = frames if isinstance(frames, list) else []
+        try:
+            fov_deg = float(context.get("camera_fov_deg") or DEFAULT_CAMERA_FOV_DEGREES)
+        except (TypeError, ValueError):
+            fov_deg = DEFAULT_CAMERA_FOV_DEGREES
+        fov_deg = min(max(fov_deg, 30.0), 120.0)
+        for index, image in enumerate(payload.get("images", [])):
+            frame = frames[index] if index < len(frames) and isinstance(frames[index], dict) else {}
+            altitude = frame.get("altitude_m")
+            pitch = frame.get("gimbal_pitch_deg")
+            width = int(image.get("width") or 0)
+            height = int(image.get("height") or 0)
+            image["altitude_m"] = float(altitude) if isinstance(altitude, (int, float)) and altitude > 0 else None
+            image["gimbal_pitch_deg"] = float(pitch) if isinstance(pitch, (int, float)) else None
+            image["camera_fov_deg"] = fov_deg
+            image.update({"area_estimate": "none", "gsd_m": None, "ground_width_m": None,
+                          "ground_height_m": None, "estimated_area_m2": None, "largest_patch_area_m2": None})
+            if image["altitude_m"] is None or width <= 0 or height <= 0:
+                continue
+            ground_width = 2.0 * image["altitude_m"] * math.tan(math.radians(fov_deg) / 2.0)
+            gsd = ground_width / width
+            oblique = image["gimbal_pitch_deg"] is not None and image["gimbal_pitch_deg"] > NADIR_PITCH_DEGREES
+            oblique_factor = 1.0
+            if oblique:
+                from_nadir = math.radians(90.0 - min(abs(image["gimbal_pitch_deg"]), 89.0))
+                oblique_factor = 1.0 / max(math.cos(from_nadir) ** 2, 0.25)
+            pixels = float(image.get("suspected_pixels") or 0)
+            patch_areas = image.get("patch_area_pixels")
+            largest_pixels = float(patch_areas[0]) if isinstance(patch_areas, list) and patch_areas else pixels
+            image.update({
+                "area_estimate": "oblique" if oblique else "nadir",
+                "gsd_m": round(gsd, 4),
+                "ground_width_m": round(ground_width, 2),
+                "ground_height_m": round(gsd * height, 2),
+                "estimated_area_m2": round(pixels * gsd * gsd * oblique_factor, 2),
+                "largest_patch_area_m2": round(largest_pixels * gsd * gsd * oblique_factor, 2),
+            })
+        return payload
+
     def _process(self, job_id: str) -> None:
         job_dir = self._job_dirs[job_id]
         output_dir = job_dir / "outputs"
@@ -247,7 +299,7 @@ class PhotoAnalysisManager:
                     detail = str(detail).replace(secret, "[已隐藏 API Key]")
                 raise RuntimeError(detail)
             with self._lock:
-                self._jobs[job_id]["results"] = payload
+                self._jobs[job_id]["results"] = self._enrich_with_ground_scale(payload, job["context"])
                 self._jobs[job_id]["state"] = "done"
                 self._jobs[job_id]["finished_at"] = datetime.now(timezone.utc).isoformat()
         except Exception as error:  # noqa: BLE001 - stored on the job for the UI
