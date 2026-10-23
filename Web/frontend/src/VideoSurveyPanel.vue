@@ -536,7 +536,7 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
           ></video>
           <div class="video-library-preview-bar">
             <label class="video-library-speed">倍速
-              <CustomSelect v-model="playSpeed" :options="[{ value: 0.5, label: '0.5×' }, { value: 1, label: '1×' }, { value: 2, label: '2×' }, { value: 4, label: '4×' }]" aria-label="播放倍速" />
+              <CustomSelect v-model="playSpeed" :options="[{ value: 0.5, label: '0.5×' }, { value: 1, label: '1×' }, { value: 2, label: '2×' }, { value: 4, label: '4×' }]" aria-label="播放倍速" open-up />
             </label>
             <div class="video-library-preview-meta">
               <span>{{ previewGroup.startAt ? formatDateTime(previewGroup.startAt) : '开始时间未知' }}</span>

@@ -8,7 +8,8 @@ const props = withDefaults(defineProps<{
   options: SelectOption[]
   disabled?: boolean
   ariaLabel?: string
-}>(), { disabled: false })
+  openUp?: boolean
+}>(), { disabled: false, openUp: false })
 
 const emit = defineEmits<{ 'update:modelValue': [value: string | number] }>()
 
@@ -53,7 +54,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
 </script>
 
 <template>
-  <div ref="root" class="custom-select" :class="{ open, disabled }" @keydown="onKeydown">
+  <div ref="root" class="custom-select" :class="{ open, disabled, 'open-up': openUp }" @keydown="onKeydown">
     <button type="button" class="custom-select-trigger" :disabled="disabled" :aria-label="ariaLabel" :aria-expanded="open" aria-haspopup="listbox" @click="toggle">
       <span class="custom-select-value">{{ current?.label ?? '—' }}</span>
       <svg class="custom-select-chevron" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" /></svg>
@@ -75,6 +76,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
 .custom-select-chevron { flex: none; width: 13px; height: 13px; color: #6b7280; transition: transform .18s ease; }
 .custom-select.open .custom-select-chevron { transform: rotate(180deg); }
 .custom-select-options { position: absolute; top: calc(100% + 4px); left: 0; z-index: 40; min-width: 100%; max-height: 240px; margin: 0; padding: 4px; overflow-y: auto; border: 1px solid #cbd5df; border-radius: 8px; background: #fff; box-shadow: 0 8px 22px rgb(15 23 42 / .18); list-style: none; scrollbar-width: none; -ms-overflow-style: none; }
+.custom-select.open-up .custom-select-options { top: auto; bottom: calc(100% + 4px); }
 .custom-select-options::-webkit-scrollbar { display: none; width: 0; height: 0; }
 .custom-select-option { padding: 7px 9px; border-radius: 6px; color: #344455; font-size: inherit; line-height: 1.35; white-space: nowrap; cursor: pointer; }
 .custom-select-option.active { background: #f2f8fd; color: #1769aa; }
