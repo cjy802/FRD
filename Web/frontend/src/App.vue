@@ -782,6 +782,11 @@ async function deleteAllMissionTasks() {
     await Promise.all(targets.map((task) => deleteMissionTask(task.task_id)))
     savedTasks.value = []
     pendingDeleteTaskId.value = ''
+    if (taskFinalizeRetryId.value) {
+      // 全部任务已删除，任何“KMZ 未完成待重试”状态都已失效。
+      taskFinalizeRetryId.value = ''
+      taskError.value = ''
+    }
     if (activeId && targets.some((task) => task.task_id === activeId)) {
       localStorage.removeItem(ACTIVE_TASK_STORAGE_KEY)
       activeTask.value = null
@@ -807,6 +812,11 @@ async function deleteSavedMissionTask(task: MissionTaskSummary) {
     await deleteMissionTask(task.task_id)
     savedTasks.value = savedTasks.value.filter((item) => item.task_id !== task.task_id)
     pendingDeleteTaskId.value = ''
+    if (taskFinalizeRetryId.value === task.task_id) {
+      // 待重试的任务已被删除；保留重试状态会让“再次确认”拿着旧编号 404。
+      taskFinalizeRetryId.value = ''
+      taskError.value = ''
+    }
     if (activeTask.value?.task_id === task.task_id) {
       localStorage.removeItem(ACTIVE_TASK_STORAGE_KEY)
       activeTask.value = null
