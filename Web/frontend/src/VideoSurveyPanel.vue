@@ -72,7 +72,7 @@ let previewUrlObject = ''
 const dockStyle = computed(() => {
   const rect = mapRect.value
   if (!rect) return {}
-  return { top: `${rect.top + 8}px`, left: `${rect.left + 8}px`, width: `${Math.max(520, rect.width - 16)}px` }
+  return { top: `${rect.top + 8}px`, left: `${rect.left + 8}px`, maxWidth: `${Math.max(520, rect.width - 16)}px` }
 })
 
 function updateMapRect() {
@@ -608,8 +608,8 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
 .video-survey-footnote { display: block; margin-top: 8px; color: var(--ui-muted); line-height: 1.4; }
 .video-survey-input { display: none; }
 
-.video-library-dock { position: fixed; z-index: 6000; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
-.video-library-dock > * { pointer-events: auto; }
+.video-library-dock { position: fixed; z-index: 6000; display: flex; width: fit-content; max-width: 100%; flex-direction: column; gap: 8px; pointer-events: none; }
+.video-library-dock > * { pointer-events: auto; max-width: 100%; }
 .video-library-crumbs { display: flex; min-width: 0; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid rgb(215 223 232 / .9); border-radius: 10px; background: rgb(255 255 255 / .95); box-shadow: 0 8px 24px rgb(15 23 42 / .16); font-size: 13px; }
 .video-library-crumbs > button { min-height: 28px; padding: 4px 12px; border: 1px solid transparent; border-radius: 14px; background: transparent; color: #34506c; font-size: 13px; cursor: pointer; }
 .video-library-crumbs > button:hover:not(:disabled) { border-color: #d7dfe8; background: #f3f7fb; }
@@ -633,7 +633,7 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
 .video-library-badges .is-miss { background: rgb(154 91 19 / .9); color: #fff; }
 .video-library-empty { margin: 6px 4px; color: var(--ui-muted); font-size: 12px; line-height: 1.5; }
 .video-library-error { margin: 0; padding: 8px 12px; border: 1px solid #fecaca; border-radius: 8px; background: rgb(255 255 255 / .95); color: #a4262c; font-size: 11px; overflow-wrap: anywhere; }
-.video-library-properties { position: absolute; top: 52px; right: 0; display: flex; width: 280px; max-height: min(430px, calc(100% - 64px)); flex-direction: column; gap: 10px; overflow-y: auto; padding: 14px 16px; border: 1px solid rgb(215 223 232 / .9); border-radius: 10px; background: rgb(249 250 251 / .97); box-shadow: 0 8px 24px rgb(15 23 42 / .16); }
+.video-library-properties { display: flex; width: min(320px, 100%); flex-direction: column; gap: 10px; align-self: flex-end; overflow-y: auto; max-height: min(430px, 60vh); padding: 12px 14px; border: 1px solid rgb(215 223 232 / .9); border-radius: 10px; background: rgb(249 250 251 / .97); box-shadow: 0 8px 24px rgb(15 23 42 / .16); }
 .video-library-properties-title { overflow: hidden; color: #27364a; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .video-library-properties dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; margin: 0; font-size: 12px; }
 .video-library-properties dt { color: var(--ui-muted); white-space: nowrap; }
