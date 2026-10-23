@@ -121,39 +121,6 @@ export function createVideoSurveySrt(srt: File, videoName: string, taskId: strin
   return request<VideoSurvey>(endpoint, { method: 'POST', body: form })
 }
 
-// 服务器端逐帧分析（自适应筛帧）需要完整视频；用 XHR 提供上传进度。
-export function uploadSurveyVideo(jobId: string, video: File,
-  onProgress: (percent: number) => void): Promise<VideoSurvey> {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest()
-    xhr.open('POST', `${endpoint}/${encodeURIComponent(jobId)}/video`)
-    xhr.upload.addEventListener('progress', event => {
-      if (event.lengthComputable) onProgress(Math.min(100, Math.round(event.loaded / event.total * 100)))
-    })
-    xhr.addEventListener('load', () => {
-      // 409 = 服务器端已有完整视频（此前一次上传实际成功、只是响应丢失），同样视为成功。
-      if ((xhr.status >= 200 && xhr.status < 300) || xhr.status === 409) {
-        try {
-          resolve(JSON.parse(xhr.responseText) as VideoSurvey)
-        } catch {
-          reject(new VideoSurveyApiError('视频定位接口返回了无法识别的数据。', xhr.status))
-        }
-        return
-      }
-      let detail = '完整视频上传失败。'
-      try {
-        const body = JSON.parse(xhr.responseText) as { detail?: unknown }
-        if (typeof body.detail === 'string' && body.detail.trim()) detail = body.detail
-      } catch { /* 保留默认错误 */ }
-      reject(new VideoSurveyApiError(detail, xhr.status))
-    })
-    xhr.addEventListener('error', () => reject(new VideoSurveyApiError('完整视频上传失败，请检查后端服务。', 0)))
-    const form = new FormData()
-    form.append('video', video)
-    xhr.send(form)
-  })
-}
-
 export function selectAdaptiveTaskFrames(taskId: string, surveyId: string,
   options: AdaptiveFrameSelectionOptions): Promise<AdaptiveFrameSelectionResult> {
   return request<AdaptiveFrameSelectionResult>(`/api/tasks/${encodeURIComponent(taskId)}/adaptive-frames`, {

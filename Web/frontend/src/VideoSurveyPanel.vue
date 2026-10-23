@@ -8,10 +8,12 @@ import {
   fetchVideoSurvey,
   interpolateVideoPosition,
   selectAdaptiveTaskFrames,
-  uploadSurveyVideo,
 } from './videoSurvey'
 import type { VideoCaptureTarget, VideoSurvey, VideoTelemetryPoint } from './videoSurvey'
 import type { TaskVideoFrame } from './photoAnalysis'
+import { saveMissionTaskFrame } from './missionTasks'
+import { ExtractionCancelled, extractAdaptiveFramesClient } from './adaptiveFrames'
+import type { ClientAdaptiveProgress } from './adaptiveFrames'
 import {
   countSrtTelemetry,
   formatBytes,
@@ -71,8 +73,9 @@ const mapRect = ref<{ top: number; left: number; width: number; height: number }
 let previewUrlObject = ''
 // 当前任务绑定的本地视频（SRT-only 导入后，预览/截帧都基于它）。
 const localVideo = ref<{ file: File; url: string } | null>(null)
-const uploadingVideo = ref(false)
-const uploadProgress = ref<number | null>(null)
+const extractingLocal = ref(false)
+const extractionProgress = ref<ClientAdaptiveProgress | null>(null)
+const extractionCancel = ref(false)
 
 const reviewVideoSrc = computed(() => {
   if (localVideo.value) return localVideo.value.url
@@ -97,13 +100,16 @@ function updateMapRect() {
 const canCaptureFrame = computed(() => Boolean(survey.value && currentPosition.value && videoElement.value?.videoWidth
   && props.frameCount < 30 && !capturingFrame.value))
 const canSelectAdaptiveFrames = computed(() => Boolean(props.taskId && survey.value?.has_gps
-  && props.frameCount < 30 && !selectingFrames.value && !loading.value && !uploadingVideo.value))
+  && props.frameCount < 30 && !selectingFrames.value && !loading.value && !extractingLocal.value))
 const adaptiveButtonLabel = computed(() => {
-  if (uploadingVideo.value) return `正在上传完整视频 ${uploadProgress.value ?? 0}%…`
+  if (extractingLocal.value) {
+    const progress = extractionProgress.value
+    return progress ? `本地自动截帧中 ${progress.scanned}/${progress.total} · 已选 ${progress.selected}…` : '正在本地自动截帧…'
+  }
   if (selectingFrames.value) return '正在自适应筛帧…'
   if (survey.value && !survey.value.has_gps) return '需要带 GPS 的 SRT'
   if (props.frameCount >= 30) return '关键帧已达 30 张上限'
-  if (survey.value && !survey.value.has_video) return '上传完整视频并自动筛帧'
+  if (survey.value && !survey.value.has_video) return '自动筛选关键帧（本地处理）'
   return '自动筛选并保存关键帧'
 })
 const currentTimeLabel = computed(() => formatVideoTime(currentTime.value))
@@ -311,35 +317,54 @@ async function selectAdaptiveFrames() {
   if (!props.taskId || !survey.value || !canSelectAdaptiveFrames.value) return
   selectingFrames.value = true
   error.value = ''
+  const remaining = 30 - props.frameCount
   try {
-    // 服务器端逐帧分析需要完整视频；SRT-only 导入的任务在这里按需补传一次。
+    // 有本地视频：直接在浏览器里扫描本地文件，不要求上传完整视频。
+    if (localVideo.value) {
+      extractingLocal.value = true
+      extractionCancel.value = false
+      status.value = '正在本地扫描视频画面、估算重叠并识别转弯；不会逐帧运行水坑模型…'
+      const frames = await extractAdaptiveFramesClient(
+        localVideo.value.file,
+        survey.value.telemetry,
+        {
+          maxFrames: remaining,
+          scanFps: scanFps.value,
+          straightOverlapPercent: straightOverlapPercent.value,
+          turnOverlapPercent: turnOverlapPercent.value,
+          turnAngleDegrees: turnAngleDegrees.value,
+          cameraChangeDegrees: cameraChangeDegrees.value,
+          blurFilterEnabled: blurFilterEnabled.value,
+          minimumSharpnessPercent: minimumSharpnessPercent.value,
+        },
+        progress => { extractionProgress.value = progress },
+        () => extractionCancel.value,
+      )
+      for (const frame of frames) {
+        await saveMissionTaskFrame(props.taskId, {
+          file: frame.file,
+          time_seconds: frame.time_seconds,
+          latitude: frame.latitude,
+          longitude: frame.longitude,
+          altitude_m: frame.altitude_m,
+          gimbal_pitch_deg: frame.gimbal_pitch_deg,
+          selection_reason: frame.selection_reason,
+          estimated_overlap_percent: frame.estimated_overlap_percent,
+          turn_angle_deg: frame.turn_angle_deg,
+          sharpness_ratio_percent: frame.sharpness_ratio_percent,
+        })
+      }
+      emit('frames-added', frames.length)
+      const progress = extractionProgress.value
+      status.value = frames.length
+        ? `本地自动截帧完成：扫描 ${progress?.scanned ?? frames.length} 个候选时刻，跳过 ${progress?.blurred ?? 0} 张模糊帧，自动选出 ${frames.length} 张并保存到任务。`
+        : `本地扫描了 ${progress?.scanned ?? 0} 个候选时刻，跳过 ${progress?.blurred ?? 0} 张模糊帧；没有需要新增的关键帧。`
+      return
+    }
+    // 服务器端逐帧分析需要完整视频；本机没有绑定视频时提示重新选择。
     if (!survey.value.has_video) {
-      if (!localVideo.value) {
-        error.value = '服务器端没有完整视频，无法逐帧分析；请先在视频库重新选择该视频，再使用自适应筛帧。'
-        return
-      }
-      uploadingVideo.value = true
-      status.value = '自适应筛帧需要完整视频，正在上传（每个任务只需一次）…'
-      try {
-        survey.value = await uploadSurveyVideo(survey.value.job_id, localVideo.value.file,
-          percent => { uploadProgress.value = percent })
-      } catch {
-        // 大文件上传可能"成功在后端、响应丢失"：核对服务器状态后再决定。
-        try {
-          const fresh = await fetchVideoSurvey(survey.value.job_id)
-          if (fresh.has_video) survey.value = fresh
-          else {
-            error.value = '完整视频上传失败，请重试。'
-            return
-          }
-        } catch {
-          error.value = '完整视频上传失败，请重试。'
-          return
-        }
-      } finally {
-        uploadingVideo.value = false
-        uploadProgress.value = null
-      }
+      error.value = '浏览器里没有该视频的本地文件，无法自动截帧；请在视频库重新选择并双击该视频后再试。'
+      return
     }
     status.value = '正在低分辨率扫描视频画面、估算重叠并识别转弯；不会逐帧运行水坑模型…'
     const result = await selectAdaptiveTaskFrames(props.taskId, survey.value.job_id, {
@@ -357,10 +382,16 @@ async function selectAdaptiveFrames() {
         + (result.reached_limit ? '已达到任务关键帧上限。' : '')
       : `扫描了 ${result.scanned_candidates} 个候选时刻，剔除 ${result.blurred_candidates_skipped} 张模糊帧；当前任务没有新增关键帧。`
   } catch (cause) {
+    if (cause instanceof ExtractionCancelled) {
+      status.value = '已取消本地自动截帧；已保存的关键帧保留。'
+      return
+    }
     error.value = cause instanceof Error ? cause.message : '自适应视频切帧失败。'
     status.value = ''
   } finally {
     selectingFrames.value = false
+    extractingLocal.value = false
+    extractionProgress.value = null
   }
 }
 
@@ -536,10 +567,13 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
           <label class="adaptive-blur-toggle"><input v-model="blurFilterEnabled" type="checkbox" :disabled="selectingFrames" />过滤明显模糊帧</label>
           <label>最低清晰度 · 近期中位数 %<input v-model.number="minimumSharpnessPercent" type="number" min="0" max="100" step="5" :disabled="selectingFrames || !blurFilterEnabled" /></label>
         </div>
-        <button class="adaptive-selector-action" type="button" :disabled="!canSelectAdaptiveFrames" @click="selectAdaptiveFrames">
-          {{ adaptiveButtonLabel }}
-        </button>
-        <small class="adaptive-selector-note">系统用特征匹配估算相邻画面覆盖，用 SRT 轨迹变化识别转弯；匹配不确定时会保留画面以降低漏区风险。SRT-only 导入的任务首次使用会先上传完整视频（仅此一次）。重叠值是筛选目标，不代表地面覆盖的测绘级保证。</small>
+        <div class="adaptive-selector-actions-row">
+          <button class="adaptive-selector-action" type="button" :disabled="!canSelectAdaptiveFrames" @click="selectAdaptiveFrames">
+            {{ adaptiveButtonLabel }}
+          </button>
+          <button v-if="extractingLocal" type="button" class="adaptive-selector-cancel" @click="extractionCancel = true">取消截帧</button>
+        </div>
+        <small class="adaptive-selector-note">系统用画面变化估算相邻覆盖，用 SRT 轨迹变化识别转弯；匹配不确定时会保留画面以降低漏区风险。有本地视频时自动截帧在浏览器里直接处理，不上传完整视频；重叠值是筛选目标，不代表地面覆盖的测绘级保证。</small>
       </section>
 
       <ul v-if="survey.targets.length" class="video-survey-target-list">
@@ -688,6 +722,10 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
 .adaptive-selector-action:hover:not(:disabled) { background: var(--ui-accent-hover) !important; }
 .adaptive-selector-action:disabled { opacity: .5; cursor: not-allowed; }
 .adaptive-selector-note { margin: 0; }
+.adaptive-selector-actions-row { display: flex; gap: 6px; }
+.adaptive-selector-actions-row .adaptive-selector-action { flex: 1; }
+.adaptive-selector-cancel { min-height: 34px; padding: 6px 12px; border: 1px solid #d7dfe8; border-radius: 7px; background: #fff; color: #526273; font-size: 11px; cursor: pointer; }
+.adaptive-selector-cancel:hover { border-color: #a4262c; background: #fef2f2; color: #a4262c; }
 .video-survey-note, .video-survey-feedback { margin: 7px 0; padding: 6px 8px; border-radius: 6px; background: #eff6ff; color: #1d4ed8; line-height: 1.4; overflow-wrap: anywhere; }
 .video-survey-feedback.is-error { background: #fef2f2; color: #a4262c; }
 .video-survey-match { margin: 7px 0; padding: 6px 8px; border-radius: 6px; background: #f3f4f6; color: #4b5563; line-height: 1.4; overflow-wrap: anywhere; }
