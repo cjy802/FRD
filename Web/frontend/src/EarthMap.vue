@@ -633,7 +633,7 @@ onBeforeUnmount(() => {
 }
 .earth-coverage-vertex:focus-visible, .earth-coverage-edge-handle:focus-visible { outline: 2px solid #f5bd4f; outline-offset: 2px; }
 .earth-coverage-edge-handle { width: 22px; height: 22px; border: 1px solid #0f6cbd; background: #fff; color: #0f6cbd; font-size: 16px; font-weight: 700; cursor: pointer; }
-.earth-video-legend { position: absolute; z-index: 4; top: 12px; left: 12px; display: flex; flex-wrap: wrap; gap: 9px; padding: 6px 8px; border: 1px solid #d8e0e7; border-radius: 6px; background: rgb(255 255 255 / .94); color: #344455; font-size: 11px; }
+.earth-video-legend { position: absolute; z-index: 4; bottom: 64px; left: 12px; display: flex; flex-wrap: wrap; gap: 9px; padding: 6px 8px; border: 1px solid #d8e0e7; border-radius: 6px; background: rgb(255 255 255 / .94); color: #344455; font-size: 11px; }
 .earth-video-legend span { display: inline-flex; align-items: center; gap: 4px; }
 .earth-video-legend i { display: inline-grid; width: 14px; height: 14px; place-items: center; border-radius: 50%; color: #fff; font-size: 8px; font-style: normal; font-weight: 700; }
 .earth-video-legend .track-key { width: 16px; height: 3px; border-radius: 0; background: #d97706; }
