@@ -1103,19 +1103,28 @@ const taskWeatherAdvisories = computed(() => {
 
   const maxRain = assessment.weather_risk.summary.max_rain_6h_mm
   const rainCovered = assessment.coverage.surface_space_time
+  // 网格降水经双线性与时刻插值后常出现 <0.1 mm/6h 的微量值；气象上低于
+  // 0.1 mm/6h 视为微量降水（可视为无雨），不再按“有降水提示”提醒。
+  const TRACE_RAIN_6H_MM = 0.1
+  const traceRain = maxRain !== null && maxRain > 0 && maxRain < TRACE_RAIN_6H_MM
+  const rainValue = maxRain === null ? '—'
+    : traceRain ? `${maxRain.toFixed(3)} mm/6h` : `${maxRain.toFixed(2)} mm/6h`
   let rainState = 'incomplete'
   let rainLabel = '资料不完整'
-  if (maxRain !== null && maxRain > 0) {
+  if (maxRain !== null && maxRain >= TRACE_RAIN_6H_MM) {
     rainState = 'attention'; rainLabel = '有降水提示'
+  } else if (traceRain) {
+    rainState = 'normal'; rainLabel = '微量降水'
   } else if (maxRain === 0 && rainCovered) {
     rainState = 'normal'; rainLabel = '未预测到降水'
   }
-  const rainValue = maxRain === null ? '—' : `${maxRain.toFixed(2)} mm/6h`
-  const rainMessage = maxRain !== null && maxRain > 0
-    ? `沿线最高六小时累计降水 ${rainValue}；任何非零预报降水都会提示。提醒上限为 ${rainLimit.toFixed(1)} mm/6h。${rainCovered ? '' : '路线天气覆盖不完整。'}`
-    : maxRain === 0 && rainCovered
-      ? `当前预报覆盖的任务时段未发现降水（${rainValue}）。`
-      : '当前气象资料不完整，不能确认整条路线是否无雨。'
+  const rainMessage = maxRain !== null && maxRain >= TRACE_RAIN_6H_MM
+    ? `沿线最高六小时累计降水 ${rainValue}；达到 ${TRACE_RAIN_6H_MM.toFixed(1)} mm/6h 就会提示。提醒上限为 ${rainLimit.toFixed(1)} mm/6h。${rainCovered ? '' : '路线天气覆盖不完整。'}`
+    : traceRain
+      ? `沿线最高六小时累计降水 ${rainValue}，低于 ${TRACE_RAIN_6H_MM.toFixed(1)} mm/6h 的微量降水阈值，通常可视为无雨。`
+      : maxRain === 0 && rainCovered
+        ? `当前预报覆盖的任务时段未发现降水（${rainValue}）。`
+        : '当前气象资料不完整，不能确认整条路线是否无雨。'
 
   return {
     wind: { state: windState, label: windLabel, value: windValue, message: windMessage },
