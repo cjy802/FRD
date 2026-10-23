@@ -326,6 +326,7 @@ class VideoSurveyStore:
         srt_name = Path(srt.filename or "").name
         if srt_name.lower().endswith(".gz"):
             srt_name = srt_name[:-3]
+            srt_name = str(Path(srt_name).with_suffix(".srt"))
         if Path(video_name).suffix.lower() not in ALLOWED_VIDEO_SUFFIXES:
             raise VideoSurveyError("请选择 MP4、MOV 或 M4V 视频文件。")
         if Path(srt_name).suffix.lower() != ".srt":
@@ -398,6 +399,7 @@ class VideoSurveyStore:
         srt_name = Path(srt.filename or "").name
         if srt_name.lower().endswith(".gz"):
             srt_name = srt_name[:-3]
+            srt_name = str(Path(srt_name).with_suffix(".srt"))
         if Path(srt_name).suffix.lower() != ".srt":
             raise VideoSurveyError("请同时选择与视频对应的 .srt 文件。")
         srt_bytes = await srt.read(MAX_SRT_BYTES + 1)

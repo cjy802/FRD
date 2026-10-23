@@ -124,7 +124,7 @@ export async function createVideoSurveySrt(srt: File, videoName: string, taskId:
     throw new Error('这个 SRT 文件无法按文本读取（存储卡可能已损坏或不稳定）。请把文件复制到电脑磁盘后再试，或重新生成字幕。')
   }
   const form = new FormData()
-  form.append('srt', await gzipBlob(new Blob([raw]), `${videoName}.gz`))
+  form.append('srt', await gzipBlob(new Blob([raw]), `${videoName}.srt.gz`))
   form.append('video_name', videoName)
   form.append('task_id', taskId)
   return request<VideoSurvey>(endpoint, { method: 'POST', body: form })
