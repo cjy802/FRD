@@ -33,7 +33,7 @@ const emit = defineEmits<{
   'position-change': [position: VideoTelemetryPoint | null]
   'targets-change': [targets: VideoCaptureTarget[]]
   'frame-capture': [frame: TaskVideoFrame]
-  'frames-added': [count: number]
+  'frame-saved': [frame: TaskVideoFrame]
   'survey-change': [survey: VideoSurvey | null]
   'job-started': [jobId: string]
   'open-queue': []
@@ -376,6 +376,7 @@ async function selectAdaptiveFrames() {
   try {
     // 有本地视频：直接在浏览器里扫描本地文件，不要求上传完整视频。
     if (localVideo.value) {
+      videoElement.value?.pause()
       extractingLocal.value = true
       extractionCancel.value = false
       status.value = '正在本地扫描视频画面、估算重叠并识别转弯；不会逐帧运行水坑模型…'
@@ -396,7 +397,7 @@ async function selectAdaptiveFrames() {
         () => extractionCancel.value,
       )
       for (const frame of frames) {
-        await saveMissionTaskFrame(props.taskId, {
+        const saved = await saveMissionTaskFrame(props.taskId, {
           file: frame.file,
           time_seconds: frame.time_seconds,
           latitude: frame.latitude,
@@ -408,8 +409,8 @@ async function selectAdaptiveFrames() {
           turn_angle_deg: frame.turn_angle_deg,
           sharpness_ratio_percent: frame.sharpness_ratio_percent,
         })
+        emit('frame-saved', { ...saved, file: frame.file })
       }
-      emit('frames-added', frames.length)
       const progress = extractionProgress.value
       status.value = frames.length
         ? `本地自动截帧完成：扫描 ${progress?.scanned ?? frames.length} 个候选时刻，跳过 ${progress?.blurred ?? 0} 张模糊帧，自动选出 ${frames.length} 张并保存到任务。`
@@ -431,7 +432,7 @@ async function selectAdaptiveFrames() {
       blur_filter_enabled: blurFilterEnabled.value,
       minimum_sharpness_percent: minimumSharpnessPercent.value,
     })
-    if (result.task_frames.length) emit('frames-added', result.task_frames.length)
+    for (const record of result.task_frames) emit('frame-saved', { ...record, file: null })
     status.value = result.task_frames.length
       ? `扫描 ${result.scanned_candidates} 个候选时刻，剔除 ${result.blurred_candidates_skipped} 张模糊帧，自动选出 ${result.task_frames.length} 张（总计 ${result.frame_count_after} 张）。`
         + (result.reached_limit ? '已达到任务关键帧上限。' : '')
@@ -468,6 +469,7 @@ async function selectAdaptiveFramesWithAnalysis() {
     error.value = '没有可用的识别模型，请检查后端配置。'
     return
   }
+  videoElement.value?.pause()
   selectingFrames.value = true
   extractingLocal.value = true
   extractionCancel.value = false
@@ -522,10 +524,9 @@ async function selectAdaptiveFramesWithAnalysis() {
               sharpness_ratio_percent: frame.sharpness_ratio_percent,
             })
             savedCount += 1
+            emit('frame-saved', { ...saved, file: frame.file })
             await appendPhotoAnalysisFrames(jobId, [saved.frame_id])
             queueCounts.value = { ...queueCounts.value, enqueued: queueCounts.value.enqueued + 1 }
-            // 每 10 帧触发一次帧列表刷新，让分析面板的队列缩略图渐进出现。
-            if (savedCount % 10 === 0) emit('frames-added', 0)
           } catch {
             // 单帧上传/入队失败只跳过计数，不中断抽帧。
             queueSkipped.value += 1
@@ -552,7 +553,6 @@ async function selectAdaptiveFramesWithAnalysis() {
         // 队列可能已自动关闭；继续用轮询拿最终状态。
       }
     }
-    if (savedCount) emit('frames-added', savedCount)
     selectingFrames.value = false
     extractingLocal.value = false
     extractionProgress.value = null
@@ -846,7 +846,7 @@ watch(() => props.taskId, () => resetSurveyState())
                 type="button"
                 class="video-library-capture"
                 :disabled="!canCapturePreview"
-                :title="!survey ? '先点击「导入到当前任务」，截帧才能带上 SRT 位置' : props.frameCount >= 100 ? '关键帧已达 100 张上限' : '把当前画面按 SRT 位置存为任务关键帧'"
+                :title="!survey ? '先点击「导入到当前任务」，截帧才能带上 SRT 位置' : props.frameCount >= FRAME_LIMIT ? '关键帧已达上限' : '把当前画面按 SRT 位置存为任务关键帧'"
                 @click="capturePreviewFrame"
               >{{ capturingPreview ? '截取中…' : '截取当前画面' }}</button>
               <button type="button" class="video-library-import" :disabled="!canImportPreview" @click="importPreviewGroup">

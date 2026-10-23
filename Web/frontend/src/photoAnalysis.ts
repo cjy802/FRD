@@ -19,7 +19,8 @@ export type PhotoAnalysisModelOption = {
 
 export type TaskVideoFrame = {
   frame_id?: string
-  file: File
+  name?: string
+  file: File | null
   time_seconds: number
   latitude: number | null
   longitude: number | null

@@ -3,6 +3,10 @@
 // overlap + blur filter), except the overlap metric is block-matching
 // translation coverage instead of ORB homography - good enough for nadir
 // drone footage, and nothing ever leaves the machine.
+//
+// Two passes keep the main thread responsive: pass 1 scans small canvases
+// only (no 4K->1920 downscale per candidate) and picks timestamps; pass 2
+// re-seeks just the selected timestamps to export full-size JPEGs.
 
 import { interpolateVideoPosition, type VideoTelemetryPoint } from './videoSurvey'
 
@@ -36,6 +40,7 @@ export type ClientAdaptiveProgress = {
   selected: number
   blurred: number
   blank: number
+  exported: number
 }
 
 export class ExtractionCancelled extends Error {
@@ -137,7 +142,7 @@ function bearingChange(points: VideoTelemetryPoint[], seconds: number, window = 
   return Math.abs((bearingDeg(before, after) + 180) % 360 - 180)
 }
 
-function seekTo(video: HTMLVideoElement, seconds: number): Promise<void> {
+function seekOnce(video: HTMLVideoElement, seconds: number, timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
     const cleanup = () => {
       video.removeEventListener('seeked', onSeeked)
@@ -145,12 +150,30 @@ function seekTo(video: HTMLVideoElement, seconds: number): Promise<void> {
       window.clearTimeout(timer)
     }
     const onSeeked = () => { cleanup(); resolve() }
-    const onError = () => { cleanup(); reject(new Error('读取视频画面失败。')) }
-    const timer = window.setTimeout(() => { cleanup(); reject(new Error('读取视频画面超时。')) }, 6000)
+    const onError = () => { cleanup(); reject(new Error('seek error')) }
+    const timer = window.setTimeout(() => { cleanup(); reject(new Error('seek timeout')) }, timeoutMs)
     video.addEventListener('seeked', onSeeked)
     video.addEventListener('error', onError)
     video.currentTime = seconds
   })
+}
+
+// Seek with one retry; a failed seek skips the candidate instead of aborting
+// the whole extraction (4K clips under load can take seconds per seek).
+async function seekTo(video: HTMLVideoElement, seconds: number): Promise<boolean> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await seekOnce(video, seconds, 10000)
+      return true
+    } catch (error) {
+      if (attempt === 1) return false
+    }
+  }
+  return false
+}
+
+function yieldToMainThread(): Promise<void> {
+  return new Promise(resolve => requestAnimationFrame(() => resolve()))
 }
 
 export async function extractAdaptiveFramesClient(
@@ -177,11 +200,10 @@ export async function extractAdaptiveFramesClient(
     if (duration <= 0) throw new Error('无法读取本地视频时长。')
     const videoWidth = element.videoWidth || 1920
     const videoHeight = element.videoHeight || 1080
-    const saveScale = Math.min(1, 1920 / Math.max(videoWidth, videoHeight))
-    const saveCanvas = makeCanvas(Math.max(2, Math.round(videoWidth * saveScale)), Math.max(2, Math.round(videoHeight * saveScale)))
+
+    // 扫描期只画两张小图（省掉每候选一次 4K→1920 的大缩放）。
     const workCanvas = makeCanvas(480, Math.max(2, Math.round(480 * videoHeight / videoWidth)))
     const smallCanvas = makeCanvas(96, Math.max(2, Math.round(96 * videoHeight / videoWidth)))
-    const saveContext = saveCanvas.getContext('2d', { willReadFrequently: true })!
     const workContext = workCanvas.getContext('2d', { willReadFrequently: true })!
     const smallContext = smallCanvas.getContext('2d', { willReadFrequently: true })!
 
@@ -196,16 +218,23 @@ export async function extractAdaptiveFramesClient(
           anyVideo.requestVideoFrameCallback(() => { window.clearTimeout(timer); resolve() })
         })
       }
-      await new Promise(resolve => window.setTimeout(resolve, 60))
+      await new Promise(resolve => window.setTimeout(resolve, 50))
     }
 
     let step = 1 / options.scanFps
     let total = Math.floor(duration / step)
     if (total > 900) { total = 900; step = duration / total }
 
-    const selected: ClientSelectedFrame[] = []
+    type Candidate = {
+      seconds: number
+      position: VideoTelemetryPoint
+      reason: string
+      overlap: number | null
+      turnChange: number | null
+      sharpnessRatio: number
+    }
+    const candidates: Candidate[] = []
     let anchorGray: Uint8ClampedArray | null = null
-    let anchorTime: number | null = null
     let anchorPitch: number | null = null
     const sharpnessHistory: number[] = []
     let blurred = 0
@@ -213,16 +242,16 @@ export async function extractAdaptiveFramesClient(
     let scanned = 0
     let lastSelectedSeconds: number | null = null
 
-    for (let index = 0; index < total && selected.length < options.maxFrames; index += 1) {
+    // —— 第一遍：小图扫描，只决定哪些时刻成为关键帧 ——
+    for (let index = 0; index < total && candidates.length < options.maxFrames; index += 1) {
       if (isCancelled()) throw new ExtractionCancelled()
       const seconds = index * step
       const position = interpolateVideoPosition(telemetry, seconds)
       if (!position) continue
-      await seekTo(element, seconds)
+      if (!(await seekTo(element, seconds))) continue
       await settleAfterSeek()
-      saveContext.drawImage(element, 0, 0, saveCanvas.width, saveCanvas.height)
-      workContext.drawImage(saveCanvas, 0, 0, workCanvas.width, workCanvas.height)
-      smallContext.drawImage(saveCanvas, 0, 0, smallCanvas.width, smallCanvas.height)
+      workContext.drawImage(element, 0, 0, workCanvas.width, workCanvas.height)
+      smallContext.drawImage(workCanvas, 0, 0, smallCanvas.width, smallCanvas.height)
       const workGray = grayData(workCanvas)
       const smallGray = grayData(smallCanvas)
       scanned += 1
@@ -233,7 +262,8 @@ export async function extractAdaptiveFramesClient(
       brightness /= workGray.length
       if (brightness < 14) {
         blank += 1
-        onProgress({ scanned, total, selected: selected.length, blurred, blank })
+        onProgress({ scanned, total, selected: candidates.length, blurred, blank, exported: 0 })
+        await yieldToMainThread()
         continue
       }
 
@@ -247,7 +277,8 @@ export async function extractAdaptiveFramesClient(
       sharpnessHistory.push(sharpness)
       if (isBlurry) {
         blurred += 1
-        onProgress({ scanned, total, selected: selected.length, blurred, blank })
+        onProgress({ scanned, total, selected: candidates.length, blurred, blank, exported: 0 })
+        await yieldToMainThread()
         continue
       }
 
@@ -274,34 +305,49 @@ export async function extractAdaptiveFramesClient(
       }
 
       if (reason) {
-        const blob = await new Promise<Blob>((resolve, reject) => saveCanvas.toBlob(
-          value => value ? resolve(value) : reject(new Error('截取视频帧失败。')), 'image/jpeg', 0.92))
-        selected.push({
-          file: new File([blob], `frame-${String(Math.floor(seconds / 60)).padStart(2, '0')}m${String(Math.round(seconds % 60)).padStart(2, '0')}s.jpg`, { type: 'image/jpeg' }),
-          time_seconds: Math.round(seconds * 1000) / 1000,
-          latitude: position.latitude,
-          longitude: position.longitude,
-          altitude_m: position.altitude_m,
-          gimbal_pitch_deg: position.gimbal_pitch_deg,
-          selection_reason: reason,
-          estimated_overlap_percent: overlap === null ? null : Math.round(overlap * 10) / 10,
-          turn_angle_deg: turnChange === null ? null : Math.round(turnChange * 10) / 10,
-          sharpness_ratio_percent: Math.round(sharpnessRatio * 10) / 10,
-        })
+        candidates.push({ seconds, position, reason, overlap, turnChange, sharpnessRatio })
         lastSelectedSeconds = seconds
         anchorGray = smallGray
-        anchorTime = seconds
         anchorPitch = position.gimbal_pitch_deg
-        // 选中即通知调用方（截帧即入队：抽帧还没结束时识别就可以开始）。
-        onFrameSelected?.(selected[selected.length - 1])
       } else if (anchorGray !== null) {
         // 未保留时把覆盖锚点向前链式推进（与后端一致）。
         anchorGray = smallGray
-        anchorTime = seconds
       }
-      onProgress({ scanned, total, selected: selected.length, blurred, blank })
+      onProgress({ scanned, total, selected: candidates.length, blurred, blank, exported: 0 })
+      await yieldToMainThread()
     }
-    void anchorTime
+
+    // —— 第二遍：仅对选中的时刻导出全尺寸 JPEG ——
+    const saveScale = Math.min(1, 1920 / Math.max(videoWidth, videoHeight))
+    const saveCanvas = makeCanvas(Math.max(2, Math.round(videoWidth * saveScale)), Math.max(2, Math.round(videoHeight * saveScale)))
+    const saveContext = saveCanvas.getContext('2d', { willReadFrequently: true })
+    const selected: ClientSelectedFrame[] = []
+    if (!saveContext) return selected
+    for (const candidate of candidates) {
+      if (isCancelled()) throw new ExtractionCancelled()
+      if (!(await seekTo(element, candidate.seconds))) continue
+      await settleAfterSeek()
+      saveContext.drawImage(element, 0, 0, saveCanvas.width, saveCanvas.height)
+      const blob = await new Promise<Blob>((resolve, reject) => saveCanvas.toBlob(
+        value => value ? resolve(value) : reject(new Error('截取视频帧失败。')), 'image/jpeg', 0.92))
+      const frame: ClientSelectedFrame = {
+        file: new File([blob], `frame-${String(Math.floor(candidate.seconds / 60)).padStart(2, '0')}m${String(Math.round(candidate.seconds % 60)).padStart(2, '0')}s.jpg`, { type: 'image/jpeg' }),
+        time_seconds: Math.round(candidate.seconds * 1000) / 1000,
+        latitude: candidate.position.latitude,
+        longitude: candidate.position.longitude,
+        altitude_m: candidate.position.altitude_m,
+        gimbal_pitch_deg: candidate.position.gimbal_pitch_deg,
+        selection_reason: candidate.reason,
+        estimated_overlap_percent: candidate.overlap === null ? null : Math.round(candidate.overlap * 10) / 10,
+        turn_angle_deg: candidate.turnChange === null ? null : Math.round(candidate.turnChange * 10) / 10,
+        sharpness_ratio_percent: Math.round(candidate.sharpnessRatio * 10) / 10,
+      }
+      selected.push(frame)
+      // 导出即通知调用方（截帧即入队：抽帧还没结束时识别就可以开始）。
+      onFrameSelected?.(frame)
+      onProgress({ scanned, total, selected: candidates.length, blurred, blank, exported: selected.length })
+      await yieldToMainThread()
+    }
     return selected
   } finally {
     URL.revokeObjectURL(url)

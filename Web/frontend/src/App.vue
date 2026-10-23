@@ -14,7 +14,7 @@ import type { RouteAssessment, WeatherLimits } from './weatherTypes'
 import { weatherOnlyChecks } from './weatherPresentation'
 import type { RoadPreview as Preview } from './routeTypes'
 import { createFlightTimeline, sampleFlight, type FlightSample } from './flightPlayback'
-import { createMissionTask, deleteMissionTask, deleteMissionTaskFrame, fetchMissionTask, fetchMissionTaskFrameFile, fetchMissionTaskFrames, saveMissionTaskFrame,
+import { MissionTaskError, createMissionTask, deleteMissionTask, deleteMissionTaskFrame, fetchMissionTask, fetchMissionTaskFrames, saveMissionTaskFrame,
   listMissionTasks, updateMissionTask, type MissionTask, type MissionTaskSummary, type StoredMissionFrame } from './missionTasks'
 import type { PhotoAnalysisJob, PhotoAnalysisResultImage, TaskVideoFrame, WaterAlertThresholds } from './photoAnalysis'
 import { assessWaterAlert, loadWaterAlertThresholds, saveWaterAlertThresholds } from './photoAnalysis'
@@ -637,12 +637,13 @@ async function markTaskFlightStarted() {
 }
 
 async function addTaskFrame(frame: TaskVideoFrame) {
-  if (!activeTask.value || !taskRouteMatches.value) return
+  const file = frame.file
+  if (!activeTask.value || !taskRouteMatches.value || !file) return
   taskBusy.value = true
   taskError.value = ''
   try {
-    const saved = await saveMissionTaskFrame(activeTask.value.task_id, frame)
-    taskFrames.value = [...taskFrames.value, { ...saved, file: frame.file }]
+    const saved = await saveMissionTaskFrame(activeTask.value.task_id, { ...frame, file })
+    taskFrames.value = [...taskFrames.value, { ...saved, file }]
   } catch (cause) {
     taskError.value = cause instanceof Error ? cause.message : '保存任务关键帧失败。'
   } finally {
@@ -667,22 +668,25 @@ async function removeTaskFrame(index: number) {
     if (activeTask.value && frame.frame_id) await deleteMissionTaskFrame(activeTask.value.task_id, frame.frame_id)
     taskFrames.value = taskFrames.value.filter((_, frameIndex) => frameIndex !== index)
   } catch (cause) {
+    // 识别流程会清理“干净帧”，列表里的旧记录可能已被后端删除；404 时直接本地移除。
+    if (cause instanceof MissionTaskError && cause.status === 404) {
+      taskFrames.value = taskFrames.value.filter((_, frameIndex) => frameIndex !== index)
+      return
+    }
     taskError.value = cause instanceof Error ? cause.message : '移除任务关键帧失败。'
   }
 }
 
 async function refreshTaskFrames(taskId: string) {
+  // 只拉取帧记录；图片文件由 <img> 直接引用服务器 URL（长缓存），
+  // 不再把整批 JPEG 下载进内存构造 File。
   const records: StoredMissionFrame[] = await fetchMissionTaskFrames(taskId)
-  const loaded = await Promise.all(records.map(async (record) => {
-    const blob = await fetchMissionTaskFrameFile(taskId, record.frame_id)
-    return { ...record, file: new File([blob], record.name, { type: blob.type || 'image/jpeg' }) }
-  }))
-  if (activeTask.value?.task_id === taskId) taskFrames.value = loaded
+  if (activeTask.value?.task_id === taskId) taskFrames.value = records.map(record => ({ ...record, file: null }))
 }
 
-async function onAdaptiveFramesAdded(_count: number) {
-  if (!activeTask.value || !taskRouteMatches.value) return
-  await refreshTaskFrames(activeTask.value.task_id)
+function onTaskFrameSaved(frame: TaskVideoFrame) {
+  if (taskFrames.value.length >= 300) return
+  taskFrames.value = [...taskFrames.value, frame]
 }
 
 async function restoreCurrentTask() {
@@ -3006,7 +3010,7 @@ onBeforeUnmount(() => {
 
            <div class="settings-group" data-settings-page="photos" :class="{ 'settings-active': settingsPage === 'photos' }">
           <p class="form-scope-note">当前任务导入视频与对应 SRT。拖动时间线核对无人机位置，只截取需要分析的关键帧。</p>
-          <VideoSurveyPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frame-count="taskFrames.length" @track-change="setVideoTelemetryTrack" @position-change="setVideoTelemetryPosition" @targets-change="setVideoCaptureTargets" @frame-capture="addTaskFrame" @frames-added="onAdaptiveFramesAdded" @survey-change="onTaskSurveyChange" @job-started="onAnalysisJobStarted" @open-queue="analysisQueueOpen = true" />
+          <VideoSurveyPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frame-count="taskFrames.length" @track-change="setVideoTelemetryTrack" @position-change="setVideoTelemetryPosition" @targets-change="setVideoCaptureTargets" @frame-capture="addTaskFrame" @frame-saved="onTaskFrameSaved" @survey-change="onTaskSurveyChange" @job-started="onAnalysisJobStarted" @open-queue="analysisQueueOpen = true" />
           <p class="form-scope-note">关键帧会保存在任务文件夹中。模型只分析勾选的帧，SRT 位置会随结果一同记录。</p>
           <PhotoAnalysisPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frames="taskFrames" :thresholds="waterAlertThresholds" :active-job-id="activeAnalysisJobId" :queue-open="analysisQueueOpen" @remove-frame="removeTaskFrame" @frames-add="addManualTaskFrames" @job-started="onAnalysisJobStarted" @analysis-update="absorbAnalysisResults" @thresholds-change="updateWaterAlertThresholds" @open-queue="analysisQueueOpen = true" @close-queue="analysisQueueOpen = false" />
           </div>

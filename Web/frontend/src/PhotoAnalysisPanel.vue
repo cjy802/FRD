@@ -41,7 +41,7 @@ const localThresholds = ref<WaterAlertThresholds>({ ...props.thresholds })
 watch(() => props.thresholds, value => { localThresholds.value = { ...value } })
 watch(localThresholds, value => emit('thresholds-change', sanitizeWaterAlertThresholds(value)), { deep: true })
 
-watch(() => props.frames.map(frame => `${frame.file.name}:${frame.time_seconds}`).join('|'), () => {
+watch(() => props.frames.map(frame => `${frame.name}:${frame.time_seconds}`).join('|'), () => {
   excludedFrames.value = []
   if (status.value.endsWith('加入任务关键帧…')) status.value = ''
 })
@@ -50,13 +50,12 @@ const selectedModelOption = computed(() => health.value?.models?.find(model => m
 const availableModelIndexes = computed(() => (health.value?.models ?? []).flatMap((model, index) => model.available ? [index] : []))
 const isRemoteModel = computed(() => selectedModel.value === 'remote-glm-puddle')
 const selectedFrames = computed(() => props.frames.filter((_, index) => !excludedFrames.value.includes(index)))
-const selectedFiles = computed(() => selectedFrames.value.map(frame => frame.file))
 const canSubmit = computed(() => Boolean(health.value?.available && selectedModelOption.value?.available
-  && props.taskId && selectedFiles.value.length && !busy.value))
+  && props.taskId && selectedFrames.value.length && !busy.value))
 const interpretation = computed(() => job.value?.results?.interpretation ?? '')
 const selectedFileSummary = computed(() => {
-  if (selectedFiles.value.length === 1) return selectedFiles.value[0].name
-  if (selectedFiles.value.length > 1) return `${selectedFiles.value.length} 个关键帧已选择`
+  if (selectedFrames.value.length === 1) return selectedFrames.value[0].name
+  if (selectedFrames.value.length > 1) return `${selectedFrames.value.length} 个关键帧已选择`
   return '从任务视频截取关键帧，或选择本机照片'
 })
 const previewUrl = computed(() => {
@@ -250,11 +249,11 @@ function pollJob(jobId: string) {
   pollTimer = window.setTimeout(async () => {
     try {
       const current = await fetchPhotoAnalysisJob(jobId)
-      job.value = current
       const counts = current.counts
       const signature = `${current.state}:${counts?.total ?? 0}:${counts?.done ?? 0}:${counts?.failed ?? 0}`
       if (signature !== pollSignature) {
         pollSignature = signature
+        job.value = current
         if (current.mode === 'frames') emit('analysis-update', current)
       }
       if (current.state === 'done') {
@@ -370,34 +369,32 @@ function itemStateText(item: PhotoAnalysisJobItem): string {
   return '取消'
 }
 
-const thumbUrls = new Map<string, string>()
 const frameIdByItemName = computed(() => {
   const map = new Map<string, string>()
   for (const item of queueItems.value) map.set(item.name, item.frame_id)
   return map
 })
 
+// 队列缩略图直接引用服务器 URL（长缓存）：识别完的帧走 job inputs 归档图
+// （任务侧“干净帧”可能已被清理），未识别的走任务帧文件（此刻必存在）。
+function taskFrameUrl(frameId: string): string {
+  return props.taskId ? `/api/tasks/${encodeURIComponent(props.taskId)}/frames/${encodeURIComponent(frameId)}` : ''
+}
+
 function queueThumbUrl(item: PhotoAnalysisJobItem): string {
-  const cached = thumbUrls.get(item.frame_id)
-  if (cached) return cached
-  const frame = props.frames.find(candidate => candidate.frame_id === item.frame_id)
-  if (!frame) return ''
-  const url = URL.createObjectURL(frame.file)
-  thumbUrls.set(item.frame_id, url)
-  return url
+  if (item.state === 'done' || item.state === 'failed') {
+    return job.value ? photoAnalysisFileUrl(job.value.job_id, `inputs/${item.name}`) : ''
+  }
+  return taskFrameUrl(item.frame_id)
 }
-
-function releaseThumbUrls() {
-  for (const url of thumbUrls.values()) URL.revokeObjectURL(url)
-  thumbUrls.clear()
-}
-
-watch(() => props.frames.length, () => releaseThumbUrls())
 
 function openQueueItemPreview(item: PhotoAnalysisJobItem) {
   if (item.state !== 'done' || !job.value) return
   const index = (job.value.results?.images ?? []).findIndex(image => image.name === item.name)
-  if (index < 0) return
+  if (index < 0) {
+    status.value = '这帧还没有可放大的识别结果（可能仍在识别或未产出叠图）。'
+    return
+  }
   openPreview((job.value.results?.images ?? [])[index], index)
 }
 
@@ -439,14 +436,7 @@ function inputUrl(index: number): string {
   if (record) return photoAnalysisFileUrl(current.job_id, `inputs/${record.name}`)
   const image = current.results?.images?.[index]
   const frameId = image ? frameIdByItemName.value.get(image.name) : undefined
-  if (!frameId) return ''
-  const frame = props.frames.find(candidate => candidate.frame_id === frameId)
-  if (!frame) return ''
-  const cached = thumbUrls.get(frameId)
-  if (cached) return cached
-  const url = URL.createObjectURL(frame.file)
-  thumbUrls.set(frameId, url)
-  return url
+  return frameId ? taskFrameUrl(frameId) : ''
 }
 
 function openPreview(image: PhotoAnalysisResultImage, index: number) {
@@ -476,7 +466,6 @@ onMounted(() => {
 })
 onUnmounted(() => {
   stopPolling()
-  releaseThumbUrls()
   document.removeEventListener('pointerdown', onDocumentPointerdown)
   window.removeEventListener('resize', updateQueueMapRect)
 })
@@ -526,18 +515,18 @@ function onDocumentPointerdown(event: PointerEvent) {
           <small class="weather-threshold-note">面积是“平坦地面 + 近垂直俯拍”假设下的估算；SRT 高度相对起飞点，斜拍帧（云台俯角不足）精度低、只降级为“注意”。面积不代表水深或淹没范围，仍需现场核查。</small>
         </details>
         <div class="photo-frame-heading">
-          <label>任务关键帧（{{ selectedFiles.length }} / {{ frames.length }}）</label>
+          <label>任务关键帧（{{ selectedFrames.length }} / {{ frames.length }}）</label>
           <input ref="photoInput" class="photo-file-native" type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" multiple :disabled="busy || !taskId" @change="onPhotosPicked" />
           <button type="button" class="photo-file-trigger" :disabled="busy || !taskId" @click="choosePhotos">选择文件</button>
         </div>
         <p v-if="!taskId" class="photo-file-selection">先在“选定航线”中创建当前任务。</p>
         <p v-else-if="!frames.length" class="photo-file-selection">{{ selectedFileSummary }}</p>
         <ul v-else class="photo-frame-list">
-          <li v-for="(frame, index) in frames" :key="`${frame.file.name}-${index}`" :class="{ 'is-excluded': excludedFrames.includes(index) }">
+          <li v-for="(frame, index) in frames" :key="`${frame.name}-${index}`" :class="{ 'is-excluded': excludedFrames.includes(index) }">
             <label><input type="checkbox" :checked="!excludedFrames.includes(index)" :disabled="busy" @change="setFrameIncluded(index, $event)" />
-              <span><strong>{{ frame.file.name }}</strong><small>{{ Math.floor(frame.time_seconds / 60).toString().padStart(2, '0') }}:{{ Math.floor(frame.time_seconds % 60).toString().padStart(2, '0') }}<template v-if="frame.latitude !== null && frame.longitude !== null"> · {{ frame.latitude.toFixed(6) }}, {{ frame.longitude.toFixed(6) }}</template><template v-else> · 无 GPS</template><template v-if="frame.altitude_m !== null"> · {{ frame.altitude_m.toFixed(0) }} m</template></small><small>{{ frame.selection_reason ?? '手动截取' }}<template v-if="frame.estimated_overlap_percent !== null && frame.estimated_overlap_percent !== undefined"> · 上一选帧重叠约 {{ frame.estimated_overlap_percent }}%</template><template v-if="frame.sharpness_ratio_percent !== null && frame.sharpness_ratio_percent !== undefined"> · 清晰度比值 {{ frame.sharpness_ratio_percent }}%</template></small></span>
+              <span><strong>{{ frame.name }}</strong><small>{{ Math.floor(frame.time_seconds / 60).toString().padStart(2, '0') }}:{{ Math.floor(frame.time_seconds % 60).toString().padStart(2, '0') }}<template v-if="frame.latitude !== null && frame.longitude !== null"> · {{ frame.latitude.toFixed(6) }}, {{ frame.longitude.toFixed(6) }}</template><template v-else> · 无 GPS</template><template v-if="frame.altitude_m !== null"> · {{ frame.altitude_m.toFixed(0) }} m</template></small><small>{{ frame.selection_reason ?? '手动截取' }}<template v-if="frame.estimated_overlap_percent !== null && frame.estimated_overlap_percent !== undefined"> · 上一选帧重叠约 {{ frame.estimated_overlap_percent }}%</template><template v-if="frame.sharpness_ratio_percent !== null && frame.sharpness_ratio_percent !== undefined"> · 清晰度比值 {{ frame.sharpness_ratio_percent }}%</template></small></span>
             </label>
-            <button type="button" :disabled="busy" :aria-label="`从任务分析队列移除 ${frame.file.name}`" @click="removeFrame(index)">移除</button>
+            <button type="button" :disabled="busy" :aria-label="`从任务分析队列移除 ${frame.name}`" @click="removeFrame(index)">移除</button>
           </li>
         </ul>
         <small v-if="taskId" class="photo-file-hint">选择文件支持多选 JPG、PNG、WebP；手动照片没有 GPS 和高度，分析时不换算面积、不触发积水警报。</small>
@@ -678,7 +667,7 @@ function onDocumentPointerdown(event: PointerEvent) {
 @keyframes analysis-queue-pulse { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
 .analysis-queue-eta { display: block; margin-top: 6px; color: var(--ui-muted); font-size: 11px; }
 .analysis-queue-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; margin: 12px 0 0; padding: 0; list-style: none; }
-.analysis-queue-grid li { min-width: 0; }
+.analysis-queue-grid li { min-width: 0; content-visibility: auto; contain-intrinsic-size: auto 148px; }
 .analysis-queue-thumb { position: relative; display: block; width: 100%; padding: 0 !important; border: 1px solid var(--ui-line) !important; border-radius: 6px; background: #fff !important; overflow: hidden; cursor: default; }
 .analysis-queue-thumb:not(.is-static) { cursor: zoom-in; }
 .analysis-queue-thumb:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 1px; }

@@ -358,7 +358,8 @@ def get_task_frame(request: Request, task_id: str, frame_id: str):
     except TaskError as error:
         raise HTTPException(status_code=error.http_status, detail=str(error)) from error
     media_type = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}.get(path.suffix.lower())
-    return FileResponse(path, media_type=media_type)
+    # 帧文件内容不可变（frame_id 唯一）；长缓存让刷新/翻页不再重下图片。
+    return FileResponse(path, media_type=media_type, headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
 @app.delete("/api/tasks/{task_id}/frames/{frame_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -943,7 +944,8 @@ def photo_analysis_file(request: Request, job_id: str, file_name: str):
         target = photo_analysis.output_file(job_id, file_name)
     except PhotoAnalysisError as error:
         raise HTTPException(status_code=error.http_status, detail=str(error)) from error
-    return FileResponse(target, media_type=_PHOTO_MEDIA_TYPES.get(target.suffix.lower(), "application/octet-stream"))
+    return FileResponse(target, media_type=_PHOTO_MEDIA_TYPES.get(target.suffix.lower(), "application/octet-stream"),
+                        headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
 @app.post("/api/video-surveys", status_code=status.HTTP_201_CREATED)

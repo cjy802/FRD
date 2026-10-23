@@ -95,7 +95,7 @@ export function updateMissionTask(taskId: string, changes: Partial<Pick<MissionT
     body: JSON.stringify(changes),
   })
 }
-export async function saveMissionTaskFrame(taskId: string, frame: TaskVideoFrame): Promise<StoredMissionFrame> {
+export async function saveMissionTaskFrame(taskId: string, frame: TaskVideoFrame & { file: File }): Promise<StoredMissionFrame> {
   const form = new FormData()
   form.append('frame', frame.file, frame.file.name)
   form.append('time_seconds', String(frame.time_seconds))

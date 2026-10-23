@@ -22,6 +22,7 @@ manual review, never depth/water-level conclusions.
 from __future__ import annotations
 
 import json
+import shutil
 import math
 import os
 import queue
@@ -527,7 +528,8 @@ class PhotoAnalysisManager:
                 existing.add(info["frame_id"])
                 job["items"].append({"frame_id": info["frame_id"], "name": info["name"],
                                      "file_name": info["path"].name, "meta": info["meta"],
-                                     "state": "pending", "error": None, "attempts": 0})
+                                     "state": "pending", "error": None, "attempts": 0,
+                                     "_source": str(info["path"])})
                 appended.append(len(job["items"]) - 1)
             runtime["last_activity"] = time.time()
         for index in appended:
@@ -700,6 +702,7 @@ class PhotoAnalysisManager:
         retries: list[tuple[int, str]] = []
         discard_clean = False
         clean_frames: list[tuple[str, str]] = []
+        archived: list[tuple[str | None, str]] = []
         with self._lock:
             job = self._jobs[job_id]
             discard_clean = bool(job["context"].get("discard_clean_frames"))
@@ -711,6 +714,7 @@ class PhotoAnalysisManager:
                     item["state"] = "done"
                     item["error"] = None
                     runtime["results_map"][item["name"]] = enriched
+                    archived.append((item.get("_source"), item["name"]))
                     runtime["success_count"] += 1
                     runtime["consec_failures"] = 0
                     # 干净帧（未检出疑似积水）按需自动删除，任务里只保留有问题的帧。
@@ -734,6 +738,7 @@ class PhotoAnalysisManager:
                 else:
                     item["state"] = "failed"
                     runtime["consec_failures"] += 1
+                    archived.append((item.get("_source"), item["name"]))
             if (runtime["consec_failures"] >= QUEUE_CIRCUIT_FAILURES and runtime["success_count"] == 0
                     and runtime["circuit_error"] is None):
                 last_error = next((item["error"] for item in reversed(job["items"]) if item["state"] == "failed"), "未知错误")
@@ -744,6 +749,17 @@ class PhotoAnalysisManager:
                 self._absorb_runner_metadata(job_id, runtime)
             runtime["last_activity"] = time.time()
         self._persist(job_id)
+        inputs_dir = self._job_dirs[job_id] / "inputs"
+        for source, name in archived:
+            # 任务侧帧可能随后被“干净帧清理”删除；先把原图归档进任务目录，
+            # 保证识别队列的缩略图/原图预览始终可用。
+            if not source:
+                continue
+            try:
+                inputs_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, inputs_dir / name)
+            except OSError:
+                pass
         for task_id, frame_id in clean_frames:
             if self.frame_cleaner is None:
                 break
@@ -960,6 +976,10 @@ class PhotoAnalysisManager:
             if job is None:
                 raise PhotoAnalysisError("找不到该分析任务。", http_status=404)
             snapshot = json.loads(json.dumps(job, ensure_ascii=False))
+            for item in snapshot.get("items", []):
+                if isinstance(item, dict):
+                    for internal_key in [key for key in item if key.startswith("_")]:
+                        item.pop(internal_key, None)
             runtime = self._runtime.get(job_id)
             if job.get("mode") == "frames":
                 counts = {"total": len(snapshot.get("items", [])), "done": 0, "failed": 0,
@@ -988,6 +1008,10 @@ class PhotoAnalysisManager:
                     artifact = image.get(key)
                     if artifact:
                         allowed[Path(artifact).name] = outputs / artifact
+            inputs = self._job_dirs[job_id] / "inputs"
+            for item in job.get("items", []):
+                if item.get("state") in ("done", "failed"):
+                    allowed[f"inputs/{item['name']}"] = inputs / item["name"]
             relative = allowed.get(name) or allowed.get(Path(name).name)
             if relative is None:
                 raise PhotoAnalysisError("不允许的文件名。", http_status=404)
