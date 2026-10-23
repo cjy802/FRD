@@ -112,13 +112,30 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return body as T
 }
 
-// 只上传 SRT：视频保留在用户本机，预览与截帧直接读本地文件。
-export function createVideoSurveySrt(srt: File, videoName: string, taskId: string): Promise<VideoSurvey> {
+// 先解码校验（存储卡读取不稳定时给出明确提示），再 gzip 压缩上传：
+// 4MB 的 DJI SRT 压缩后约 500KB，半小时视频的约 40MB 也能轻松传输。
+export async function createVideoSurveySrt(srt: File, videoName: string, taskId: string): Promise<VideoSurvey> {
+  const raw = await srt.arrayBuffer()
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(raw)
+    if (!text.replace(/\s/g, '').length) throw new Error('SRT 文件为空。')
+  } catch (error) {
+    if (error instanceof Error && error.message === 'SRT 文件为空。') throw error
+    throw new Error('这个 SRT 文件无法按文本读取（存储卡可能已损坏或不稳定）。请把文件复制到电脑磁盘后再试，或重新生成字幕。')
+  }
   const form = new FormData()
-  form.append('srt', srt)
+  form.append('srt', await gzipBlob(new Blob([raw]), `${videoName}.gz`))
   form.append('video_name', videoName)
   form.append('task_id', taskId)
   return request<VideoSurvey>(endpoint, { method: 'POST', body: form })
+}
+
+async function gzipBlob(blob: Blob, name: string): Promise<File> {
+  const anyWindow = window as unknown as { CompressionStream?: new (format: string) => ReadableWritablePair<BlobPart, BlobPart> }
+  if (typeof anyWindow.CompressionStream !== 'function') return new File([blob], name)
+  const stream = new Blob([blob]).stream().pipeThrough(new anyWindow.CompressionStream('gzip') as unknown as TransformStream<BlobPart, BlobPart>)
+  const compressed = await new Response(stream).blob()
+  return new File([compressed], name)
 }
 
 export function selectAdaptiveTaskFrames(taskId: string, surveyId: string,

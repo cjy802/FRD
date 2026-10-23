@@ -6,6 +6,7 @@ telemetry and never runs image inference on video frames.
 
 from __future__ import annotations
 
+import gzip
 import json
 import re
 import uuid
@@ -19,7 +20,7 @@ from fastapi import UploadFile
 BACKEND_ROOT = Path(__file__).resolve().parent
 DEFAULT_STORAGE = BACKEND_ROOT / "user_data" / "video_surveys"
 MAX_VIDEO_BYTES = 8 * 1024 * 1024 * 1024
-MAX_SRT_BYTES = 32 * 1024 * 1024
+MAX_SRT_BYTES = 64 * 1024 * 1024
 CHUNK_BYTES = 1024 * 1024
 ALLOWED_VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v"}
 _TIMESTAMP = re.compile(r"(?P<h>\d{2,}):(?P<m>\d{2}):(?P<s>\d{2})[,.](?P<ms>\d{1,3})")
@@ -127,6 +128,27 @@ def parse_srt_telemetry(text: str) -> list[dict[str, Any]]:
         unique[point["time_seconds"]] = point
     return list(unique.values())
 
+
+
+def decode_srt_bytes(data: bytes) -> str:
+    """Accept raw or gzip-compressed SRT, then decode as UTF-8 or GB18030."""
+    if data[:2] == bytes((31, 139)):
+        try:
+            data = gzip.decompress(data)
+        except (OSError, EOFError) as error:
+            raise VideoSurveyError("SRT 压缩数据损坏，无法解压；请重试。") from error
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        try:
+            return data.decode("gb18030")
+        except UnicodeDecodeError as error:
+            import hashlib
+            digest = hashlib.md5(data).hexdigest()[:12]
+            head = data[:24].hex()
+            raise VideoSurveyError(
+                f"无法解码 SRT（解压后 {len(data)} 字节，指纹 {digest}，头 {head}）；"
+                "内容不是合法文本，存储卡可能已损坏，请重新生成该字幕。") from error
 
 def parse_srt_recording_window(text: str) -> dict[str, str] | None:
     """Extract the absolute device-local recording clock from DJI SRT cues."""
@@ -302,6 +324,8 @@ class VideoSurveyStore:
                      task_record: dict[str, Any] | None = None) -> dict[str, Any]:
         video_name = Path(video.filename or "").name
         srt_name = Path(srt.filename or "").name
+        if srt_name.lower().endswith(".gz"):
+            srt_name = srt_name[:-3]
         if Path(video_name).suffix.lower() not in ALLOWED_VIDEO_SUFFIXES:
             raise VideoSurveyError("请选择 MP4、MOV 或 M4V 视频文件。")
         if Path(srt_name).suffix.lower() != ".srt":
@@ -310,18 +334,8 @@ class VideoSurveyStore:
         if not srt_bytes:
             raise VideoSurveyError("SRT 文件为空。")
         if len(srt_bytes) > MAX_SRT_BYTES:
-            raise VideoSurveyError("SRT 文件不能超过 32 MiB。")
-        try:
-            srt_text = srt_bytes.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            try:
-                srt_text = srt_bytes.decode("gb18030")
-            except UnicodeDecodeError as error:
-                # 两个解码都失败多半说明收到的字节被截断在多字节字符中间，
-                # 而不是文件本身编码不对；报出字节数帮助定位。
-                raise VideoSurveyError(
-                    f"无法解码 SRT（收到 {len(srt_bytes)} 字节）；若原文件是正常字幕，"
-                    "多为上传中断导致的传输截断，请重试。") from error
+            raise VideoSurveyError("SRT 文件不能超过 64 MiB。")
+        srt_text = decode_srt_bytes(srt_bytes)
 
         job_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S") + "-" + uuid.uuid4().hex[:8]
         directory = (self.task_storage_dir / task_id / "media" / "video-surveys" / job_id
@@ -382,24 +396,16 @@ class VideoSurveyStore:
         works from the SRT plus the browser's own file handle.
         """
         srt_name = Path(srt.filename or "").name
+        if srt_name.lower().endswith(".gz"):
+            srt_name = srt_name[:-3]
         if Path(srt_name).suffix.lower() != ".srt":
             raise VideoSurveyError("请同时选择与视频对应的 .srt 文件。")
         srt_bytes = await srt.read(MAX_SRT_BYTES + 1)
         if not srt_bytes:
             raise VideoSurveyError("SRT 文件为空。")
         if len(srt_bytes) > MAX_SRT_BYTES:
-            raise VideoSurveyError("SRT 文件不能超过 32 MiB。")
-        try:
-            srt_text = srt_bytes.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            try:
-                srt_text = srt_bytes.decode("gb18030")
-            except UnicodeDecodeError as error:
-                # 两个解码都失败多半说明收到的字节被截断在多字节字符中间，
-                # 而不是文件本身编码不对；报出字节数帮助定位。
-                raise VideoSurveyError(
-                    f"无法解码 SRT（收到 {len(srt_bytes)} 字节）；若原文件是正常字幕，"
-                    "多为上传中断导致的传输截断，请重试。") from error
+            raise VideoSurveyError("SRT 文件不能超过 64 MiB。")
+        srt_text = decode_srt_bytes(srt_bytes)
 
         job_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S") + "-" + uuid.uuid4().hex[:8]
         directory = (self.task_storage_dir / task_id / "media" / "video-surveys" / job_id
