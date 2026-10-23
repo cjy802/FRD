@@ -369,19 +369,120 @@ class VideoSurveyStore:
                 pass
             raise
 
+    async def create_srt_only(self, srt: UploadFile, video_name: str, task_id: str | None = None,
+                              task_record: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Import telemetry only; the video stays on the user's machine.
+
+        The full clip would cost a multi-gigabyte transfer, and everything
+        except server-side frame extraction (map linkage, capture, archive)
+        works from the SRT plus the browser's own file handle.
+        """
+        srt_name = Path(srt.filename or "").name
+        if Path(srt_name).suffix.lower() != ".srt":
+            raise VideoSurveyError("请同时选择与视频对应的 .srt 文件。")
+        srt_bytes = await srt.read(MAX_SRT_BYTES + 1)
+        if not srt_bytes:
+            raise VideoSurveyError("SRT 文件为空。")
+        if len(srt_bytes) > MAX_SRT_BYTES:
+            raise VideoSurveyError("SRT 文件不能超过 32 MiB。")
+        try:
+            srt_text = srt_bytes.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            try:
+                srt_text = srt_bytes.decode("gb18030")
+            except UnicodeDecodeError as error:
+                raise VideoSurveyError("无法读取 SRT 编码，请另存为 UTF-8 后重试。") from error
+
+        job_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S") + "-" + uuid.uuid4().hex[:8]
+        directory = (self.task_storage_dir / task_id / "media" / "video-surveys" / job_id
+                     if task_id else self.storage_dir / job_id)
+        directory.mkdir(parents=True, exist_ok=False)
+        try:
+            (directory / "telemetry.srt").write_bytes(srt_bytes)
+            points = parse_srt_telemetry(srt_text)
+            recording = parse_srt_recording_window(srt_text)
+            task_match = analyse_route_match(points, task_record) if task_id else None
+            metadata = {
+                "job_id": job_id,
+                "task_id": task_id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "video_name": video_name,
+                "srt_name": srt_name,
+                "video_file": None,
+                "video_bytes": 0,
+                "has_video": False,
+                "telemetry_points": len(points),
+                "has_gps": bool(points),
+                "recording": recording,
+                "task_match": task_match,
+                "message": "已读取 SRT 轨迹；视频保留在本机，预览与截帧直接使用本地文件，"
+                           "需要服务器端逐帧分析时可再上传完整视频。" if points else
+                           "SRT 已导入，但没有识别到经纬度；请确认该视频生成了带 GPS 的视频字幕 SRT。",
+            }
+            (directory / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            (directory / "telemetry.json").write_text(json.dumps(points, ensure_ascii=False) + "\n", encoding="utf-8")
+            (directory / "targets.json").write_text("[]\n", encoding="utf-8")
+            return self.job(job_id)
+        except Exception:
+            for path in directory.iterdir():
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+            raise
+
+    async def attach_video(self, job_id: str, video: UploadFile) -> dict[str, Any]:
+        """Attach the full clip later, e.g. before server-side frame extraction."""
+        directory = self._directory(job_id)
+        metadata = json.loads((directory / "metadata.json").read_text(encoding="utf-8"))
+        if metadata.get("has_video"):
+            raise VideoSurveyError("该视频任务已上传过完整视频；如需更换请删除任务后重新导入。", http_status=409)
+        video_name = Path(video.filename or "").name
+        if Path(video_name).suffix.lower() not in ALLOWED_VIDEO_SUFFIXES:
+            raise VideoSurveyError("请选择 MP4、MOV 或 M4V 视频文件。")
+        video_path = directory / ("video" + Path(video_name).suffix.lower())
+        total_bytes = 0
+        try:
+            with video_path.open("wb") as output:
+                while True:
+                    chunk = await video.read(CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    total_bytes += len(chunk)
+                    if total_bytes > MAX_VIDEO_BYTES:
+                        raise VideoSurveyError("视频文件不能超过 8 GiB。")
+                    output.write(chunk)
+            if total_bytes == 0:
+                raise VideoSurveyError("视频文件为空。")
+        except Exception:
+            video_path.unlink(missing_ok=True)
+            raise
+        metadata.update(video_name=video_name or metadata.get("video_name"),
+                        video_file=video_path.name, video_bytes=total_bytes, has_video=True)
+        (directory / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return self.job(job_id)
+
     def job(self, job_id: str) -> dict[str, Any]:
         directory = self._directory(job_id)
         metadata = json.loads((directory / "metadata.json").read_text(encoding="utf-8"))
         telemetry = json.loads((directory / "telemetry.json").read_text(encoding="utf-8"))
         targets_path = directory / "targets.json"
         targets = json.loads(targets_path.read_text(encoding="utf-8")) if targets_path.is_file() else []
-        return {**metadata, "telemetry": telemetry, "targets": targets,
-                "video_url": f"/api/video-surveys/{job_id}/video"}
+        has_video = bool(metadata.get("video_file"))
+        return {**metadata, "has_video": has_video, "telemetry": telemetry, "targets": targets,
+                "video_url": f"/api/video-surveys/{job_id}/video" if has_video else None}
 
     def video_path(self, job_id: str) -> Path:
         directory = self._directory(job_id)
         metadata = json.loads((directory / "metadata.json").read_text(encoding="utf-8"))
-        path = directory / metadata["video_file"]
+        video_file = metadata.get("video_file")
+        if not video_file:
+            raise VideoSurveyError("该视频任务没有上传完整视频；自适应筛帧前需要先上传。", http_status=409)
+        path = directory / video_file
         if not path.is_file():
             raise VideoSurveyError("视频文件不存在。", http_status=404)
         return path

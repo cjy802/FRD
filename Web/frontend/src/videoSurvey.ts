@@ -35,8 +35,9 @@ export type VideoSurvey = {
   created_at: string
   video_name: string
   srt_name: string
-  video_file: string
+  video_file: string | null
   video_bytes: number
+  has_video?: boolean
   telemetry_points: number
   has_gps: boolean
   recording?: VideoRecordingWindow | null
@@ -44,7 +45,7 @@ export type VideoSurvey = {
   message: string
   telemetry: VideoTelemetryPoint[]
   targets: VideoCaptureTarget[]
-  video_url: string
+  video_url: string | null
 }
 
 export type AdaptiveFrameSelectionOptions = {
@@ -111,12 +112,45 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return body as T
 }
 
-export function createVideoSurvey(video: File, srt: File, taskId: string): Promise<VideoSurvey> {
+// 只上传 SRT：视频保留在用户本机，预览与截帧直接读本地文件。
+export function createVideoSurveySrt(srt: File, videoName: string, taskId: string): Promise<VideoSurvey> {
   const form = new FormData()
-  form.append('video', video)
   form.append('srt', srt)
+  form.append('video_name', videoName)
   form.append('task_id', taskId)
   return request<VideoSurvey>(endpoint, { method: 'POST', body: form })
+}
+
+// 服务器端逐帧分析（自适应筛帧）需要完整视频；用 XHR 提供上传进度。
+export function uploadSurveyVideo(jobId: string, video: File,
+  onProgress: (percent: number) => void): Promise<VideoSurvey> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `${endpoint}/${encodeURIComponent(jobId)}/video`)
+    xhr.upload.addEventListener('progress', event => {
+      if (event.lengthComputable) onProgress(Math.min(100, Math.round(event.loaded / event.total * 100)))
+    })
+    xhr.addEventListener('load', () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText) as VideoSurvey)
+        } catch {
+          reject(new VideoSurveyApiError('视频定位接口返回了无法识别的数据。', xhr.status))
+        }
+        return
+      }
+      let detail = '完整视频上传失败。'
+      try {
+        const body = JSON.parse(xhr.responseText) as { detail?: unknown }
+        if (typeof body.detail === 'string' && body.detail.trim()) detail = body.detail
+      } catch { /* 保留默认错误 */ }
+      reject(new VideoSurveyApiError(detail, xhr.status))
+    })
+    xhr.addEventListener('error', () => reject(new VideoSurveyApiError('完整视频上传失败，请检查后端服务。', 0)))
+    const form = new FormData()
+    form.append('video', video)
+    xhr.send(form)
+  })
 }
 
 export function selectAdaptiveTaskFrames(taskId: string, surveyId: string,

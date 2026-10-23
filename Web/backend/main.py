@@ -895,18 +895,32 @@ def photo_analysis_file(request: Request, job_id: str, file_name: str):
 
 
 @app.post("/api/video-surveys", status_code=status.HTTP_201_CREATED)
-async def video_survey_create(request: Request, video: UploadFile = File(...), srt: UploadFile = File(...),
+async def video_survey_create(request: Request, srt: UploadFile = File(...),
+                              video: UploadFile | None = File(default=None),
+                              video_name: str = Form(default=""),
                               task_id: str = Form(default="")):
     require_local_request(request, mutation=True, label="视频定位")
     try:
         task_record = tasks.get(task_id) if task_id else None
-        result = await video_surveys.create(video, srt, task_id or None, task_record)
+        if video is None or not (video.filename or "").strip():
+            result = await video_surveys.create_srt_only(srt, video_name.strip()[:200], task_id or None, task_record)
+        else:
+            result = await video_surveys.create(video, srt, task_id or None, task_record)
         if task_id:
             tasks.update(task_id, {"video_survey_id": result["job_id"]})
         return result
     except VideoSurveyError as error:
         raise HTTPException(status_code=error.http_status, detail=str(error)) from error
     except TaskError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+
+
+@app.post("/api/video-surveys/{job_id}/video", status_code=status.HTTP_202_ACCEPTED)
+async def video_survey_attach_video(request: Request, job_id: str, video: UploadFile = File(...)):
+    require_local_request(request, mutation=True, label="视频定位补传")
+    try:
+        return await video_surveys.attach_video(job_id, video)
+    except VideoSurveyError as error:
         raise HTTPException(status_code=error.http_status, detail=str(error)) from error
 
 

@@ -3,11 +3,12 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import CustomSelect from './CustomSelect.vue'
 import {
   addVideoCaptureTarget,
-  createVideoSurvey,
+  createVideoSurveySrt,
   deleteVideoCaptureTarget,
   fetchVideoSurvey,
   interpolateVideoPosition,
   selectAdaptiveTaskFrames,
+  uploadSurveyVideo,
 } from './videoSurvey'
 import type { VideoCaptureTarget, VideoSurvey, VideoTelemetryPoint } from './videoSurvey'
 import type { TaskVideoFrame } from './photoAnalysis'
@@ -68,6 +69,16 @@ const previewVideo = ref<HTMLVideoElement | null>(null)
 const previewUrl = ref('')
 const mapRect = ref<{ top: number; left: number; width: number; height: number } | null>(null)
 let previewUrlObject = ''
+// 当前任务绑定的本地视频（SRT-only 导入后，预览/截帧都基于它）。
+const localVideo = ref<{ file: File; url: string } | null>(null)
+const uploadingVideo = ref(false)
+const uploadProgress = ref<number | null>(null)
+
+const reviewVideoSrc = computed(() => {
+  if (localVideo.value) return localVideo.value.url
+  if (survey.value?.has_video) return survey.value.video_url ?? ''
+  return ''
+})
 
 // 浏览层在地图区域内铺满：以地图区域的矩形做定位。
 const dockStyle = computed(() => {
@@ -86,7 +97,15 @@ function updateMapRect() {
 const canCaptureFrame = computed(() => Boolean(survey.value && currentPosition.value && videoElement.value?.videoWidth
   && props.frameCount < 30 && !capturingFrame.value))
 const canSelectAdaptiveFrames = computed(() => Boolean(props.taskId && survey.value?.has_gps
-  && props.frameCount < 30 && !selectingFrames.value && !loading.value))
+  && props.frameCount < 30 && !selectingFrames.value && !loading.value && !uploadingVideo.value))
+const adaptiveButtonLabel = computed(() => {
+  if (uploadingVideo.value) return `正在上传完整视频 ${uploadProgress.value ?? 0}%…`
+  if (selectingFrames.value) return '正在自适应筛帧…'
+  if (survey.value && !survey.value.has_gps) return '需要带 GPS 的 SRT'
+  if (props.frameCount >= 30) return '关键帧已达 30 张上限'
+  if (survey.value && !survey.value.has_video) return '上传完整视频并自动筛帧'
+  return '自动筛选并保存关键帧'
+})
 const currentTimeLabel = computed(() => formatVideoTime(currentTime.value))
 const previewImportBlockedReason = computed(() => {
   if (!props.taskId) return '请先创建当前任务'
@@ -124,21 +143,23 @@ function updatePosition(time = videoElement.value?.currentTime ?? currentTime.va
   emit('position-change', currentPosition.value)
 }
 
-async function importVideo(video: File, srt: File) {
+async function importVideo(srt: File, localFile: File) {
   if (!props.taskId || loading.value) return
   loading.value = true
   error.value = ''
-  status.value = '正在上传视频并读取 SRT 轨迹…'
+  status.value = '正在读取 SRT 轨迹…'
   try {
-    const result = await createVideoSurvey(video, srt, props.taskId)
+    const result = await createVideoSurveySrt(srt, localFile.name, props.taskId)
     localStorage.setItem(`${STORAGE_KEY}:${props.taskId}`, result.job_id)
+    if (localVideo.value) URL.revokeObjectURL(localVideo.value.url)
+    localVideo.value = { file: localFile, url: URL.createObjectURL(localFile) }
     publishSurvey(result)
     status.value = result.has_gps
-      ? `已导入 ${result.telemetry_points} 个带位置的 SRT 记录；视频只用于预览和定位，不会逐帧运行模型。`
-      : '视频已导入，但 SRT 没有可识别的 GPS 坐标。请确认使用的是与此视频对应、含 GPS 的视频字幕文件。'
+      ? '已导入 SRT 轨迹；视频保留在本机，预览与截帧直接使用本地文件，不会上传。'
+      : 'SRT 已导入，但没有识别到 GPS 坐标。请确认使用的是与此视频对应、含 GPS 的视频字幕文件。'
     if (videoElement.value) videoElement.value.currentTime = 0
   } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : '视频或 SRT 导入失败。'
+    error.value = cause instanceof Error ? cause.message : 'SRT 导入失败。'
     status.value = ''
   } finally {
     loading.value = false
@@ -212,7 +233,7 @@ function closeLibrary() {
 async function importPreviewGroup() {
   const group = previewGroup.value
   if (!group?.srt || !props.taskId || loading.value) return
-  await importVideo(group.video, group.srt)
+  await importVideo(group.srt, group.video)
   if (!error.value) closeLibrary()
 }
 
@@ -257,8 +278,24 @@ async function selectAdaptiveFrames() {
   if (!props.taskId || !survey.value || !canSelectAdaptiveFrames.value) return
   selectingFrames.value = true
   error.value = ''
-  status.value = '正在低分辨率扫描视频画面、估算重叠并识别转弯；不会逐帧运行水坑模型…'
   try {
+    // 服务器端逐帧分析需要完整视频；SRT-only 导入的任务在这里按需补传一次。
+    if (!survey.value.has_video) {
+      if (!localVideo.value) {
+        error.value = '服务器端没有完整视频，无法逐帧分析；请先在视频库重新选择该视频，再使用自适应筛帧。'
+        return
+      }
+      uploadingVideo.value = true
+      status.value = '自适应筛帧需要完整视频，正在上传（每个任务只需一次）…'
+      try {
+        survey.value = await uploadSurveyVideo(survey.value.job_id, localVideo.value.file,
+          percent => { uploadProgress.value = percent })
+      } finally {
+        uploadingVideo.value = false
+        uploadProgress.value = null
+      }
+    }
+    status.value = '正在低分辨率扫描视频画面、估算重叠并识别转弯；不会逐帧运行水坑模型…'
     const result = await selectAdaptiveTaskFrames(props.taskId, survey.value.job_id, {
       straight_overlap_percent: straightOverlapPercent.value,
       turn_overlap_percent: turnOverlapPercent.value,
@@ -332,6 +369,10 @@ function seekTarget(target: VideoCaptureTarget) {
 
 async function restoreTaskSurvey(taskId: string | null) {
   publishSurvey(null)
+  if (localVideo.value) {
+    URL.revokeObjectURL(localVideo.value.url)
+    localVideo.value = null
+  }
   if (!taskId) return
   const jobId = localStorage.getItem(`${STORAGE_KEY}:${taskId}`)
   if (!jobId) return
@@ -339,7 +380,9 @@ async function restoreTaskSurvey(taskId: string | null) {
     const restored = await fetchVideoSurvey(jobId)
     if (restored.task_id !== taskId) return
     publishSurvey(restored)
-    status.value = '已恢复当前任务的视频轨迹和近拍点。'
+    status.value = restored.has_video
+      ? '已恢复当前任务的视频轨迹和近拍点。'
+      : '已恢复当前任务的 SRT 轨迹；该任务的视频未上传到服务器，在视频库重新选择即可预览与截帧。'
   } catch {
     localStorage.removeItem(`${STORAGE_KEY}:${taskId}`)
   }
@@ -354,6 +397,7 @@ onUnmounted(() => {
   document.removeEventListener('keydown', onLibraryKeydown, true)
   window.removeEventListener('resize', updateMapRect)
   if (previewUrlObject) URL.revokeObjectURL(previewUrlObject)
+  if (localVideo.value) URL.revokeObjectURL(localVideo.value.url)
 })
 watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
 </script>
@@ -396,21 +440,27 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
     <p v-else-if="status" class="video-survey-feedback" role="status">{{ status }}</p>
 
     <div v-if="survey" class="video-survey-review">
-      <video
-        ref="videoElement"
-        class="video-survey-player"
-        :src="survey.video_url"
-        controls
-        playsinline
-        preload="metadata"
-        @loadedmetadata="onVideoMetadata"
-        @timeupdate="updatePosition()"
-        @seeked="updatePosition()"
-      ></video>
-      <div v-if="videoDuration > 0" class="video-survey-timeline">
-        <input type="range" min="0" :max="videoDuration" step="0.1" :value="currentTime" aria-label="定位视频时间" @input="seekVideo" />
-        <span>{{ currentTimeLabel }} / {{ formatVideoTime(videoDuration) }}</span>
-      </div>
+      <template v-if="reviewVideoSrc">
+        <video
+          ref="videoElement"
+          class="video-survey-player"
+          :src="reviewVideoSrc"
+          controls
+          playsinline
+          preload="metadata"
+          @loadedmetadata="onVideoMetadata"
+          @timeupdate="updatePosition()"
+          @seeked="updatePosition()"
+        ></video>
+        <div v-if="videoDuration > 0" class="video-survey-timeline">
+          <input type="range" min="0" :max="videoDuration" step="0.1" :value="currentTime" aria-label="定位视频时间" @input="seekVideo" />
+          <span>{{ currentTimeLabel }} / {{ formatVideoTime(videoDuration) }}</span>
+        </div>
+      </template>
+      <p v-else class="video-survey-note" role="status">
+        此任务的视频未上传到服务器（SRT-only 导入）。在上方视频库重新选择并双击该视频即可预览与截帧；
+        使用「上传完整视频并自动筛帧」可启用服务器端逐帧分析。
+      </p>
 
       <div class="video-survey-position">
         <strong>当前画面位置</strong>
@@ -441,9 +491,9 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
           <label>最低清晰度 · 近期中位数 %<input v-model.number="minimumSharpnessPercent" type="number" min="0" max="100" step="5" :disabled="selectingFrames || !blurFilterEnabled" /></label>
         </div>
         <button class="adaptive-selector-action" type="button" :disabled="!canSelectAdaptiveFrames" @click="selectAdaptiveFrames">
-          {{ selectingFrames ? '正在自适应筛帧…' : !survey?.has_gps ? '需要带 GPS 的 SRT' : frameCount >= 30 ? '关键帧已达 30 张上限' : '自动筛选并保存关键帧' }}
+          {{ adaptiveButtonLabel }}
         </button>
-        <small class="adaptive-selector-note">系统用特征匹配估算相邻画面覆盖，用 SRT 轨迹变化识别转弯；匹配不确定时会保留画面以降低漏区风险。重叠值是筛选目标，不代表地面覆盖的测绘级保证。</small>
+        <small class="adaptive-selector-note">系统用特征匹配估算相邻画面覆盖，用 SRT 轨迹变化识别转弯；匹配不确定时会保留画面以降低漏区风险。SRT-only 导入的任务首次使用会先上传完整视频（仅此一次）。重叠值是筛选目标，不代表地面覆盖的测绘级保证。</small>
       </section>
 
       <ul v-if="survey.targets.length" class="video-survey-target-list">
