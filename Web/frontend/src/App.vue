@@ -478,7 +478,7 @@ async function createCurrentTask() {
             : '检测到 DJI RC 2，但没有可替换的占位航线文件夹。'
         } else {
           try {
-            taskCreateProgress.value = `正在导入 DJI RC 2：${target.folder}…`
+            taskCreateProgress.value = `正在导入 DJI RC 2：${target.folder}…期间 Windows 若弹出“替换文件”确认框，请点击“替换/是”，属正常步骤。`
             const queued = await startRc2Import(target.folder)
             const result = await waitForRc2Job(queued.job_id)
             if (result.status === 'succeeded') importedToRc2 = true
@@ -3106,7 +3106,7 @@ onBeforeUnmount(() => {
             </label>
             <small v-if="!rc2Folders.length && !rc2Loading">没有可替换的占位航线文件夹。需要 RC 2 上存在 waypoint/&lt;编号&gt;/ 文件夹（DJI Fly 占位航线），且里面有与文件夹同名的 .kmz；创建任务时会下载 KMZ 文件。</small>
             <small v-else-if="rc2Folders.length > 1 && !rc2TargetName">请选择要替换的占位航线文件夹；未选择时创建任务会下载 KMZ 文件。</small>
-            <small v-if="rc2TargetName">创建任务时将替换文件夹 {{ rc2TargetName }} 里的同名 .kmz；原文件会先备份，写入后回读校验。</small>
+            <small v-if="rc2TargetName">创建任务时将替换文件夹 {{ rc2TargetName }} 里的同名 .kmz；原文件会先备份，写入后回读校验。过程中 Windows 会弹出“替换文件”确认框，点击“替换/是”即可，属正常步骤。</small>
           </template>
           <small v-else-if="preview && djiModel === 'fly'">用 USB 连接并解锁 RC 2 后，创建任务会自动尝试导入；未检测到时会下载 KMZ。</small>
           <div v-if="rc2Job" class="rc2-job" :class="{ 'rc2-job-failed': rc2Job.status === 'failed', 'rc2-job-done': rc2Job.status === 'succeeded' }" role="status" aria-live="polite">

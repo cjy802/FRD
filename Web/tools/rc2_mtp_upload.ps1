@@ -16,7 +16,10 @@ param(
 # MTP devices do not have drive letters. Windows Shell/WPD lists their files;
 # replace/backup/readback all use live Folder objects + CopyHere, because the
 # device's Path strings cannot be re-bound (SHCreateItemFromParsingName
-# returns E_INVALIDARG for them on some devices).
+# returns E_INVALIDARG for them on some devices). CopyHere over an existing
+# MTP file always shows a Windows replace-confirmation dialog (silent flags
+# and the delete verb are equally modal on this device), so the UI warns the
+# user to expect it and confirm.
 $ErrorActionPreference = 'Stop'
 if ($Json) { [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false) }
 $script:CopyFlags = 1044 # FOF_SILENT | FOF_NOCONFIRMATION | FOF_NOERRORUI
@@ -204,44 +207,6 @@ function Copy-LocalToRemoteFolder {
     return $hash
 }
 
-function Test-RemoteItemGone {
-    # MTP 枚举偶发返回空结果，把“不存在”误判成已删除；多确认几次。
-    param([object]$Folder, [string]$Name, [int]$Timeout)
-    $deadline = (Get-Date).AddSeconds($Timeout)
-    $missingStreak = 0
-    do {
-        $item = Get-ChildItemByName $Folder $Name
-        if ($null -eq $item) {
-            $missingStreak++
-            if ($missingStreak -ge 3) { return $true }
-        } else {
-            $missingStreak = 0
-        }
-        Start-Sleep -Milliseconds 600
-    } while ((Get-Date) -lt $deadline)
-    return $false
-}
-
-function Remove-RemoteItemQuietly {
-    # CopyHere 覆盖 MTP 同名文件会弹出确认框（无视静默标志）；先走删除动词。
-    param([object]$Folder, [object]$Item, [string]$Name, [int]$Timeout)
-    $deleted = $false
-    try {
-        foreach ($verb in @($Item.Verbs())) {
-            $verbName = ($verb.Name -replace '&', '')
-            if ($verbName -eq '删除' -or $verbName -ieq 'delete') {
-                $verb.DoIt()
-                $deleted = $true
-                break
-            }
-        }
-    } catch {
-        return $false
-    }
-    if (-not $deleted) { return $false }
-    return (Test-RemoteItemGone -Folder $Folder -Name $Name -Timeout $Timeout)
-}
-
 try {
     if ($TimeoutSeconds -lt 1 -or $TimeoutSeconds -gt 600) {
         throw 'TimeoutSeconds 必须在 1 到 600 秒之间'
@@ -378,9 +343,6 @@ try {
             $result.remote_state = 'unknown'
             $replaceStarted = $true
             Write-ProgressMessage "通过 MTP 复制新航线文件，替换 ${RemoteFileName}。"
-            $replacedQuietly = Remove-RemoteItemQuietly -Folder $targetFolder -Item $existing `
-                -Name $RemoteFileName -Timeout $TimeoutSeconds
-            if ($replacedQuietly) { Write-ProgressMessage '旧文件已静默删除；上传新文件不会弹出确认框。' }
             $replaceDir = Join-Path $localWork 'replace-readback'
             $replaceHash = Copy-LocalToRemoteFolder -Folder $targetFolder -LocalPath $SourceKmz `
                 -Name $RemoteFileName -ExpectedHash $result.source_sha256 `
@@ -418,11 +380,6 @@ try {
             } else {
                 $result.recovery_stage = 'restoring'
                 $result.restore_attempted = $true
-                $staleItem = Get-ChildItemByName $targetFolder $RemoteFileName
-                if ($null -ne $staleItem) {
-                    Remove-RemoteItemQuietly -Folder $targetFolder -Item $staleItem `
-                        -Name $RemoteFileName -Timeout $TimeoutSeconds
-                }
                 $restoreDir = Join-Path $localWork 'readback-restored'
                 $restoredHash = Copy-LocalToRemoteFolder -Folder $targetFolder -LocalPath $backupPath `
                     -Name $RemoteFileName -ExpectedHash $backupHash `

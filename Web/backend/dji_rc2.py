@@ -344,7 +344,8 @@ class Rc2ImportManager:
                 destination.write(payload)
             source_hash = hashlib.sha256(payload).hexdigest()
             self._update(job_id, source_path=str(source_path), source_sha256=source_hash,
-                         stage="uploading", message="KMZ 已保存，正在备份并替换 RC 2 占位航线。")
+                         stage="uploading",
+                         message="KMZ 已保存，正在备份并替换 RC 2 占位航线；Windows 弹出“替换文件”确认框属正常步骤，请点击“替换/是”。")
             script_args = ["-SourceKmz", str(source_path), "-RemoteFileName", target_name, "-ReplaceExisting",
                            "-BackupRoot", backup_directory]
             if target_subpath:
