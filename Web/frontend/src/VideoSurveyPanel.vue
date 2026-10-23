@@ -11,9 +11,11 @@ import {
 } from './videoSurvey'
 import type { VideoCaptureTarget, VideoSurvey, VideoTelemetryPoint } from './videoSurvey'
 import type { TaskVideoFrame } from './photoAnalysis'
+import { appendPhotoAnalysisFrames, closePhotoAnalysisJob, fetchPhotoAnalysisHealth, fetchPhotoAnalysisJob, submitPhotoAnalysisJob } from './photoAnalysis'
+import type { PhotoAnalysisModelOption } from './photoAnalysis'
 import { saveMissionTaskFrame } from './missionTasks'
 import { ExtractionCancelled, extractAdaptiveFramesClient } from './adaptiveFrames'
-import type { ClientAdaptiveProgress } from './adaptiveFrames'
+import type { ClientAdaptiveProgress, ClientSelectedFrame } from './adaptiveFrames'
 import {
   countSrtTelemetry,
   formatBytes,
@@ -34,6 +36,8 @@ const emit = defineEmits<{
   'frame-capture': [frame: TaskVideoFrame]
   'frames-added': [count: number]
   'survey-change': [survey: VideoSurvey | null]
+  'job-started': [jobId: string]
+  'navigate-photos': []
 }>()
 
 const STORAGE_KEY = 'low-altitude-active-video-survey'
@@ -76,6 +80,57 @@ const localVideo = ref<{ file: File; url: string } | null>(null)
 const extractingLocal = ref(false)
 const extractionProgress = ref<ClientAdaptiveProgress | null>(null)
 const extractionCancel = ref(false)
+
+// —— 截帧即入队：抽帧阶段每选出一张就上传并入队识别 ——
+const queueModels = ref<PhotoAnalysisModelOption[]>([])
+const queueModel = ref('')
+const queueHealthLoaded = ref(false)
+const queueJobId = ref('')
+const queueCounts = ref({ enqueued: 0, done: 0, failed: 0 })
+const queueSkipped = ref(0)
+let queuePollTimer: number | null = null
+
+async function ensureQueueModels() {
+  if (queueHealthLoaded.value) return
+  const health = await fetchPhotoAnalysisHealth()
+  queueModels.value = health.models.filter(model => model.available)
+  if (!queueModels.value.some(model => model.id === queueModel.value)) {
+    queueModel.value = health.default_model_id
+  }
+  queueHealthLoaded.value = true
+}
+
+const queueModelOptions = computed(() => queueModels.value.map(model => ({ value: model.id, label: model.label })))
+const canQueueAnalyze = computed(() => Boolean(canSelectAdaptiveFrames.value && localVideo.value && queueModels.value.length))
+const queueStatusLabel = computed(() => {
+  if (!queueJobId.value) return ''
+  const counts = queueCounts.value
+  const parts = [`已入队 ${counts.enqueued}`, `已识别 ${counts.done}`]
+  if (counts.failed) parts.push(`失败 ${counts.failed}`)
+  if (queueSkipped.value) parts.push(`上传跳过 ${queueSkipped.value}`)
+  return parts.join(' · ')
+})
+
+function stopQueuePolling() {
+  if (queuePollTimer !== null) {
+    window.clearTimeout(queuePollTimer)
+    queuePollTimer = null
+  }
+}
+
+function startQueuePolling(jobId: string) {
+  stopQueuePolling()
+  queuePollTimer = window.setTimeout(async () => {
+    try {
+      const job = await fetchPhotoAnalysisJob(jobId)
+      queueCounts.value = { ...queueCounts.value, done: job.counts?.done ?? 0, failed: job.counts?.failed ?? 0 }
+      if (job.state === 'pending' || job.state === 'running') startQueuePolling(jobId)
+      else queuePollTimer = null
+    } catch {
+      queuePollTimer = null
+    }
+  }, 2000)
+}
 
 const reviewVideoSrc = computed(() => {
   if (localVideo.value) return localVideo.value.url
@@ -401,6 +456,112 @@ function onVideoMetadata() {
   updatePosition(videoElement.value?.currentTime ?? 0)
 }
 
+async function selectAdaptiveFramesWithAnalysis() {
+  if (!props.taskId || !survey.value || !canQueueAnalyze.value || !localVideo.value) return
+  try {
+    await ensureQueueModels()
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : '无法获取识别模型列表。'
+    return
+  }
+  if (!queueModel.value) {
+    error.value = '没有可用的识别模型，请检查后端配置。'
+    return
+  }
+  selectingFrames.value = true
+  extractingLocal.value = true
+  extractionCancel.value = false
+  error.value = ''
+  queueJobId.value = ''
+  queueSkipped.value = 0
+  queueCounts.value = { enqueued: 0, done: 0, failed: 0 }
+  let uploadChain: Promise<void> = Promise.resolve()
+  let jobId = ''
+  let savedCount = 0
+  try {
+    status.value = '正在创建识别队列…'
+    const submitted = await submitPhotoAnalysisJob({
+      taskId: props.taskId, frameIds: [], modelId: queueModel.value, streaming: true,
+    })
+    jobId = submitted.job_id
+    queueJobId.value = jobId
+    emit('job-started', jobId)
+    startQueuePolling(jobId)
+    status.value = '正在本地扫描视频画面；选出的帧会立即上传并排队识别，无需等全部截帧结束…'
+    await extractAdaptiveFramesClient(
+      localVideo.value.file,
+      survey.value.telemetry,
+      {
+        maxFrames: 100 - props.frameCount,
+        scanFps: scanFps.value,
+        straightOverlapPercent: straightOverlapPercent.value,
+        turnOverlapPercent: turnOverlapPercent.value,
+        turnAngleDegrees: turnAngleDegrees.value,
+        cameraChangeDegrees: cameraChangeDegrees.value,
+        blurFilterEnabled: blurFilterEnabled.value,
+        minimumSharpnessPercent: minimumSharpnessPercent.value,
+      },
+      progress => { extractionProgress.value = progress },
+      () => extractionCancel.value,
+      frame => {
+        // 串行上传链：不阻塞扫描循环，也不会同时发起大量上传。
+        uploadChain = uploadChain.then(async () => {
+          try {
+            const saved = await saveMissionTaskFrame(props.taskId!, {
+              file: frame.file,
+              time_seconds: frame.time_seconds,
+              latitude: frame.latitude,
+              longitude: frame.longitude,
+              altitude_m: frame.altitude_m,
+              gimbal_pitch_deg: frame.gimbal_pitch_deg,
+              selection_reason: frame.selection_reason,
+              estimated_overlap_percent: frame.estimated_overlap_percent,
+              turn_angle_deg: frame.turn_angle_deg,
+              sharpness_ratio_percent: frame.sharpness_ratio_percent,
+            })
+            savedCount += 1
+            await appendPhotoAnalysisFrames(jobId, [saved.frame_id])
+            queueCounts.value = { ...queueCounts.value, enqueued: queueCounts.value.enqueued + 1 }
+            // 每 10 帧触发一次帧列表刷新，让分析面板的队列缩略图渐进出现。
+            if (savedCount % 10 === 0) emit('frames-added', 0)
+          } catch {
+            // 单帧上传/入队失败只跳过计数，不中断抽帧。
+            queueSkipped.value += 1
+          }
+        })
+      },
+    )
+  } catch (cause) {
+    if (cause instanceof ExtractionCancelled) {
+      status.value = '已取消本地自动截帧；已入队的帧会继续识别。'
+    } else {
+      error.value = cause instanceof Error ? cause.message : '截帧并排队识别失败。'
+    }
+  } finally {
+    try {
+      await uploadChain
+    } catch {
+      // 单帧失败已在链内消化；这里只兜底。
+    }
+    if (jobId) {
+      try {
+        await closePhotoAnalysisJob(jobId)
+      } catch {
+        // 队列可能已自动关闭；继续用轮询拿最终状态。
+      }
+    }
+    if (savedCount) emit('frames-added', savedCount)
+    selectingFrames.value = false
+    extractingLocal.value = false
+    extractionProgress.value = null
+    const counts = queueCounts.value
+    if (jobId && !error.value) {
+      const base = `截帧完成：入队 ${counts.enqueued} 张${queueSkipped.value ? ` · 上传跳过 ${queueSkipped.value} 张` : ''}。`
+      status.value = `${base}识别仍在后台进行（${queueStatusLabel.value || '统计中'}），进度见“任务视频 / 分析”模块。`
+    }
+  }
+}
+
 function seekVideo(event: Event) {
   const value = Number((event.target as HTMLInputElement).value)
   if (videoElement.value) videoElement.value.currentTime = value
@@ -467,12 +628,15 @@ async function restoreTaskSurvey(taskId: string | null) {
 
 onMounted(() => {
   void restoreTaskSurvey(props.taskId)
+  // 预取识别模型列表，让“自动截帧并排队识别”按钮能直接启用。
+  void ensureQueueModels().catch(() => {})
   document.addEventListener('keydown', onLibraryKeydown, true)
   window.addEventListener('resize', updateMapRect)
 })
 onUnmounted(() => {
   document.removeEventListener('keydown', onLibraryKeydown, true)
   window.removeEventListener('resize', updateMapRect)
+  stopQueuePolling()
   if (previewUrlObject) URL.revokeObjectURL(previewUrlObject)
   if (localVideo.value) URL.revokeObjectURL(localVideo.value.url)
 })
@@ -567,13 +731,24 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
           <label class="adaptive-blur-toggle"><input v-model="blurFilterEnabled" type="checkbox" :disabled="selectingFrames" />过滤明显模糊帧</label>
           <label>最低清晰度 · 近期中位数 %<input v-model.number="minimumSharpnessPercent" type="number" min="0" max="100" step="5" :disabled="selectingFrames || !blurFilterEnabled" /></label>
         </div>
+        <div class="adaptive-selector-fields adaptive-queue-row">
+          <label>识别模型<CustomSelect v-model="queueModel" :options="queueModelOptions" :disabled="selectingFrames || !queueModelOptions.length" aria-label="排队识别使用的模型" /></label>
+          <small v-if="!queueModelOptions.length">识别服务未就绪，只能先截帧。</small>
+        </div>
         <div class="adaptive-selector-actions-row">
           <button class="adaptive-selector-action" type="button" :disabled="!canSelectAdaptiveFrames" @click="selectAdaptiveFrames">
             {{ adaptiveButtonLabel }}
           </button>
+          <button class="adaptive-selector-action is-primary" type="button" :disabled="!canQueueAnalyze" @click="selectAdaptiveFramesWithAnalysis">
+            {{ extractingLocal && queueJobId ? '截帧并识别中…' : '自动截帧并排队识别' }}
+          </button>
           <button v-if="extractingLocal" type="button" class="adaptive-selector-cancel" @click="extractionCancel = true">取消截帧</button>
         </div>
-        <small class="adaptive-selector-note">系统用画面变化估算相邻覆盖，用 SRT 轨迹变化识别转弯；匹配不确定时会保留画面以降低漏区风险。有本地视频时自动截帧在浏览器里直接处理，不上传完整视频；重叠值是筛选目标，不代表地面覆盖的测绘级保证。</small>
+        <p v-if="queueStatusLabel" class="adaptive-queue-status" role="status">
+          {{ queueStatusLabel }}
+          <button type="button" class="adaptive-queue-jump" @click="emit('navigate-photos')">查看识别队列</button>
+        </p>
+        <small class="adaptive-selector-note">系统用画面变化估算相邻覆盖，用 SRT 轨迹变化识别转弯；匹配不确定时会保留画面以降低漏区风险。有本地视频时自动截帧在浏览器里直接处理，不上传完整视频；重叠值是筛选目标，不代表地面覆盖的测绘级保证。“自动截帧并排队识别”会边截边传：每选出一张立即入队识别，结果逐张返回，失败帧会自动重试且不拖累整批。</small>
       </section>
 
       <ul v-if="survey.targets.length" class="video-survey-target-list">
@@ -721,11 +896,18 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
 .adaptive-selector-action { width: 100%; border-color: var(--ui-accent) !important; background: var(--ui-accent) !important; color: #fff !important; }
 .adaptive-selector-action:hover:not(:disabled) { background: var(--ui-accent-hover) !important; }
 .adaptive-selector-action:disabled { opacity: .5; cursor: not-allowed; }
+.adaptive-selector-action:not(.is-primary) { border-color: #d7dfe8 !important; background: #fff !important; color: #34506c !important; }
+.adaptive-selector-action:not(.is-primary):hover:not(:disabled) { border-color: var(--ui-accent) !important; color: var(--ui-accent) !important; background: #eff6ff !important; }
 .adaptive-selector-note { margin: 0; }
-.adaptive-selector-actions-row { display: flex; gap: 6px; }
+.adaptive-selector-actions-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .adaptive-selector-actions-row .adaptive-selector-action { flex: 1; }
 .adaptive-selector-cancel { min-height: 34px; padding: 6px 12px; border: 1px solid #d7dfe8; border-radius: 7px; background: #fff; color: #526273; font-size: 11px; cursor: pointer; }
 .adaptive-selector-cancel:hover { border-color: #a4262c; background: #fef2f2; color: #a4262c; }
+.adaptive-queue-row { grid-template-columns: minmax(0, 1fr); margin: 0; }
+.adaptive-queue-row small { color: var(--ui-muted); font-size: 10px; line-height: 1.4; }
+.adaptive-queue-status { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0 0; padding: 6px 8px; border-radius: 6px; background: #f0f7f1; color: #16794c; font-size: 11px; line-height: 1.4; }
+.adaptive-queue-jump { min-height: 24px; padding: 2px 8px; border: 1px solid #bcd9c6; border-radius: 6px; background: #fff; color: #16794c; font-size: 10px; cursor: pointer; }
+.adaptive-queue-jump:hover { border-color: #16794c; background: #eaf6ee; }
 .video-survey-note, .video-survey-feedback { margin: 7px 0; padding: 6px 8px; border-radius: 6px; background: #eff6ff; color: #1d4ed8; line-height: 1.4; overflow-wrap: anywhere; }
 .video-survey-feedback.is-error { background: #fef2f2; color: #a4262c; }
 .video-survey-match { margin: 7px 0; padding: 6px 8px; border-radius: 6px; background: #f3f4f6; color: #4b5563; line-height: 1.4; overflow-wrap: anywhere; }

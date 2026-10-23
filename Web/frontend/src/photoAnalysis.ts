@@ -61,11 +61,43 @@ export type PhotoAnalysisResultImage = {
   confidence_map: string
 }
 
+export type PhotoAnalysisJobItemMeta = {
+  time_seconds?: number | null
+  latitude?: number | null
+  longitude?: number | null
+  altitude_m?: number | null
+  gimbal_pitch_deg?: number | null
+  name?: string | null
+}
+
+export type PhotoAnalysisJobItem = {
+  frame_id: string
+  name: string
+  file_name?: string
+  meta?: PhotoAnalysisJobItemMeta
+  state: 'pending' | 'running' | 'done' | 'failed' | 'cancelled'
+  error: string | null
+  attempts: number
+}
+
+export type PhotoAnalysisJobCounts = {
+  total: number
+  done: number
+  failed: number
+  pending: number
+  running: number
+  cancelled: number
+}
+
 export type PhotoAnalysisJob = {
   job_id: string
-  state: 'pending' | 'running' | 'done' | 'error'
+  state: 'pending' | 'running' | 'done' | 'error' | 'cancelled'
+  mode?: 'frames' | 'legacy'
   created_at: string
   finished_at: string | null
+  closed?: boolean
+  counts?: PhotoAnalysisJobCounts
+  items?: PhotoAnalysisJobItem[]
   context: {
     site_name?: string
     note?: string
@@ -124,23 +156,56 @@ export async function fetchPhotoAnalysisHealth(signal?: AbortSignal): Promise<Ph
   return health
 }
 
-export async function submitPhotoAnalysis(
-  files: File[],
-  context: { site_name?: string; note?: string } = {},
-  modelId = '',
-  taskId = '',
-  frameMetadata: Omit<TaskVideoFrame, 'file'>[] = [],
-  cameraFovDeg?: number,
+export type PhotoAnalysisJobSubmitOptions = {
+  taskId: string
+  frameIds: string[]
+  modelId?: string
+  siteName?: string
+  note?: string
+  cameraFovDeg?: number
+  streaming?: boolean
+}
+
+export async function submitPhotoAnalysisJob(
+  options: PhotoAnalysisJobSubmitOptions,
 ): Promise<{ job_id: string; job_url: string }> {
-  const form = new FormData()
-  for (const file of files) form.append('photos', file, file.name)
-  if (context.site_name) form.append('site_name', context.site_name)
-  if (context.note) form.append('note', context.note)
-  if (modelId) form.append('model_id', modelId)
-  if (taskId) form.append('task_id', taskId)
-  if (cameraFovDeg !== undefined) form.append('camera_fov_deg', String(cameraFovDeg))
-  form.append('frame_metadata', JSON.stringify(frameMetadata))
-  return request<{ job_id: string; job_url: string }>(`${endpoint}/jobs`, { method: 'POST', body: form })
+  return request<{ job_id: string; job_url: string }>(`${endpoint}/jobs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      task_id: options.taskId,
+      frame_ids: options.frameIds,
+      model_id: options.modelId ?? '',
+      site_name: options.siteName ?? '',
+      note: options.note ?? '',
+      ...(options.cameraFovDeg !== undefined ? { camera_fov_deg: options.cameraFovDeg } : {}),
+      streaming: options.streaming ?? false,
+    }),
+  })
+}
+
+export async function appendPhotoAnalysisFrames(jobId: string, frameIds: string[]): Promise<number> {
+  const payload = await request<{ job_id: string; appended: number }>(
+    `${endpoint}/jobs/${encodeURIComponent(jobId)}/frames`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ frame_ids: frameIds }),
+    })
+  return payload.appended
+}
+
+export async function closePhotoAnalysisJob(jobId: string): Promise<void> {
+  await request<{ closed: boolean }>(`${endpoint}/jobs/${encodeURIComponent(jobId)}/close`, { method: 'POST' })
+}
+
+export async function cancelPhotoAnalysisJob(jobId: string): Promise<void> {
+  await request<{ cancelled: boolean }>(`${endpoint}/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' })
+}
+
+export async function retryFailedPhotoAnalysisFrames(jobId: string): Promise<number> {
+  const payload = await request<{ retried: number }>(
+    `${endpoint}/jobs/${encodeURIComponent(jobId)}/retry-failed`, { method: 'POST' })
+  return payload.retried
 }
 
 export function fetchPhotoAnalysisJob(jobId: string, signal?: AbortSignal): Promise<PhotoAnalysisJob> {

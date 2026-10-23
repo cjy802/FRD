@@ -16,7 +16,7 @@ import type { RoadPreview as Preview } from './routeTypes'
 import { createFlightTimeline, sampleFlight, type FlightSample } from './flightPlayback'
 import { createMissionTask, deleteMissionTask, deleteMissionTaskFrame, fetchMissionTask, fetchMissionTaskFrameFile, fetchMissionTaskFrames, saveMissionTaskFrame,
   listMissionTasks, updateMissionTask, type MissionTask, type MissionTaskSummary, type StoredMissionFrame } from './missionTasks'
-import type { PhotoAnalysisJob, TaskVideoFrame, WaterAlertThresholds } from './photoAnalysis'
+import type { PhotoAnalysisJob, PhotoAnalysisResultImage, TaskVideoFrame, WaterAlertThresholds } from './photoAnalysis'
 import { assessWaterAlert, loadWaterAlertThresholds, saveWaterAlertThresholds } from './photoAnalysis'
 import { fetchLocationAddress, placeToPoint, type PlaceResult } from './placeSearch'
 
@@ -570,32 +570,62 @@ async function recordTaskWeather(assessment: RouteAssessment | null) {
   await persistTask({ weather: assessment as unknown as Record<string, unknown> })
 }
 
-async function recordTaskAnalysis(job: PhotoAnalysisJob) {
+const activeAnalysisJobId = ref('')
+const absorbedTargetKeys = new Set<string>()
+
+type AnalysisFrameMeta = { time_seconds?: number | null; latitude: number; longitude: number; altitude_m?: number | null; gimbal_pitch_deg?: number | null }
+
+function analysisTargetsFromJob(job: PhotoAnalysisJob): VideoCaptureTarget[] {
   const images = job.results?.images ?? []
-  const frames = job.context.frames ?? []
-  const targets = images.map((image, index) => ({ image, frame: frames[index] }))
-    .filter((item): item is typeof item & { frame: { time_seconds: number; latitude: number; longitude: number; altitude_m: number | null; gimbal_pitch_deg?: number | null } } => {
-      if (!item.frame || !Number.isFinite(item.frame.latitude) || !Number.isFinite(item.frame.longitude)) return false
-      return assessWaterAlert(item.image, waterAlertThresholds.value).level !== 'none'
-    })
+  if (job.mode !== 'frames') {
+    // legacy 任务：帧元数据按提交顺序放在 context.frames 里。
+    const frames = job.context.frames ?? []
+    const pairs = images.map((image, index) => ({
+      image, meta: frames[index] as AnalysisFrameMeta | undefined,
+    }))
+    return buildTargets(pairs.filter((pair): pair is { image: PhotoAnalysisResultImage; meta: AnalysisFrameMeta } =>
+      Boolean(pair.meta && Number.isFinite(pair.meta.latitude) && Number.isFinite(pair.meta.longitude))), job)
+  }
+  // 队列任务：每个 item 自带帧元数据，按 name 对应识别结果。
+  const metaByName = new Map((job.items ?? []).map(item => [item.name, item]))
+  const pairs = images.map(image => ({ image, meta: metaByName.get(image.name)?.meta }))
+  return buildTargets(pairs.filter((pair): pair is { image: PhotoAnalysisResultImage; meta: AnalysisFrameMeta } =>
+    Boolean(pair.meta && Number.isFinite(pair.meta.latitude as number) && Number.isFinite(pair.meta.longitude as number))), job)
+}
+
+function buildTargets(pairs: { image: PhotoAnalysisResultImage; meta: AnalysisFrameMeta }[], job: PhotoAnalysisJob): VideoCaptureTarget[] {
+  return pairs
+    .filter(({ image }) => assessWaterAlert(image, waterAlertThresholds.value).level !== 'none')
     .sort((first, second) => (second.image.estimated_area_m2 ?? 0) - (first.image.estimated_area_m2 ?? 0))
     .slice(0, 5)
-    .map(({ image, frame }, index): VideoCaptureTarget => {
+    .map(({ image, meta }, index): VideoCaptureTarget => {
       const assessment = assessWaterAlert(image, waterAlertThresholds.value)
       return {
-        id: `analysis-${job.job_id}-${index}`,
+        id: `analysis-${job.job_id}-${image.name}`,
         label: `积水候选 ${index + 1} · ${assessment.areaText ?? `占比 ${(image.suspected_fraction * 100).toFixed(1)}%`}`,
         created_at: new Date().toISOString(),
-        time_seconds: frame.time_seconds,
-        latitude: frame.latitude,
-        longitude: frame.longitude,
-        altitude_m: frame.altitude_m,
+        time_seconds: meta.time_seconds ?? 0,
+        latitude: meta.latitude,
+        longitude: meta.longitude,
+        altitude_m: meta.altitude_m ?? null,
         heading_deg: null,
-        gimbal_pitch_deg: frame.gimbal_pitch_deg ?? null,
+        gimbal_pitch_deg: meta.gimbal_pitch_deg ?? null,
       }
     })
-  analysisMapTargets.value = [...targets, ...analysisMapTargets.value].slice(0, 50)
+}
+
+async function absorbAnalysisResults(job: PhotoAnalysisJob) {
+  if (!activeTask.value) return
+  const targets = analysisTargetsFromJob(job)
+  const fresh = targets.filter(target => !absorbedTargetKeys.has(target.id))
+  if (!fresh.length) return
+  for (const target of fresh) absorbedTargetKeys.add(target.id)
+  analysisMapTargets.value = [...fresh, ...analysisMapTargets.value].slice(0, 50)
   await persistTask({ analysis_job_id: job.job_id, analysis_targets: analysisMapTargets.value as unknown as Record<string, unknown>[] })
+}
+
+function onAnalysisJobStarted(jobId: string) {
+  activeAnalysisJobId.value = jobId
 }
 
 async function markTaskFlightStarted() {
@@ -706,6 +736,8 @@ function applyMissionTask(task: MissionTask) {
   }
   taskFrames.value = []
   analysisMapTargets.value = (task.analysis_targets ?? []) as unknown as VideoCaptureTarget[]
+  for (const target of analysisMapTargets.value) absorbedTargetKeys.add(target.id)
+  activeAnalysisJobId.value = task.analysis_job_ids?.length ? task.analysis_job_ids[task.analysis_job_ids.length - 1] : ''
   const route = task.route
   const savedAnchors = planningMode.value === 'area' && Array.isArray(savedCoverage?.point_anchors)
     ? savedCoverage.point_anchors : route.anchors
@@ -2973,9 +3005,9 @@ onBeforeUnmount(() => {
 
            <div class="settings-group" data-settings-page="photos" :class="{ 'settings-active': settingsPage === 'photos' }">
           <p class="form-scope-note">当前任务导入视频与对应 SRT。拖动时间线核对无人机位置，只截取需要分析的关键帧。</p>
-          <VideoSurveyPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frame-count="taskFrames.length" @track-change="setVideoTelemetryTrack" @position-change="setVideoTelemetryPosition" @targets-change="setVideoCaptureTargets" @frame-capture="addTaskFrame" @frames-added="onAdaptiveFramesAdded" @survey-change="onTaskSurveyChange" />
+          <VideoSurveyPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frame-count="taskFrames.length" @track-change="setVideoTelemetryTrack" @position-change="setVideoTelemetryPosition" @targets-change="setVideoCaptureTargets" @frame-capture="addTaskFrame" @frames-added="onAdaptiveFramesAdded" @survey-change="onTaskSurveyChange" @job-started="onAnalysisJobStarted" @navigate-photos="selectModule('photos')" />
           <p class="form-scope-note">关键帧会保存在任务文件夹中。模型只分析勾选的帧，SRT 位置会随结果一同记录。</p>
-          <PhotoAnalysisPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frames="taskFrames" :thresholds="waterAlertThresholds" @remove-frame="removeTaskFrame" @frames-add="addManualTaskFrames" @analysis-complete="recordTaskAnalysis" @thresholds-change="updateWaterAlertThresholds" />
+          <PhotoAnalysisPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frames="taskFrames" :thresholds="waterAlertThresholds" :active-job-id="activeAnalysisJobId" @remove-frame="removeTaskFrame" @frames-add="addManualTaskFrames" @job-started="onAnalysisJobStarted" @analysis-update="absorbAnalysisResults" @thresholds-change="updateWaterAlertThresholds" />
           </div>
           </div>
             <fluent-button v-if="activeModule === 'route'" class="primary-button" appearance="primary" type="button" :disabled="!weatherCoordinates || loading || checkingPoint || locatingPoint !== null" @click="selectModule('status')"><span class="svg-icon icon-cloud-rain" aria-hidden="true"></span><span>继续查看天气</span></fluent-button>

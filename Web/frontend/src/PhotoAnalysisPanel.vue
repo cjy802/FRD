@@ -3,17 +3,19 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   PhotoAnalysisApiError,
   assessWaterAlert,
+  cancelPhotoAnalysisJob,
   fetchPhotoAnalysisHealth,
   fetchPhotoAnalysisJob,
   photoAnalysisFileUrl,
+  retryFailedPhotoAnalysisFrames,
   sanitizeWaterAlertThresholds,
-  submitPhotoAnalysis,
+  submitPhotoAnalysisJob,
 } from './photoAnalysis'
-import type { PhotoAnalysisHealth, PhotoAnalysisJob, PhotoAnalysisResultImage, WaterAlertThresholds } from './photoAnalysis'
+import type { PhotoAnalysisHealth, PhotoAnalysisJob, PhotoAnalysisJobItem, PhotoAnalysisResultImage, WaterAlertThresholds } from './photoAnalysis'
 import type { TaskVideoFrame } from './photoAnalysis'
 
-const props = defineProps<{ taskId: string | null; frames: TaskVideoFrame[]; thresholds: WaterAlertThresholds }>()
-const emit = defineEmits<{ 'remove-frame': [index: number]; 'frames-add': [frames: TaskVideoFrame[]]; 'analysis-complete': [job: PhotoAnalysisJob]; 'thresholds-change': [thresholds: WaterAlertThresholds] }>()
+const props = withDefaults(defineProps<{ taskId: string | null; frames: TaskVideoFrame[]; thresholds: WaterAlertThresholds; activeJobId?: string | null }>(), { activeJobId: null })
+const emit = defineEmits<{ 'remove-frame': [index: number]; 'frames-add': [frames: TaskVideoFrame[]]; 'job-started': [jobId: string]; 'analysis-update': [job: PhotoAnalysisJob]; 'thresholds-change': [thresholds: WaterAlertThresholds] }>()
 
 const health = ref<PhotoAnalysisHealth | null>(null)
 const healthError = ref('')
@@ -214,40 +216,64 @@ function setFrameIncluded(index: number, event: Event) {
 
 async function submit() {
   if (!canSubmit.value) return
+  const frameIds = selectedFrames.value.map(frame => frame.frame_id).filter((id): id is string => Boolean(id))
+  if (!frameIds.length) {
+    error.value = '所选关键帧还没有保存到任务，稍等片刻后重试。'
+    return
+  }
   busy.value = true
   error.value = ''
-  status.value = '正在上传照片…'
+  status.value = '已提交，排队识别中…'
   stopPolling()
   job.value = null
   try {
-    const submitted = await submitPhotoAnalysis(selectedFiles.value, {
-      site_name: siteName.value.trim() || undefined,
+    const submitted = await submitPhotoAnalysisJob({
+      taskId: props.taskId ?? '',
+      frameIds,
+      modelId: selectedModel.value,
+      siteName: siteName.value.trim() || undefined,
       note: note.value.trim() || undefined,
-    }, selectedModel.value, props.taskId ?? '', selectedFrames.value.map(({ file, ...metadata }) => metadata), props.thresholds.cameraFovDeg)
-    status.value = '已提交，正在分析…'
+      cameraFovDeg: props.thresholds.cameraFovDeg,
+    })
+    emit('job-started', submitted.job_id)
     pollJob(submitted.job_id)
   } catch (cause) {
     busy.value = false
     status.value = ''
-    error.value = cause instanceof PhotoAnalysisApiError ? cause.message : '上传失败，请重试。'
+    error.value = cause instanceof PhotoAnalysisApiError ? cause.message : '提交失败，请重试。'
   }
 }
+
+let pollSignature = ''
 
 function pollJob(jobId: string) {
   pollTimer = window.setTimeout(async () => {
     try {
       const current = await fetchPhotoAnalysisJob(jobId)
       job.value = current
+      const counts = current.counts
+      const signature = `${current.state}:${counts?.total ?? 0}:${counts?.done ?? 0}:${counts?.failed ?? 0}`
+      if (signature !== pollSignature) {
+        pollSignature = signature
+        if (current.mode === 'frames') emit('analysis-update', current)
+      }
       if (current.state === 'done') {
         busy.value = false
-        status.value = `分析完成：${current.results?.images.length ?? 0} 张照片，用时 ${current.results?.elapsed_seconds ?? 0} 秒。`
-        emit('analysis-complete', current)
+        const done = counts?.done ?? current.results?.images.length ?? 0
+        const failed = counts?.failed ?? 0
+        status.value = `分析完成：成功 ${done} 张${failed ? ` · 失败 ${failed} 张（可重试失败帧）` : ''}，用时 ${Math.round(current.results?.elapsed_seconds ?? 0)} 秒。`
         return
       }
       if (current.state === 'error') {
         busy.value = false
         status.value = ''
         error.value = current.error || '分析失败。'
+        return
+      }
+      if (current.state === 'cancelled') {
+        busy.value = false
+        const done = counts?.done ?? 0
+        status.value = `已取消分析：完成 ${done} 张，结果已保留。`
         return
       }
       pollJob(jobId)
@@ -257,6 +283,122 @@ function pollJob(jobId: string) {
       error.value = cause instanceof PhotoAnalysisApiError ? cause.message : '查询分析进度失败。'
     }
   }, 1500)
+}
+
+async function attachJob(jobId: string) {
+  if (!jobId || (pollTimer !== null && job.value?.job_id === jobId)) return
+  try {
+    const current = await fetchPhotoAnalysisJob(jobId)
+    job.value = current
+    pollSignature = ''
+    if (current.state === 'pending' || current.state === 'running') {
+      busy.value = true
+      status.value = '任务在后台识别中，进度如下。'
+      pollJob(jobId)
+    } else if (current.mode === 'frames') {
+      emit('analysis-update', current)
+    }
+  } catch {
+    // 任务可能已随任务删除；静默忽略，不打断面板。
+  }
+}
+
+watch(() => props.activeJobId, jobId => { if (jobId) void attachJob(jobId) }, { immediate: true })
+
+async function cancelAnalysis() {
+  if (!job.value || job.value.state !== 'running' || !busy.value) return
+  try {
+    await cancelPhotoAnalysisJob(job.value.job_id)
+  } catch (cause) {
+    error.value = cause instanceof PhotoAnalysisApiError ? cause.message : '取消失败，请重试。'
+  }
+}
+
+async function retryFailed() {
+  if (!job.value) return
+  busy.value = true
+  error.value = ''
+  status.value = '正在重新排队识别失败帧…'
+  try {
+    await retryFailedPhotoAnalysisFrames(job.value.job_id)
+    pollSignature = ''
+    pollJob(job.value.job_id)
+  } catch (cause) {
+    busy.value = false
+    status.value = ''
+    error.value = cause instanceof PhotoAnalysisApiError ? cause.message : '重试失败帧失败。'
+  }
+}
+
+const queueItems = computed<PhotoAnalysisJobItem[]>(() => job.value?.items ?? [])
+const queueCounts = computed(() => job.value?.counts ?? { total: 0, done: 0, failed: 0, pending: 0, running: 0, cancelled: 0 })
+const queueSummaryText = computed(() => {
+  const counts = queueCounts.value
+  if (!counts.total) return ''
+  const waiting = counts.pending + counts.running
+  const parts = [`已识别 ${counts.done} / 共 ${counts.total}`]
+  if (counts.failed) parts.push(`失败 ${counts.failed}`)
+  if (waiting) parts.push(`排队中 ${waiting}`)
+  if (job.value?.closed === false) parts.push('仍可追加关键帧')
+  return parts.join(' · ')
+})
+const canCancelJob = computed(() => busy.value && job.value?.state === 'running')
+const canRetryFailed = computed(() => !busy.value && Boolean(job.value && job.value.counts?.failed))
+const etaText = computed(() => {
+  const counts = queueCounts.value
+  const elapsed = job.value?.results?.elapsed_seconds ?? 0
+  if (job.value?.state !== 'running' || isRemoteModel.value !== true) return ''
+  if (counts.done < 2 || !elapsed) return ''
+  const remaining = Math.max(0, Math.round(elapsed / counts.done * (counts.total - counts.done - counts.failed)))
+  if (remaining < 5) return ''
+  const minutes = Math.floor(remaining / 60)
+  const seconds = remaining % 60
+  return `预计剩余 ${minutes ? `${minutes} 分 ` : ''}${seconds} 秒（按已识别帧估算）`
+})
+
+function segmentWidth(kind: 'done' | 'failed' | 'running'): string {
+  const counts = queueCounts.value
+  if (!counts.total) return '0%'
+  return `${(counts[kind] / counts.total) * 100}%`
+}
+
+function itemStateText(item: PhotoAnalysisJobItem): string {
+  if (item.state === 'pending') return '排队'
+  if (item.state === 'running') return item.attempts > 0 ? `重试 ${item.attempts}` : '识别中'
+  if (item.state === 'done') return '完成'
+  if (item.state === 'failed') return '失败'
+  return '取消'
+}
+
+const thumbUrls = new Map<string, string>()
+const frameIdByItemName = computed(() => {
+  const map = new Map<string, string>()
+  for (const item of queueItems.value) map.set(item.name, item.frame_id)
+  return map
+})
+
+function queueThumbUrl(item: PhotoAnalysisJobItem): string {
+  const cached = thumbUrls.get(item.frame_id)
+  if (cached) return cached
+  const frame = props.frames.find(candidate => candidate.frame_id === item.frame_id)
+  if (!frame) return ''
+  const url = URL.createObjectURL(frame.file)
+  thumbUrls.set(item.frame_id, url)
+  return url
+}
+
+function releaseThumbUrls() {
+  for (const url of thumbUrls.values()) URL.revokeObjectURL(url)
+  thumbUrls.clear()
+}
+
+watch(() => props.frames.length, () => releaseThumbUrls())
+
+function openQueueItemPreview(item: PhotoAnalysisJobItem) {
+  if (item.state !== 'done' || !job.value) return
+  const index = (job.value.results?.images ?? []).findIndex(image => image.name === item.name)
+  if (index < 0) return
+  openPreview((job.value.results?.images ?? [])[index], index)
 }
 
 function stopPolling() {
@@ -271,8 +413,20 @@ function fileUrl(name: string): string {
 }
 
 function inputUrl(index: number): string {
-  const record = job.value?.inputs?.[index]
-  return record ? photoAnalysisFileUrl(job.value!.job_id, `inputs/${record.name}`) : ''
+  const current = job.value
+  if (!current) return ''
+  const record = current.inputs?.[index]
+  if (record) return photoAnalysisFileUrl(current.job_id, `inputs/${record.name}`)
+  const image = current.results?.images?.[index]
+  const frameId = image ? frameIdByItemName.value.get(image.name) : undefined
+  if (!frameId) return ''
+  const frame = props.frames.find(candidate => candidate.frame_id === frameId)
+  if (!frame) return ''
+  const cached = thumbUrls.get(frameId)
+  if (cached) return cached
+  const url = URL.createObjectURL(frame.file)
+  thumbUrls.set(frameId, url)
+  return url
 }
 
 function openPreview(image: PhotoAnalysisResultImage, index: number) {
@@ -299,6 +453,7 @@ refreshHealth()
 onMounted(() => document.addEventListener('pointerdown', onDocumentPointerDown))
 onUnmounted(() => {
   stopPolling()
+  releaseThumbUrls()
   document.removeEventListener('pointerdown', onDocumentPointerDown)
 })
 </script>
@@ -370,6 +525,37 @@ onUnmounted(() => {
       <p v-if="error" class="photo-feedback is-error" role="alert">{{ error }}</p>
       <p v-else-if="status" class="photo-feedback" role="status">{{ status }}</p>
 
+      <div v-if="job && job.mode === 'frames'" class="analysis-queue" aria-label="识别队列进度">
+        <div class="analysis-queue-head">
+          <strong>识别队列</strong>
+          <small>{{ queueSummaryText }}</small>
+          <span class="analysis-queue-actions">
+            <button v-if="canCancelJob" type="button" @click="cancelAnalysis">取消分析</button>
+            <button v-if="canRetryFailed" type="button" class="is-danger" @click="retryFailed">重试失败帧（{{ queueCounts.failed }}）</button>
+          </span>
+        </div>
+        <div class="analysis-queue-progress" role="progressbar" :aria-valuenow="queueCounts.done + queueCounts.failed" :aria-valuemax="queueCounts.total" aria-label="已识别帧数">
+          <span class="is-done" :style="{ width: segmentWidth('done') }"></span>
+          <span class="is-failed" :style="{ width: segmentWidth('failed') }"></span>
+          <span class="is-running" :style="{ width: segmentWidth('running') }"></span>
+        </div>
+        <small v-if="etaText" class="analysis-queue-eta">{{ etaText }}</small>
+        <ul v-if="queueItems.length" class="analysis-queue-grid">
+          <li v-for="item in queueItems" :key="item.frame_id" :class="`is-${item.state}`" :title="item.error ?? item.name">
+            <button v-if="item.state === 'done'" type="button" class="analysis-queue-thumb" :aria-label="`查看 ${item.name} 的识别结果`" @click="openQueueItemPreview(item)">
+              <img v-if="queueThumbUrl(item)" :src="queueThumbUrl(item)" :alt="item.name" loading="lazy" />
+              <span v-else class="analysis-queue-blank" aria-hidden="true">已识别</span>
+              <span class="analysis-queue-state">{{ itemStateText(item) }}</span>
+            </button>
+            <div v-else class="analysis-queue-thumb is-static" :title="item.error ?? item.name">
+              <img v-if="queueThumbUrl(item)" :src="queueThumbUrl(item)" :alt="item.name" loading="lazy" />
+              <span v-else class="analysis-queue-blank" aria-hidden="true">无预览</span>
+              <span class="analysis-queue-state">{{ itemStateText(item) }}</span>
+            </div>
+          </li>
+        </ul>
+      </div>
+
       <div v-if="job?.results" class="photo-results">
         <div class="photo-results-header">
           <div class="photo-view-toggle" role="group" aria-label="叠图显示方式">
@@ -424,6 +610,32 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.analysis-queue { margin: 8px 0 10px; padding: 8px 9px; border: 1px solid var(--ui-line); border-radius: 7px; background: #fbfcfe; }
+.analysis-queue-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.analysis-queue-head strong { font-size: 11px; color: #173b5c; }
+.analysis-queue-head small { min-width: 0; flex: 1 1 120px; color: var(--ui-muted); font-size: 11px; }
+.analysis-queue-actions { display: inline-flex; gap: 6px; }
+.analysis-queue-actions .is-danger { border-color: #d5a3a3 !important; color: #a4262c !important; background: #fff7f7 !important; }
+.analysis-queue-progress { display: flex; gap: 1px; height: 8px; margin-top: 7px; border-radius: 4px; overflow: hidden; background: #e3e9f0; }
+.analysis-queue-progress > span { height: 100%; transition: width .4s ease; }
+.analysis-queue-progress .is-done { background: #2f9e63; }
+.analysis-queue-progress .is-failed { background: #d64545; }
+.analysis-queue-progress .is-running { background: #4a90d9; animation: analysis-queue-pulse 1.4s ease-in-out infinite; }
+@keyframes analysis-queue-pulse { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+.analysis-queue-eta { display: block; margin-top: 5px; color: var(--ui-muted); font-size: 10px; }
+.analysis-queue-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 5px; margin: 8px 0 0; padding: 0; list-style: none; }
+.analysis-queue-grid li { min-width: 0; }
+.analysis-queue-thumb { position: relative; display: block; width: 100%; padding: 0 !important; border: 1px solid var(--ui-line) !important; border-radius: 5px; background: #fff !important; overflow: hidden; cursor: default; }
+.analysis-queue-thumb:not(.is-static) { cursor: zoom-in; }
+.analysis-queue-thumb:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 1px; }
+.analysis-queue-thumb img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; }
+.analysis-queue-blank { display: grid; place-items: center; width: 100%; aspect-ratio: 4 / 3; color: var(--ui-muted); font-size: 9px; background: #eef2f6; }
+.analysis-queue-state { position: absolute; left: 0; bottom: 0; padding: 1px 4px; border-radius: 0 4px 0 0; background: rgb(23 36 49 / .72); color: #fff; font-size: 9px; line-height: 1.5; white-space: nowrap; }
+.analysis-queue-grid .is-done .analysis-queue-state { background: rgb(31 125 74 / .9); }
+.analysis-queue-grid .is-failed .analysis-queue-thumb { border-color: #e3b3b3 !important; }
+.analysis-queue-grid .is-failed .analysis-queue-state { background: rgb(180 50 50 / .92); }
+.analysis-queue-grid .is-running .analysis-queue-thumb { border-color: #a8ccef !important; }
+.analysis-queue-grid .is-running .analysis-queue-state { background: rgb(35 100 168 / .92); animation: analysis-queue-pulse 1.4s ease-in-out infinite; }
 .photo-panel { min-width: 0; margin: 12px 0; border: 1px solid var(--ui-line); border-radius: var(--ui-radius); background: #fff; font-size: var(--font-caption); }
 .photo-panel > summary { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 38px; padding: 7px 10px; cursor: pointer; font-weight: 600; list-style-position: inside; }
 .photo-panel > summary::marker { color: var(--ui-muted); }

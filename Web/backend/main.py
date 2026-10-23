@@ -52,6 +52,28 @@ app.add_middleware(
 )
 
 
+def _resolve_task_frame(task_id: str, frame_id: str) -> dict:
+    frame = next((item for item in tasks.frames(task_id) if item.get("frame_id") == frame_id), None)
+    if frame is None:
+        raise PhotoAnalysisError("找不到该任务关键帧。", http_status=404)
+    meta = {key: frame.get(key) for key in
+            ("time_seconds", "latitude", "longitude", "altitude_m", "gimbal_pitch_deg", "name")}
+    return {"name": frame["file_name"],
+            "path": tasks.frame_directory(task_id) / frame["file_name"],
+            "meta": meta}
+
+
+photo_analysis.frame_resolver = _resolve_task_frame
+
+
+@app.on_event("startup")
+def resume_photo_analysis_jobs() -> None:
+    try:
+        photo_analysis.recover_jobs()
+    except Exception:  # noqa: BLE001 - 恢复失败不阻塞启动
+        pass
+
+
 class Point(BaseModel):
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
@@ -825,51 +847,77 @@ def photo_analysis_health(request: Request):
     return photo_analysis.health()
 
 
+class PhotoAnalysisSubmitBody(BaseModel):
+    task_id: str
+    frame_ids: list[str] = Field(default_factory=list)
+    model_id: str = ""
+    site_name: str = ""
+    note: str = ""
+    camera_fov_deg: float | None = Field(default=None, ge=30.0, le=120.0)
+    streaming: bool = False
+
+
+class PhotoAnalysisAppendBody(BaseModel):
+    frame_ids: list[str] = Field(min_length=1)
+
+
 @app.post("/api/photo-analysis/jobs", status_code=status.HTTP_202_ACCEPTED)
-async def photo_analysis_submit(
-    request: Request,
-    photos: list[UploadFile] = File(...),
-    site_name: str = Form(default=""),
-    note: str = Form(default=""),
-    model_id: str = Form(default=""),
-    task_id: str = Form(default=""),
-    frame_metadata: str = Form(default="[]"),
-    camera_fov_deg: str = Form(default=""),
-):
+def photo_analysis_submit(request: Request, body: PhotoAnalysisSubmitBody):
     require_local_request(request, mutation=True, label="照片分析")
-    if not photos:
-        raise HTTPException(status_code=422, detail="没有收到照片文件。")
-    collected = []
-    for upload in photos:
-        collected.append((upload.filename or "photo", await upload.read()))
     try:
-        context = {"site_name": site_name, "note": note}
-        if camera_fov_deg.strip():
-            try:
-                fov = float(camera_fov_deg)
-            except ValueError as error:
-                raise PhotoAnalysisError("相机视场角必须是数字。") from error
-            if not 30.0 <= fov <= 120.0:
-                raise PhotoAnalysisError("相机视场角需在 30–120° 之间。")
-            context["camera_fov_deg"] = fov
-        try:
-            parsed_frame_metadata = json.loads(frame_metadata)
-        except ValueError as error:
-            raise PhotoAnalysisError("视频截图位置信息格式无效。") from error
-        if not isinstance(parsed_frame_metadata, list) or len(parsed_frame_metadata) != len(collected):
-            raise PhotoAnalysisError("视频截图与位置信息数量不一致。")
-        context["frames"] = parsed_frame_metadata
-        if task_id:
-            tasks.get(task_id)
-        job_id = photo_analysis.submit(collected, context=context,
-                                       model_id=model_id or None, task_id=task_id or None)
-        if task_id:
-            tasks.update(task_id, {"analysis_job_id": job_id})
+        tasks.get(body.task_id)
+        context: dict = {"site_name": body.site_name, "note": body.note}
+        if body.camera_fov_deg is not None:
+            context["camera_fov_deg"] = body.camera_fov_deg
+        job_id = photo_analysis.submit_frames(
+            body.task_id, body.frame_ids, model_id=body.model_id or None,
+            context=context, streaming=body.streaming)
+        tasks.update(body.task_id, {"analysis_job_id": job_id})
     except PhotoAnalysisError as error:
         raise HTTPException(status_code=error.http_status, detail=str(error)) from error
     except TaskError as error:
         raise HTTPException(status_code=error.http_status, detail=str(error)) from error
     return {"job_id": job_id, "job_url": f"/api/photo-analysis/jobs/{job_id}"}
+
+
+@app.post("/api/photo-analysis/jobs/{job_id}/frames")
+def photo_analysis_append_frames(request: Request, job_id: str, body: PhotoAnalysisAppendBody):
+    require_local_request(request, mutation=True, label="照片分析")
+    try:
+        appended = photo_analysis.append_frames(job_id, body.frame_ids)
+    except PhotoAnalysisError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+    return {"job_id": job_id, "appended": appended}
+
+
+@app.post("/api/photo-analysis/jobs/{job_id}/close")
+def photo_analysis_close_job(request: Request, job_id: str):
+    require_local_request(request, mutation=True, label="照片分析")
+    try:
+        photo_analysis.close_job(job_id)
+    except PhotoAnalysisError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+    return {"job_id": job_id, "closed": True}
+
+
+@app.post("/api/photo-analysis/jobs/{job_id}/cancel")
+def photo_analysis_cancel_job(request: Request, job_id: str):
+    require_local_request(request, mutation=True, label="照片分析")
+    try:
+        photo_analysis.cancel_job(job_id)
+    except PhotoAnalysisError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+    return {"job_id": job_id, "cancelled": True}
+
+
+@app.post("/api/photo-analysis/jobs/{job_id}/retry-failed")
+def photo_analysis_retry_failed(request: Request, job_id: str):
+    require_local_request(request, mutation=True, label="照片分析")
+    try:
+        retried = photo_analysis.retry_failed(job_id)
+    except PhotoAnalysisError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+    return {"job_id": job_id, "retried": retried}
 
 
 @app.get("/api/photo-analysis/jobs/{job_id}")

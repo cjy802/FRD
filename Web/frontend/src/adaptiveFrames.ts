@@ -159,6 +159,7 @@ export async function extractAdaptiveFramesClient(
   options: ClientAdaptiveOptions,
   onProgress: (progress: ClientAdaptiveProgress) => void,
   isCancelled: () => boolean,
+  onFrameSelected?: (frame: ClientSelectedFrame) => void,
 ): Promise<ClientSelectedFrame[]> {
   if (telemetry.length < 2) throw new Error('SRT 中可用的 GPS 记录不足，无法判断飞行方向和转弯。')
   const url = URL.createObjectURL(video)
@@ -291,6 +292,8 @@ export async function extractAdaptiveFramesClient(
         anchorGray = smallGray
         anchorTime = seconds
         anchorPitch = position.gimbal_pitch_deg
+        // 选中即通知调用方（截帧即入队：抽帧还没结束时识别就可以开始）。
+        onFrameSelected?.(selected[selected.length - 1])
       } else if (anchorGray !== null) {
         // 未保留时把覆盖锚点向前链式推进（与后端一致）。
         anchorGray = smallGray

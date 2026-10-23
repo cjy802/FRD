@@ -207,31 +207,55 @@ def _process(path: Path, output_dir: Path, url: str, api_key: str, model: str) -
     }
 
 
+def _collect_images(args: argparse.Namespace) -> list[Path]:
+    suffixes = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+    if args.manifest is not None:
+        entries = json.loads(args.manifest.read_text(encoding="utf-8"))
+        if not isinstance(entries, list) or any(not isinstance(entry, str) for entry in entries):
+            raise ValueError("manifest 必须是图片路径字符串数组。")
+        return [Path(entry) for entry in entries]
+    return sorted(path for path in args.input_dir.iterdir()
+                  if path.is_file() and path.suffix.lower() in suffixes)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input-dir", required=True, type=Path)
+    parser.add_argument("--input-dir", type=Path)
+    parser.add_argument("--manifest", type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     args = parser.parse_args()
+    if args.manifest is None and args.input_dir is None:
+        print(json.dumps({"error": "需要 --manifest 或 --input-dir 之一。"}, ensure_ascii=False))
+        return 2
     url = os.environ.get("WATER_ANALYSIS_REMOTE_URL", "").strip()
     api_key = os.environ.get("WATER_ANALYSIS_REMOTE_API_KEY", "").strip()
     model = os.environ.get("WATER_ANALYSIS_REMOTE_MODEL", "glm-5.3-flash").strip()
     if not url or not api_key or not model:
         print(json.dumps({"error": "远程模型配置不完整，请检查后端 .env。"}, ensure_ascii=False))
         return 2
-    image_paths = sorted(path for path in args.input_dir.iterdir()
-                         if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp"})
+    try:
+        image_paths = _collect_images(args)
+    except (OSError, ValueError) as error:
+        print(json.dumps({"error": f"无法读取图片清单：{error}"}, ensure_ascii=False))
+        return 2
     if not image_paths:
         print(json.dumps({"error": "没有可分析的视频截图。"}, ensure_ascii=False))
         return 2
     started = time.monotonic()
+    args.output_dir.mkdir(parents=True, exist_ok=True)
     images = []
-    try:
+    # 逐张追加 results.jsonl：调用方按帧读取进度，单帧失败只写错误行，不中断整批。
+    with (args.output_dir / "results.jsonl").open("a", encoding="utf-8") as jsonl:
         for image_path in image_paths:
-            images.append(_process(image_path, args.output_dir, url, api_key, model))
-    except Exception as error:  # noqa: BLE001 - report a short actionable error to the task UI
-        detail = str(error).replace(api_key, "[已隐藏 API Key]") if api_key else str(error)
-        print(json.dumps({"error": detail[:600]}, ensure_ascii=False))
-        return 1
+            try:
+                record = _process(image_path, args.output_dir, url, api_key, model)
+            except Exception as error:  # noqa: BLE001 - 单帧失败不拖累队列里其余帧
+                detail = str(error).replace(api_key, "[已隐藏 API Key]") if api_key else str(error)
+                record = {"name": image_path.name, "error": detail[:600]}
+            jsonl.write(json.dumps(record, ensure_ascii=False) + "\n")
+            jsonl.flush()
+            if "error" not in record:
+                images.append(record)
     model_digest = hashlib.sha256(model.encode("utf-8")).hexdigest()
     payload = {
         "model": {"default_model": model, "display_name": model, "engine": "remote-vision-polygon-mask",
@@ -242,7 +266,6 @@ def main() -> int:
         "elapsed_seconds": round(time.monotonic() - started, 2),
         "interpretation": "GLM 返回的多边形已在本机栅格化为候选掩膜；多边形精度受语言视觉模型限制，所有区域都需要人工核对，不代表积水深度或面积。",
     }
-    args.output_dir.mkdir(parents=True, exist_ok=True)
     (args.output_dir / "results.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(payload, ensure_ascii=False))
     return 0

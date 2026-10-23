@@ -72,12 +72,26 @@ def masks_and_confidence(result, width: int, height: int) -> tuple[np.ndarray, n
     return water, confidence, instance_count
 
 
+def _collect_images(args: argparse.Namespace) -> list[Path]:
+    if args.manifest is not None:
+        entries = json.loads(args.manifest.read_text(encoding="utf-8"))
+        if not isinstance(entries, list) or any(not isinstance(entry, str) for entry in entries):
+            raise ValueError("manifest 必须是图片路径字符串数组。")
+        return [Path(entry) for entry in entries]
+    return sorted(path for path in args.input_dir.iterdir()
+                  if path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--weights", type=Path, required=True)
-    parser.add_argument("--input-dir", type=Path, required=True)
+    parser.add_argument("--input-dir", type=Path)
+    parser.add_argument("--manifest", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
+    if args.manifest is None and args.input_dir is None:
+        print(json.dumps({"error": "需要 --manifest 或 --input-dir 之一。"}, ensure_ascii=False))
+        return 2
     started = time.perf_counter()
     try:
         if not args.weights.is_file():
@@ -85,52 +99,57 @@ def main() -> int:
         model = YOLO(str(args.weights))
         model_sha256 = sha256_file(args.weights)
         args.output_dir.mkdir(parents=True, exist_ok=True)
-        images = sorted(path for path in args.input_dir.iterdir()
-                        if path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES)
+        images = _collect_images(args)
         if not images:
             raise ValueError("输入目录没有可识别的图像文件")
 
         results = []
-        for path in images:
-            bgr = load_bgr(path)
-            height, width = bgr.shape[:2]
-            prediction = model.predict(
-                source=bgr,
-                imgsz=IMAGE_SIZE,
-                conf=CONFIDENCE_THRESHOLD,
-                retina_masks=True,
-                verbose=False,
-            )[0]
-            water, confidence, instance_count = masks_and_confidence(prediction, width, height)
-            suspected_pixels = int(water.sum())
-            count, labels = cv2.connectedComponents(water.astype(np.uint8), connectivity=8)
-            patch_area_pixels = [int(area) for area in sorted(np.bincount(labels.ravel())[1:], reverse=True)[:10]]
+        # 逐张追加 results.jsonl：调用方按帧读取进度，单帧失败只写错误行，不中断整批。
+        with (args.output_dir / "results.jsonl").open("a", encoding="utf-8") as jsonl:
+            for path in images:
+                try:
+                    bgr = load_bgr(path)
+                    height, width = bgr.shape[:2]
+                    prediction = model.predict(
+                        source=bgr,
+                        imgsz=IMAGE_SIZE,
+                        conf=CONFIDENCE_THRESHOLD,
+                        retina_masks=True,
+                        verbose=False,
+                    )[0]
+                    water, confidence, instance_count = masks_and_confidence(prediction, width, height)
+                    suspected_pixels = int(water.sum())
+                    count, labels = cv2.connectedComponents(water.astype(np.uint8), connectivity=8)
+                    patch_area_pixels = [int(area) for area in sorted(np.bincount(labels.ravel())[1:], reverse=True)[:10]]
 
-            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            overlay = rgb.copy()
-            overlay[water] = (30, 110, 255)
-            blended = cv2.addWeighted(rgb, 0.6, overlay, 0.4, 0)
-            stem = path.stem
-            imwrite_unicode(args.output_dir / f"{stem}__suspected.png", np.where(water, 255, 0).astype(np.uint8))
-            imwrite_unicode(args.output_dir / f"{stem}__confidence.png", np.round(confidence * 255).astype(np.uint8))
-            imwrite_unicode(args.output_dir / f"{stem}__overlay.png", cv2.cvtColor(blended, cv2.COLOR_RGB2BGR))
-            results.append({
-                "name": path.name,
-                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-                "width": width,
-                "height": height,
-                "model_input_size": IMAGE_SIZE,
-                "suspected_pixels": suspected_pixels,
-                "suspected_fraction": suspected_pixels / float(water.size),
-                "suspected_patch_count": max(count - 1, 0),
-                "patch_area_pixels": patch_area_pixels,
-                "mean_confidence_on_suspected": float(confidence[water].mean()) if suspected_pixels else 0.0,
-                "instance_count": instance_count,
-                "overlay": f"{stem}__overlay.png",
-                "suspected_mask": f"{stem}__suspected.png",
-                "confidence_map": f"{stem}__confidence.png",
-            })
-
+                    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+                    overlay = rgb.copy()
+                    overlay[water] = (30, 110, 255)
+                    blended = cv2.addWeighted(rgb, 0.6, overlay, 0.4, 0)
+                    stem = path.stem
+                    imwrite_unicode(args.output_dir / f"{stem}__suspected.png", np.where(water, 255, 0).astype(np.uint8))
+                    imwrite_unicode(args.output_dir / f"{stem}__confidence.png", np.round(confidence * 255).astype(np.uint8))
+                    imwrite_unicode(args.output_dir / f"{stem}__overlay.png", cv2.cvtColor(blended, cv2.COLOR_RGB2BGR))
+                    results.append({
+                        "name": path.name,
+                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                        "width": width,
+                        "height": height,
+                        "model_input_size": IMAGE_SIZE,
+                        "suspected_pixels": suspected_pixels,
+                        "suspected_fraction": suspected_pixels / float(water.size),
+                        "suspected_patch_count": max(count - 1, 0),
+                        "patch_area_pixels": patch_area_pixels,
+                        "mean_confidence_on_suspected": float(confidence[water].mean()) if suspected_pixels else 0.0,
+                        "instance_count": instance_count,
+                        "overlay": f"{stem}__overlay.png",
+                        "suspected_mask": f"{stem}__suspected.png",
+                        "confidence_map": f"{stem}__confidence.png",
+                    })
+                except Exception as error:  # noqa: BLE001 - 单帧失败不拖累队列里其余帧
+                    results.append({"name": path.name, "error": f"{type(error).__name__}: {error}"[:600]})
+                jsonl.write(json.dumps(results[-1], ensure_ascii=False) + "\n")
+                jsonl.flush()
         payload = {
             "model": {
                 "default_model": args.weights.name,
@@ -143,7 +162,7 @@ def main() -> int:
                 "confidence_threshold": CONFIDENCE_THRESHOLD,
                 "model_sha256": model_sha256,
             },
-            "images": results,
+            "images": [item for item in results if "error" not in item],
             "elapsed_seconds": round(time.perf_counter() - started, 2),
             "interpretation": INTERPRETATION,
         }

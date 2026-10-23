@@ -84,12 +84,25 @@ def prepare(image: np.ndarray, size: int, normalize: str) -> np.ndarray:
     return tensor.transpose(2, 0, 1)[None, ...]
 
 
+def _collect_images(args: argparse.Namespace) -> list[Path]:
+    if args.manifest is not None:
+        entries = json.loads(args.manifest.read_text(encoding="utf-8"))
+        if not isinstance(entries, list) or any(not isinstance(entry, str) for entry in entries):
+            raise ValueError("manifest 必须是图片路径字符串数组。")
+        return [Path(entry) for entry in entries]
+    return sorted(path for path in args.input_dir.iterdir() if path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-dir", type=Path, required=True)
-    parser.add_argument("--input-dir", type=Path, required=True)
+    parser.add_argument("--input-dir", type=Path)
+    parser.add_argument("--manifest", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
+    if args.manifest is None and args.input_dir is None:
+        print(json.dumps({"error": "需要 --manifest 或 --input-dir 之一。"}, ensure_ascii=False))
+        return 2
     started = time.perf_counter()
     try:
         registry = load_registry(args.model_dir)
@@ -98,56 +111,23 @@ def main() -> int:
         water_class = int(registry["water_class"])
         size = int(registry["input_size"])
         args.output_dir.mkdir(parents=True, exist_ok=True)
-        images = sorted(path for path in args.input_dir.iterdir() if path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES)
+        images = _collect_images(args)
         if not images:
             raise ValueError("输入目录没有可识别的图像文件")
         results = []
-        for path in images:
-            raw = path.read_bytes()
-            decoded = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
-            if decoded is None:
-                raise ValueError(f"无法解码图像：{path.name}")
-            rgb = cv2.cvtColor(decoded, cv2.COLOR_BGR2RGB)
-            height, width = rgb.shape[:2]
-            logits = session.run(["logits"], {input_name: prepare(rgb, size, registry["normalize"])})[0]
-            probabilities = class_probabilities(logits)
-            prediction = np.argmax(logits[0], axis=0).astype(np.uint8)
-            confidence = (probabilities[water_class] * 255).round().astype(np.uint8)
-            suspected = (prediction == water_class)
-            # Model outputs are model-input sized; scale back to the photo size for display.
-            prediction_full = cv2.resize(prediction, (width, height), interpolation=cv2.INTER_NEAREST)
-            confidence_full = cv2.resize(confidence, (width, height), interpolation=cv2.INTER_NEAREST)
-            suspected_full = prediction_full == water_class
-            # Report pixel stats at photo resolution so downstream area math (GSD) is meaningful.
-            suspected_pixels = int(suspected_full.sum())
-            count, labels = cv2.connectedComponents(suspected_full.astype(np.uint8), connectivity=8)
-            patch_area_pixels = [int(area) for area in sorted(np.bincount(labels.ravel())[1:], reverse=True)[:10]]
-            stem = path.stem
-            imwrite_unicode(args.output_dir / f"{stem}__classes.png", prediction_full)
-            imwrite_unicode(args.output_dir / f"{stem}__suspected.png", np.where(suspected_full, 255, 0).astype(np.uint8))
-            imwrite_unicode(args.output_dir / f"{stem}__confidence.png", confidence_full)
-            overlay = rgb.copy()
-            overlay[suspected_full] = (30, 110, 255)
-            blended = cv2.addWeighted(rgb, 0.6, overlay, 0.4, 0)
-            imwrite_unicode(args.output_dir / f"{stem}__overlay.png", cv2.cvtColor(blended, cv2.COLOR_RGB2BGR))
-            results.append({
-                "name": path.name,
-                "sha256": sha256_bytes(raw),
-                "width": width,
-                "height": height,
-                "model_input_size": size,
-                "suspected_pixels": suspected_pixels,
-                "suspected_fraction": suspected_pixels / float(suspected_full.size),
-                "suspected_patch_count": max(count - 1, 0),
-                "patch_area_pixels": patch_area_pixels,
-                "mean_confidence_on_suspected": float(confidence[suspected].mean()) / 255.0 if suspected_pixels else 0.0,
-                "overlay": f"{stem}__overlay.png",
-                "suspected_mask": f"{stem}__suspected.png",
-                "confidence_map": f"{stem}__confidence.png",
-            })
+        # 逐张追加 results.jsonl：调用方按帧读取进度，单帧失败只写错误行，不中断整批。
+        with (args.output_dir / "results.jsonl").open("a", encoding="utf-8") as jsonl:
+            for path in images:
+                try:
+                    record = _predict_one(path, session, input_name, registry, water_class, size, args.output_dir)
+                except Exception as error:  # noqa: BLE001 - 单帧失败不拖累队列里其余帧
+                    record = {"name": path.name, "error": f"{type(error).__name__}: {error}"[:600]}
+                results.append(record)
+                jsonl.write(json.dumps(record, ensure_ascii=False) + "\n")
+                jsonl.flush()
         payload = {
             "model": {key: registry[key] for key in ("default_model", "task", "water_class", "input_size", "normalize", "model_sha256")},
-            "images": results,
+            "images": [item for item in results if "error" not in item],
             "elapsed_seconds": round(time.perf_counter() - started, 2),
             "interpretation": INTERPRETATION,
         }
@@ -157,6 +137,52 @@ def main() -> int:
     except Exception as error:  # noqa: BLE001 - the caller only parses stdout JSON
         print(json.dumps({"error": f"{type(error).__name__}: {error}"}, ensure_ascii=False))
         return 1
+
+
+def _predict_one(path: Path, session: "ort.InferenceSession", input_name: str, registry: dict,
+                 water_class: int, size: int, output_dir: Path) -> dict:
+    raw = path.read_bytes()
+    decoded = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if decoded is None:
+        raise ValueError(f"无法解码图像：{path.name}")
+    rgb = cv2.cvtColor(decoded, cv2.COLOR_BGR2RGB)
+    height, width = rgb.shape[:2]
+    logits = session.run(["logits"], {input_name: prepare(rgb, size, registry["normalize"])})[0]
+    probabilities = class_probabilities(logits)
+    prediction = np.argmax(logits[0], axis=0).astype(np.uint8)
+    confidence = (probabilities[water_class] * 255).round().astype(np.uint8)
+    suspected = (prediction == water_class)
+    # Model outputs are model-input sized; scale back to the photo size for display.
+    prediction_full = cv2.resize(prediction, (width, height), interpolation=cv2.INTER_NEAREST)
+    confidence_full = cv2.resize(confidence, (width, height), interpolation=cv2.INTER_NEAREST)
+    suspected_full = prediction_full == water_class
+    # Report pixel stats at photo resolution so downstream area math (GSD) is meaningful.
+    suspected_pixels = int(suspected_full.sum())
+    count, labels = cv2.connectedComponents(suspected_full.astype(np.uint8), connectivity=8)
+    patch_area_pixels = [int(area) for area in sorted(np.bincount(labels.ravel())[1:], reverse=True)[:10]]
+    stem = path.stem
+    imwrite_unicode(output_dir / f"{stem}__classes.png", prediction_full)
+    imwrite_unicode(output_dir / f"{stem}__suspected.png", np.where(suspected_full, 255, 0).astype(np.uint8))
+    imwrite_unicode(output_dir / f"{stem}__confidence.png", confidence_full)
+    overlay = rgb.copy()
+    overlay[suspected_full] = (30, 110, 255)
+    blended = cv2.addWeighted(rgb, 0.6, overlay, 0.4, 0)
+    imwrite_unicode(output_dir / f"{stem}__overlay.png", cv2.cvtColor(blended, cv2.COLOR_RGB2BGR))
+    return {
+        "name": path.name,
+        "sha256": sha256_bytes(raw),
+        "width": width,
+        "height": height,
+        "model_input_size": size,
+        "suspected_pixels": suspected_pixels,
+        "suspected_fraction": suspected_pixels / float(suspected_full.size),
+        "suspected_patch_count": max(count - 1, 0),
+        "patch_area_pixels": patch_area_pixels,
+        "mean_confidence_on_suspected": float(confidence[suspected].mean()) / 255.0 if suspected_pixels else 0.0,
+        "overlay": f"{stem}__overlay.png",
+        "suspected_mask": f"{stem}__suspected.png",
+        "confidence_map": f"{stem}__confidence.png",
+    }
 
 
 if __name__ == "__main__":
