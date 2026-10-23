@@ -66,21 +66,7 @@ const srtCounts = ref<Record<string, number>>({})
 const playSpeed = ref(1)
 const previewVideo = ref<HTMLVideoElement | null>(null)
 const previewUrl = ref('')
-const mapRect = ref<{ top: number; left: number; width: number } | null>(null)
 let previewUrlObject = ''
-
-const dockStyle = computed(() => {
-  const rect = mapRect.value
-  if (!rect) return {}
-  return { top: `${rect.top + 8}px`, left: `${rect.left + 8}px`, maxWidth: `${Math.max(520, rect.width - 16)}px` }
-})
-
-function updateMapRect() {
-  const region = document.querySelector('[aria-label="航线地图"]') as HTMLElement | null
-  if (!region) return
-  const rect = region.getBoundingClientRect()
-  mapRect.value = { top: rect.top, left: rect.left, width: rect.width }
-}
 
 const canCaptureFrame = computed(() => Boolean(survey.value && currentPosition.value && videoElement.value?.videoWidth
   && props.frameCount < 30 && !capturingFrame.value))
@@ -144,15 +130,9 @@ async function importVideo(video: File, srt: File) {
   }
 }
 
-function chooseVideoFolder() {
-  updateMapRect()
-  folderInput.value?.click()
-}
+function chooseVideoFolder() { folderInput.value?.click() }
 
-function openLibraryBrowser() {
-  updateMapRect()
-  libraryOpen.value = true
-}
+function openLibraryBrowser() { libraryOpen.value = true }
 
 function onFolderPicked(event: Event) {
   const input = event.target as HTMLInputElement
@@ -347,11 +327,9 @@ async function restoreTaskSurvey(taskId: string | null) {
 onMounted(() => {
   void restoreTaskSurvey(props.taskId)
   document.addEventListener('keydown', onLibraryKeydown, true)
-  window.addEventListener('resize', updateMapRect)
 })
 onUnmounted(() => {
   document.removeEventListener('keydown', onLibraryKeydown, true)
-  window.removeEventListener('resize', updateMapRect)
   if (previewUrlObject) URL.revokeObjectURL(previewUrlObject)
 })
 watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
@@ -458,7 +436,7 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
     </div>
 
     <Teleport to="body">
-      <div v-if="libraryOpen" class="video-library-dock" :style="dockStyle">
+      <div v-if="libraryOpen" class="video-library-page">
         <nav class="video-library-crumbs" aria-label="浏览位置">
           <button type="button" @click="closeLibrary">地图</button>
           <span aria-hidden="true">›</span>
@@ -471,31 +449,57 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
           <button type="button" class="video-library-close" @click="closeLibrary">关闭</button>
         </nav>
 
-        <div v-if="!previewGroup" class="video-library-strip">
-          <p v-if="!libraryGroups.length" class="video-library-empty">
-            此文件夹没有视频组。视频需与 SRT / LRF 同名成组；单独的 JPG 属于图片，不会显示。
-          </p>
-          <button
-            v-for="group in libraryGroups"
-            v-else
-            :key="group.key"
-            type="button"
-            class="video-library-card"
-            :class="{ 'is-selected': selectedGroup?.key === group.key }"
-            @click="selectedGroup = group"
-            @dblclick="openPreview(group)"
-          >
-            <span class="video-library-thumb">
-              <img v-if="thumbnails[group.key]" :src="thumbnails[group.key]" alt="" loading="lazy" />
-              <span v-else class="video-library-thumb-loading" aria-hidden="true">…</span>
-              <span class="video-library-badges">
-                <i :class="group.srt ? 'is-has' : 'is-miss'">{{ group.srt ? 'SRT' : '无 SRT' }}</i>
-                <i v-if="group.lrf" class="is-has">LRF</i>
-              </span>
-            </span>
-            <strong :title="group.video.name">{{ group.basename }}</strong>
-            <small>{{ formatBytes(group.video.size) }} · {{ group.startAt ? formatClock(group.startAt) : '开始未知' }} – {{ formatClock(group.endAt) }}</small>
-          </button>
+        <div v-if="!previewGroup" class="video-library-body">
+          <div class="video-library-main">
+            <p v-if="!libraryGroups.length" class="video-library-empty">
+              此文件夹没有视频组。视频需与 SRT / LRF 同名成组；单独的 JPG 属于图片，不会显示。
+            </p>
+            <div v-else class="video-library-grid">
+              <button
+                v-for="group in libraryGroups"
+                :key="group.key"
+                type="button"
+                class="video-library-card"
+                :class="{ 'is-selected': selectedGroup?.key === group.key }"
+                @click="selectedGroup = group"
+                @dblclick="openPreview(group)"
+              >
+                <span class="video-library-thumb">
+                  <img v-if="thumbnails[group.key]" :src="thumbnails[group.key]" alt="" loading="lazy" />
+                  <span v-else class="video-library-thumb-loading" aria-hidden="true">…</span>
+                  <span class="video-library-badges">
+                    <i :class="group.srt ? 'is-has' : 'is-miss'">{{ group.srt ? 'SRT' : '无 SRT' }}</i>
+                    <i v-if="group.lrf" class="is-has">LRF</i>
+                  </span>
+                </span>
+                <strong :title="group.video.name">{{ group.basename }}</strong>
+                <small>{{ formatBytes(group.video.size) }} · {{ group.startAt ? formatClock(group.startAt) : '开始未知' }} – {{ formatClock(group.endAt) }}</small>
+              </button>
+            </div>
+          </div>
+          <aside v-if="selectedGroup" class="video-library-properties" aria-label="文件属性">
+            <strong class="video-library-properties-title" :title="selectedGroup.video.name">{{ selectedGroup.video.name }}</strong>
+            <dl>
+              <dt>开始录制</dt>
+              <dd>{{ selectedGroup.startAt ? formatDateTime(selectedGroup.startAt) : '未知（文件名未含时间）' }}</dd>
+              <dt>结束（修改时间）</dt>
+              <dd>{{ formatDateTime(selectedGroup.endAt) }}</dd>
+              <dt>录制时长</dt>
+              <dd>{{ formatDurationBetween(selectedGroup.startAt, selectedGroup.endAt) }}</dd>
+              <dt>视频</dt>
+              <dd>{{ formatBytes(selectedGroup.video.size) }}</dd>
+              <dt>SRT 字幕</dt>
+              <dd>
+                {{ selectedGroup.srt ? formatBytes(selectedGroup.srt.size) : '无' }}
+                <template v-if="selectedGroup.srt">
+                  · {{ srtCounts[selectedGroup.key] !== undefined ? `${srtCounts[selectedGroup.key]} 个定位点` : '定位点读取中…' }}
+                </template>
+              </dd>
+              <dt>LRF 代理</dt>
+              <dd>{{ selectedGroup.lrf ? formatBytes(selectedGroup.lrf.size) : '无' }}</dd>
+            </dl>
+            <button type="button" class="video-library-properties-open" @click="openPreview(selectedGroup)">打开预览</button>
+          </aside>
         </div>
 
         <div v-else class="video-library-preview">
@@ -523,32 +527,6 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
             </button>
           </div>
         </div>
-
-        <p v-if="error" class="video-library-error" role="alert">{{ error }}</p>
-
-        <aside v-if="selectedGroup && !previewGroup" class="video-library-properties" aria-label="文件属性">
-          <strong class="video-library-properties-title" :title="selectedGroup.video.name">{{ selectedGroup.video.name }}</strong>
-          <dl>
-            <dt>开始录制</dt>
-            <dd>{{ selectedGroup.startAt ? formatDateTime(selectedGroup.startAt) : '未知（文件名未含时间）' }}</dd>
-            <dt>结束（修改时间）</dt>
-            <dd>{{ formatDateTime(selectedGroup.endAt) }}</dd>
-            <dt>录制时长</dt>
-            <dd>{{ formatDurationBetween(selectedGroup.startAt, selectedGroup.endAt) }}</dd>
-            <dt>视频</dt>
-            <dd>{{ formatBytes(selectedGroup.video.size) }}</dd>
-            <dt>SRT 字幕</dt>
-            <dd>
-              {{ selectedGroup.srt ? formatBytes(selectedGroup.srt.size) : '无' }}
-              <template v-if="selectedGroup.srt">
-                · {{ srtCounts[selectedGroup.key] !== undefined ? `${srtCounts[selectedGroup.key]} 个定位点` : '定位点读取中…' }}
-              </template>
-            </dd>
-            <dt>LRF 代理</dt>
-            <dd>{{ selectedGroup.lrf ? formatBytes(selectedGroup.lrf.size) : '无' }}</dd>
-          </dl>
-          <button type="button" class="video-library-properties-open" @click="openPreview(selectedGroup)">打开预览</button>
-        </aside>
       </div>
     </Teleport>
   </section>
@@ -608,44 +586,44 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
 .video-survey-footnote { display: block; margin-top: 8px; color: var(--ui-muted); line-height: 1.4; }
 .video-survey-input { display: none; }
 
-.video-library-dock { position: fixed; z-index: 6000; display: flex; width: fit-content; max-width: 100%; flex-direction: column; gap: 8px; pointer-events: none; }
-.video-library-dock > * { pointer-events: auto; max-width: 100%; }
-.video-library-crumbs { display: flex; min-width: 0; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid rgb(215 223 232 / .9); border-radius: 10px; background: rgb(255 255 255 / .95); box-shadow: 0 8px 24px rgb(15 23 42 / .16); font-size: 13px; }
-.video-library-crumbs > button { min-height: 28px; padding: 4px 12px; border: 1px solid transparent; border-radius: 14px; background: transparent; color: #34506c; font-size: 13px; cursor: pointer; }
+.video-library-page { position: fixed; z-index: 6000; inset: 0; display: flex; flex-direction: column; background: #f4f7fa; }
+.video-library-crumbs { display: flex; min-width: 0; align-items: center; gap: 8px; padding: 10px 18px; border-bottom: 1px solid var(--ui-line); background: #fff; font-size: 13px; }
+.video-library-crumbs > button { min-height: 30px; padding: 4px 14px; border: 1px solid transparent; border-radius: 15px; background: transparent; color: #34506c; font-size: 13px; cursor: pointer; }
 .video-library-crumbs > button:hover:not(:disabled) { border-color: #d7dfe8; background: #f3f7fb; }
 .video-library-crumbs > button:disabled { opacity: .9; cursor: default; }
-.video-library-crumb-current { min-width: 0; overflow: hidden; padding: 4px 12px; border-radius: 14px; background: #eff6ff; color: var(--ui-accent); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.video-library-crumb-current { min-width: 0; overflow: hidden; padding: 4px 14px; border-radius: 15px; background: #eff6ff; color: var(--ui-accent); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .video-library-spacer { flex: 1; }
-.video-library-close { min-height: 28px; padding: 4px 12px; border: 1px solid #d7dfe8; border-radius: 6px; background: #fff; color: #34506c; font-size: 12px; cursor: pointer; }
+.video-library-close { min-height: 30px; padding: 4px 14px; border: 1px solid #d7dfe8; border-radius: 6px; background: #fff; color: #34506c; font-size: 12px; cursor: pointer; }
 .video-library-close:hover { border-color: var(--ui-accent); background: #eff6ff; color: var(--ui-accent); }
-.video-library-strip { display: flex; gap: 10px; overflow-x: auto; padding: 10px; border: 1px solid rgb(215 223 232 / .9); border-radius: 10px; background: rgb(255 255 255 / .95); box-shadow: 0 8px 24px rgb(15 23 42 / .16); }
-.video-library-card { display: grid; flex: 0 0 190px; gap: 5px; padding: 7px; border: 1px solid var(--ui-line); border-radius: 9px; background: #fff; text-align: left; cursor: pointer; }
+.video-library-body { display: flex; min-height: 0; flex: 1; }
+.video-library-main { display: flex; min-width: 0; flex: 1; flex-direction: column; }
+.video-library-grid { display: grid; flex: 1; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; align-content: start; overflow-y: auto; padding: 18px 20px; }
+.video-library-card { display: grid; gap: 6px; padding: 9px; border: 1px solid var(--ui-line); border-radius: 10px; background: #fff; text-align: left; cursor: pointer; }
 .video-library-card:hover { border-color: #b9d4ef; background: #f6fafd; }
 .video-library-card.is-selected { border-color: var(--ui-accent); background: #eff6ff; box-shadow: 0 0 0 1px var(--ui-accent); }
 .video-library-card strong { overflow: hidden; color: #27364a; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .video-library-card small { color: var(--ui-muted); font-size: 10px; }
-.video-library-thumb { position: relative; display: block; aspect-ratio: 16 / 9; overflow: hidden; border-radius: 6px; background: #10151d; }
+.video-library-thumb { position: relative; display: block; aspect-ratio: 16 / 9; overflow: hidden; border-radius: 7px; background: #10151d; }
 .video-library-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .video-library-thumb-loading { position: absolute; inset: 0; display: grid; place-items: center; color: #64748b; font-size: 14px; }
-.video-library-badges { position: absolute; right: 5px; bottom: 5px; display: flex; gap: 4px; }
+.video-library-badges { position: absolute; right: 6px; bottom: 6px; display: flex; gap: 4px; }
 .video-library-badges i { padding: 2px 6px; border-radius: 4px; font-size: 10px; font-style: normal; }
 .video-library-badges .is-has { background: rgb(22 121 76 / .88); color: #fff; }
 .video-library-badges .is-miss { background: rgb(154 91 19 / .9); color: #fff; }
-.video-library-empty { margin: 6px 4px; color: var(--ui-muted); font-size: 12px; line-height: 1.5; }
-.video-library-error { margin: 0; padding: 8px 12px; border: 1px solid #fecaca; border-radius: 8px; background: rgb(255 255 255 / .95); color: #a4262c; font-size: 11px; overflow-wrap: anywhere; }
-.video-library-properties { display: flex; width: min(320px, 100%); flex-direction: column; gap: 10px; align-self: flex-end; overflow-y: auto; max-height: min(430px, 60vh); padding: 12px 14px; border: 1px solid rgb(215 223 232 / .9); border-radius: 10px; background: rgb(249 250 251 / .97); box-shadow: 0 8px 24px rgb(15 23 42 / .16); }
+.video-library-empty { margin: 40px auto; color: var(--ui-muted); font-size: 13px; line-height: 1.6; }
+.video-library-properties { display: flex; width: 320px; flex: 0 0 auto; flex-direction: column; gap: 10px; overflow-y: auto; padding: 16px 18px; border-left: 1px solid var(--ui-line); background: #fff; }
 .video-library-properties-title { overflow: hidden; color: #27364a; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.video-library-properties dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; margin: 0; font-size: 12px; }
+.video-library-properties dl { display: grid; grid-template-columns: auto 1fr; gap: 7px 10px; margin: 0; font-size: 12px; }
 .video-library-properties dt { color: var(--ui-muted); white-space: nowrap; }
 .video-library-properties dd { margin: 0; color: #27364a; overflow-wrap: anywhere; }
-.video-library-properties-open { margin-top: auto; min-height: 32px; border: 1px solid var(--ui-accent); border-radius: 7px; background: var(--ui-accent); color: #fff; font-size: 12px; cursor: pointer; }
+.video-library-properties-open { margin-top: auto; min-height: 34px; border: 1px solid var(--ui-accent); border-radius: 7px; background: var(--ui-accent); color: #fff; font-size: 12px; cursor: pointer; }
 .video-library-properties-open:hover { background: var(--ui-accent-hover); }
-.video-library-preview { display: flex; flex-direction: column; overflow: hidden; border: 1px solid rgb(215 223 232 / .9); border-radius: 10px; background: #0b0f16; box-shadow: 0 8px 24px rgb(15 23 42 / .16); }
-.video-library-player { display: block; width: 100%; max-height: 56vh; background: #0b0f16; }
-.video-library-preview-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px; background: #fff; }
+.video-library-preview { display: flex; min-height: 0; flex: 1; flex-direction: column; }
+.video-library-player { display: block; width: 100%; flex: 1; min-height: 0; background: #0b0f16; }
+.video-library-preview-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 18px; border-top: 1px solid var(--ui-line); background: #fff; }
 .video-library-speed { display: flex; align-items: center; gap: 7px; color: var(--ui-muted); font-size: 12px; }
 .video-library-preview-meta { display: flex; min-width: 0; flex: 1; flex-wrap: wrap; gap: 4px 14px; color: var(--ui-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
-.video-library-import { min-height: 32px; padding: 5px 14px; border: 1px solid var(--ui-accent); border-radius: 7px; background: var(--ui-accent); color: #fff; font-size: 12px; cursor: pointer; }
+.video-library-import { min-height: 34px; padding: 6px 16px; border: 1px solid var(--ui-accent); border-radius: 7px; background: var(--ui-accent); color: #fff; font-size: 12px; cursor: pointer; }
 .video-library-import:hover:not(:disabled) { background: var(--ui-accent-hover); }
 .video-library-import:disabled { opacity: .55; cursor: not-allowed; }
 </style>
