@@ -66,7 +66,21 @@ const srtCounts = ref<Record<string, number>>({})
 const playSpeed = ref(1)
 const previewVideo = ref<HTMLVideoElement | null>(null)
 const previewUrl = ref('')
+const mapRect = ref<{ top: number; left: number; width: number } | null>(null)
 let previewUrlObject = ''
+
+const dockStyle = computed(() => {
+  const rect = mapRect.value
+  if (!rect) return {}
+  return { top: `${rect.top + 8}px`, left: `${rect.left + 8}px`, width: `${Math.max(520, rect.width - 16)}px` }
+})
+
+function updateMapRect() {
+  const region = document.querySelector('[aria-label="航线地图"]') as HTMLElement | null
+  if (!region) return
+  const rect = region.getBoundingClientRect()
+  mapRect.value = { top: rect.top, left: rect.left, width: rect.width }
+}
 
 const canCaptureFrame = computed(() => Boolean(survey.value && currentPosition.value && videoElement.value?.videoWidth
   && props.frameCount < 30 && !capturingFrame.value))
@@ -130,9 +144,15 @@ async function importVideo(video: File, srt: File) {
   }
 }
 
-function chooseVideoFolder() { folderInput.value?.click() }
+function chooseVideoFolder() {
+  updateMapRect()
+  folderInput.value?.click()
+}
 
-function openLibraryBrowser() { libraryOpen.value = true }
+function openLibraryBrowser() {
+  updateMapRect()
+  libraryOpen.value = true
+}
 
 function onFolderPicked(event: Event) {
   const input = event.target as HTMLInputElement
@@ -327,9 +347,11 @@ async function restoreTaskSurvey(taskId: string | null) {
 onMounted(() => {
   void restoreTaskSurvey(props.taskId)
   document.addEventListener('keydown', onLibraryKeydown, true)
+  window.addEventListener('resize', updateMapRect)
 })
 onUnmounted(() => {
   document.removeEventListener('keydown', onLibraryKeydown, true)
+  window.removeEventListener('resize', updateMapRect)
   if (previewUrlObject) URL.revokeObjectURL(previewUrlObject)
 })
 watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
@@ -436,107 +458,97 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
     </div>
 
     <Teleport to="body">
-      <div v-if="libraryOpen" class="video-library-backdrop" @click.self="closeLibrary">
-        <section class="video-library" role="dialog" aria-modal="true" aria-label="视频文件夹浏览">
-          <header class="video-library-nav">
-            <nav class="video-library-crumbs" aria-label="浏览位置">
-              <button type="button" @click="closeLibrary">地图</button>
-              <span aria-hidden="true">›</span>
-              <button type="button" :disabled="!previewGroup" @click="closePreview">{{ libraryFolderName }}</button>
-              <template v-if="previewGroup">
-                <span aria-hidden="true">›</span>
-                <span class="video-library-crumb-current" :title="previewGroup.video.name">{{ previewGroup.video.name }}</span>
+      <div v-if="libraryOpen" class="video-library-dock" :style="dockStyle">
+        <nav class="video-library-crumbs" aria-label="浏览位置">
+          <button type="button" @click="closeLibrary">地图</button>
+          <span aria-hidden="true">›</span>
+          <button type="button" :disabled="!previewGroup" @click="closePreview">{{ libraryFolderName }}</button>
+          <template v-if="previewGroup">
+            <span aria-hidden="true">›</span>
+            <span class="video-library-crumb-current" :title="previewGroup.video.name">{{ previewGroup.video.name }}</span>
+          </template>
+          <span class="video-library-spacer"></span>
+          <button type="button" class="video-library-close" @click="closeLibrary">关闭</button>
+        </nav>
+
+        <div v-if="!previewGroup" class="video-library-strip">
+          <p v-if="!libraryGroups.length" class="video-library-empty">
+            此文件夹没有视频组。视频需与 SRT / LRF 同名成组；单独的 JPG 属于图片，不会显示。
+          </p>
+          <button
+            v-for="group in libraryGroups"
+            v-else
+            :key="group.key"
+            type="button"
+            class="video-library-card"
+            :class="{ 'is-selected': selectedGroup?.key === group.key }"
+            @click="selectedGroup = group"
+            @dblclick="openPreview(group)"
+          >
+            <span class="video-library-thumb">
+              <img v-if="thumbnails[group.key]" :src="thumbnails[group.key]" alt="" loading="lazy" />
+              <span v-else class="video-library-thumb-loading" aria-hidden="true">…</span>
+              <span class="video-library-badges">
+                <i :class="group.srt ? 'is-has' : 'is-miss'">{{ group.srt ? 'SRT' : '无 SRT' }}</i>
+                <i v-if="group.lrf" class="is-has">LRF</i>
+              </span>
+            </span>
+            <strong :title="group.video.name">{{ group.basename }}</strong>
+            <small>{{ formatBytes(group.video.size) }} · {{ group.startAt ? formatClock(group.startAt) : '开始未知' }} – {{ formatClock(group.endAt) }}</small>
+          </button>
+        </div>
+
+        <div v-else class="video-library-preview">
+          <video
+            ref="previewVideo"
+            class="video-library-player"
+            :src="previewUrl"
+            controls
+            playsinline
+            preload="metadata"
+          ></video>
+          <div class="video-library-preview-bar">
+            <label class="video-library-speed">倍速
+              <CustomSelect v-model="playSpeed" :options="[{ value: 0.5, label: '0.5×' }, { value: 1, label: '1×' }, { value: 2, label: '2×' }, { value: 4, label: '4×' }]" aria-label="播放倍速" />
+            </label>
+            <div class="video-library-preview-meta">
+              <span>{{ previewGroup.startAt ? formatDateTime(previewGroup.startAt) : '开始时间未知' }}</span>
+              <span>结束 {{ formatDateTime(previewGroup.endAt) }}</span>
+              <span>{{ formatDurationBetween(previewGroup.startAt, previewGroup.endAt) }}</span>
+              <span v-if="previewGroup.srt">{{ srtCounts[previewGroup.key] !== undefined ? `${srtCounts[previewGroup.key]} 个定位点` : '定位点读取中…' }}</span>
+              <span v-else>无 SRT</span>
+            </div>
+            <button type="button" class="video-library-import" :disabled="!canImportPreview" @click="importPreviewGroup">
+              {{ loading ? '导入中…' : previewImportBlockedReason || '导入到当前任务' }}
+            </button>
+          </div>
+        </div>
+
+        <p v-if="error" class="video-library-error" role="alert">{{ error }}</p>
+
+        <aside v-if="selectedGroup && !previewGroup" class="video-library-properties" aria-label="文件属性">
+          <strong class="video-library-properties-title" :title="selectedGroup.video.name">{{ selectedGroup.video.name }}</strong>
+          <dl>
+            <dt>开始录制</dt>
+            <dd>{{ selectedGroup.startAt ? formatDateTime(selectedGroup.startAt) : '未知（文件名未含时间）' }}</dd>
+            <dt>结束（修改时间）</dt>
+            <dd>{{ formatDateTime(selectedGroup.endAt) }}</dd>
+            <dt>录制时长</dt>
+            <dd>{{ formatDurationBetween(selectedGroup.startAt, selectedGroup.endAt) }}</dd>
+            <dt>视频</dt>
+            <dd>{{ formatBytes(selectedGroup.video.size) }}</dd>
+            <dt>SRT 字幕</dt>
+            <dd>
+              {{ selectedGroup.srt ? formatBytes(selectedGroup.srt.size) : '无' }}
+              <template v-if="selectedGroup.srt">
+                · {{ srtCounts[selectedGroup.key] !== undefined ? `${srtCounts[selectedGroup.key]} 个定位点` : '定位点读取中…' }}
               </template>
-            </nav>
-            <button type="button" class="video-library-close" aria-label="关闭并回到地图" @click="closeLibrary">关闭</button>
-          </header>
-
-          <div v-if="!previewGroup" class="video-library-body">
-            <div class="video-library-main">
-              <p v-if="!libraryGroups.length" class="video-library-empty">
-                此文件夹没有视频组。视频需与 SRT / LRF 同名成组；单独的 JPG 属于图片，不会显示。
-              </p>
-              <div v-else class="video-library-grid" role="listbox" aria-label="视频列表">
-                <button
-                  v-for="group in libraryGroups"
-                  :key="group.key"
-                  type="button"
-                  role="option"
-                  class="video-library-card"
-                  :class="{ 'is-selected': selectedGroup?.key === group.key }"
-                  :aria-selected="selectedGroup?.key === group.key"
-                  @click="selectedGroup = group"
-                  @dblclick="openPreview(group)"
-                >
-                  <span class="video-library-thumb">
-                    <img v-if="thumbnails[group.key]" :src="thumbnails[group.key]" alt="" loading="lazy" />
-                    <span v-else class="video-library-thumb-loading" aria-hidden="true">…</span>
-                    <span class="video-library-badges">
-                      <i :class="group.srt ? 'is-has' : 'is-miss'">{{ group.srt ? 'SRT' : '无 SRT' }}</i>
-                      <i v-if="group.lrf" class="is-has">LRF</i>
-                    </span>
-                  </span>
-                  <strong :title="group.video.name">{{ group.basename }}</strong>
-                  <small>{{ formatBytes(group.video.size) }} · {{ group.startAt ? formatClock(group.startAt) : '开始未知' }} – {{ formatClock(group.endAt) }}</small>
-                </button>
-              </div>
-              <small class="video-library-hint">单击查看属性 · 双击打开预览 · Esc 逐级返回</small>
-            </div>
-
-            <aside v-if="selectedGroup" class="video-library-properties" aria-label="文件属性">
-              <strong class="video-library-properties-title" :title="selectedGroup.video.name">{{ selectedGroup.video.name }}</strong>
-              <dl>
-                <dt>开始录制</dt>
-                <dd>{{ selectedGroup.startAt ? formatDateTime(selectedGroup.startAt) : '未知（文件名未含时间）' }}</dd>
-                <dt>结束（修改时间）</dt>
-                <dd>{{ formatDateTime(selectedGroup.endAt) }}</dd>
-                <dt>录制时长</dt>
-                <dd>{{ formatDurationBetween(selectedGroup.startAt, selectedGroup.endAt) }}</dd>
-                <dt>视频</dt>
-                <dd>{{ formatBytes(selectedGroup.video.size) }}</dd>
-                <dt>SRT 字幕</dt>
-                <dd>
-                  {{ selectedGroup.srt ? formatBytes(selectedGroup.srt.size) : '无' }}
-                  <template v-if="selectedGroup.srt">
-                    · {{ srtCounts[selectedGroup.key] !== undefined ? `${srtCounts[selectedGroup.key]} 个定位点` : '定位点读取中…' }}
-                  </template>
-                </dd>
-                <dt>LRF 代理</dt>
-                <dd>{{ selectedGroup.lrf ? formatBytes(selectedGroup.lrf.size) : '无' }}</dd>
-              </dl>
-              <button type="button" class="video-library-properties-open" @click="openPreview(selectedGroup)">打开预览</button>
-            </aside>
-          </div>
-
-          <div v-else class="video-library-preview">
-            <video
-              ref="previewVideo"
-              class="video-library-player"
-              :src="previewUrl"
-              controls
-              playsinline
-              preload="metadata"
-            ></video>
-            <div class="video-library-preview-bar">
-              <label class="video-library-speed">倍速
-                <CustomSelect v-model="playSpeed" :options="[{ value: 0.5, label: '0.5×' }, { value: 1, label: '1×' }, { value: 2, label: '2×' }, { value: 4, label: '4×' }]" aria-label="播放倍速" />
-              </label>
-              <div class="video-library-preview-meta">
-                <span>{{ previewGroup.startAt ? formatDateTime(previewGroup.startAt) : '开始时间未知' }}</span>
-                <span>结束 {{ formatDateTime(previewGroup.endAt) }}</span>
-                <span>{{ formatDurationBetween(previewGroup.startAt, previewGroup.endAt) }}</span>
-                <span v-if="previewGroup.srt">{{ srtCounts[previewGroup.key] !== undefined ? `${srtCounts[previewGroup.key]} 个定位点` : '定位点读取中…' }}</span>
-                <span v-else>无 SRT</span>
-              </div>
-              <div class="video-library-preview-actions">
-                <p v-if="error" class="video-library-preview-error" role="alert">{{ error }}</p>
-                <button type="button" class="video-library-import" :disabled="!canImportPreview" @click="importPreviewGroup">
-                  {{ loading ? '导入中…' : previewImportBlockedReason || '导入到当前任务' }}
-                </button>
-              </div>
-            </div>
-          </div>
-        </section>
+            </dd>
+            <dt>LRF 代理</dt>
+            <dd>{{ selectedGroup.lrf ? formatBytes(selectedGroup.lrf.size) : '无' }}</dd>
+          </dl>
+          <button type="button" class="video-library-properties-open" @click="openPreview(selectedGroup)">打开预览</button>
+        </aside>
       </div>
     </Teleport>
   </section>
@@ -596,20 +608,18 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
 .video-survey-footnote { display: block; margin-top: 8px; color: var(--ui-muted); line-height: 1.4; }
 .video-survey-input { display: none; }
 
-.video-library-backdrop { position: fixed; z-index: 10000; inset: 0; display: flex; padding: 22px; background: rgb(15 23 42 / .58); }
-.video-library { display: flex; width: min(1180px, 96vw); max-height: 90vh; flex: 1; flex-direction: column; overflow: hidden; align-self: center; border: 1px solid var(--ui-line); border-radius: 12px; background: #fff; color: #27364a; box-shadow: 0 18px 48px rgb(15 23 42 / .3); }
-.video-library-nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--ui-line); }
-.video-library-crumbs { display: flex; min-width: 0; align-items: center; gap: 8px; font-size: 13px; }
+.video-library-dock { position: fixed; z-index: 6000; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+.video-library-dock > * { pointer-events: auto; }
+.video-library-crumbs { display: flex; min-width: 0; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid rgb(215 223 232 / .9); border-radius: 10px; background: rgb(255 255 255 / .95); box-shadow: 0 8px 24px rgb(15 23 42 / .16); font-size: 13px; }
 .video-library-crumbs > button { min-height: 28px; padding: 4px 12px; border: 1px solid transparent; border-radius: 14px; background: transparent; color: #34506c; font-size: 13px; cursor: pointer; }
 .video-library-crumbs > button:hover:not(:disabled) { border-color: #d7dfe8; background: #f3f7fb; }
 .video-library-crumbs > button:disabled { opacity: .9; cursor: default; }
 .video-library-crumb-current { min-width: 0; overflow: hidden; padding: 4px 12px; border-radius: 14px; background: #eff6ff; color: var(--ui-accent); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.video-library-close { min-height: 30px; padding: 5px 12px; border: 1px solid #d7dfe8; border-radius: 6px; background: #fff; color: #34506c; font-size: 12px; cursor: pointer; }
+.video-library-spacer { flex: 1; }
+.video-library-close { min-height: 28px; padding: 4px 12px; border: 1px solid #d7dfe8; border-radius: 6px; background: #fff; color: #34506c; font-size: 12px; cursor: pointer; }
 .video-library-close:hover { border-color: var(--ui-accent); background: #eff6ff; color: var(--ui-accent); }
-.video-library-body { display: flex; min-height: 0; flex: 1; }
-.video-library-main { display: flex; min-width: 0; flex: 1; flex-direction: column; }
-.video-library-grid { display: grid; flex: 1; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; align-content: start; overflow-y: auto; padding: 14px 16px; }
-.video-library-card { display: grid; gap: 5px; padding: 8px; border: 1px solid var(--ui-line); border-radius: 9px; background: #fff; text-align: left; cursor: pointer; }
+.video-library-strip { display: flex; gap: 10px; overflow-x: auto; padding: 10px; border: 1px solid rgb(215 223 232 / .9); border-radius: 10px; background: rgb(255 255 255 / .95); box-shadow: 0 8px 24px rgb(15 23 42 / .16); }
+.video-library-card { display: grid; flex: 0 0 190px; gap: 5px; padding: 7px; border: 1px solid var(--ui-line); border-radius: 9px; background: #fff; text-align: left; cursor: pointer; }
 .video-library-card:hover { border-color: #b9d4ef; background: #f6fafd; }
 .video-library-card.is-selected { border-color: var(--ui-accent); background: #eff6ff; box-shadow: 0 0 0 1px var(--ui-accent); }
 .video-library-card strong { overflow: hidden; color: #27364a; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
@@ -621,23 +631,21 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
 .video-library-badges i { padding: 2px 6px; border-radius: 4px; font-size: 10px; font-style: normal; }
 .video-library-badges .is-has { background: rgb(22 121 76 / .88); color: #fff; }
 .video-library-badges .is-miss { background: rgb(154 91 19 / .9); color: #fff; }
-.video-library-empty { margin: 30px 16px; color: var(--ui-muted); font-size: 13px; line-height: 1.6; }
-.video-library-hint { padding: 8px 16px 12px; border-top: 1px solid var(--ui-line); color: var(--ui-muted); font-size: 11px; }
-.video-library-properties { display: flex; width: 290px; flex: 0 0 auto; flex-direction: column; gap: 10px; overflow-y: auto; padding: 14px 16px; border-left: 1px solid var(--ui-line); background: #f9fafb; }
+.video-library-empty { margin: 6px 4px; color: var(--ui-muted); font-size: 12px; line-height: 1.5; }
+.video-library-error { margin: 0; padding: 8px 12px; border: 1px solid #fecaca; border-radius: 8px; background: rgb(255 255 255 / .95); color: #a4262c; font-size: 11px; overflow-wrap: anywhere; }
+.video-library-properties { position: absolute; top: 52px; right: 0; display: flex; width: 280px; max-height: min(430px, calc(100% - 64px)); flex-direction: column; gap: 10px; overflow-y: auto; padding: 14px 16px; border: 1px solid rgb(215 223 232 / .9); border-radius: 10px; background: rgb(249 250 251 / .97); box-shadow: 0 8px 24px rgb(15 23 42 / .16); }
 .video-library-properties-title { overflow: hidden; color: #27364a; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .video-library-properties dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; margin: 0; font-size: 12px; }
 .video-library-properties dt { color: var(--ui-muted); white-space: nowrap; }
 .video-library-properties dd { margin: 0; color: #27364a; overflow-wrap: anywhere; }
 .video-library-properties-open { margin-top: auto; min-height: 32px; border: 1px solid var(--ui-accent); border-radius: 7px; background: var(--ui-accent); color: #fff; font-size: 12px; cursor: pointer; }
 .video-library-properties-open:hover { background: var(--ui-accent-hover); }
-.video-library-preview { display: flex; min-height: 0; flex: 1; flex-direction: column; }
-.video-library-player { display: block; width: 100%; flex: 1; min-height: 0; background: #0b0f16; }
-.video-library-preview-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--ui-line); }
+.video-library-preview { display: flex; flex-direction: column; overflow: hidden; border: 1px solid rgb(215 223 232 / .9); border-radius: 10px; background: #0b0f16; box-shadow: 0 8px 24px rgb(15 23 42 / .16); }
+.video-library-player { display: block; width: 100%; max-height: 56vh; background: #0b0f16; }
+.video-library-preview-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px; background: #fff; }
 .video-library-speed { display: flex; align-items: center; gap: 7px; color: var(--ui-muted); font-size: 12px; }
 .video-library-preview-meta { display: flex; min-width: 0; flex: 1; flex-wrap: wrap; gap: 4px 14px; color: var(--ui-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
-.video-library-preview-actions { display: flex; align-items: center; gap: 10px; }
-.video-library-preview-error { margin: 0; color: #a4262c; font-size: 11px; max-width: 320px; overflow-wrap: anywhere; }
-.video-library-import { min-height: 34px; padding: 6px 16px; border: 1px solid var(--ui-accent); border-radius: 7px; background: var(--ui-accent); color: #fff; font-size: 12px; cursor: pointer; }
+.video-library-import { min-height: 32px; padding: 5px 14px; border: 1px solid var(--ui-accent); border-radius: 7px; background: var(--ui-accent); color: #fff; font-size: 12px; cursor: pointer; }
 .video-library-import:hover:not(:disabled) { background: var(--ui-accent-hover); }
 .video-library-import:disabled { opacity: .55; cursor: not-allowed; }
 </style>
