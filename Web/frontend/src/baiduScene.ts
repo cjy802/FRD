@@ -54,13 +54,12 @@ export class BaiduScene {
   private disposed = false
   private activeProjection: string | null = null
   private beforeRender = () => {
-    // 滚轮缩放幅度由 ScreenSpaceCameraController._zoomFactor 决定（SDK 默认 5，
-    // 一格约跳掉半个屏高）。engine.controller 只是包装对象、不转发该字段，
-    // 真实控制器在 engine.map._map.controller，且投影/模式重建会重置，
-    // 所以每帧钉住：一格只缩放约 15%。
+    // 滚轮缩放步长由 MapControl3D.zoomSpeed 决定（SDK 默认 0.005，一格 0.5 个
+    // zoom 单位 ≈ 1.4 倍）。调低到 0.002 让一格约放大 15%；控制器可能随底图
+    // 或模式重建，所以每帧钉住。
     if (this.interactive) {
       const controller = this.engine?.map?._map?.controller
-      if (controller && controller._zoomFactor !== 1.5) controller._zoomFactor = 1.5
+      if (controller && controller.zoomSpeed !== 0.002) controller.zoomSpeed = 0.002
     }
     for (const callback of this.frameListeners) callback()
   }
