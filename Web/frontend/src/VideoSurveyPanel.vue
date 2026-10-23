@@ -484,7 +484,8 @@ async function selectAdaptiveFramesWithAnalysis() {
     status.value = '正在创建识别队列…'
     const submitted = await submitPhotoAnalysisJob({
       taskId: props.taskId, frameIds: [], modelId: queueModel.value, streaming: true,
-      discardCleanFrames: true,
+      // 排查模式：识别后所有帧都保留，不自动清理“干净帧”。
+      discardCleanFrames: false,
     })
     jobId = submitted.job_id
     queueJobId.value = jobId
@@ -559,7 +560,7 @@ async function selectAdaptiveFramesWithAnalysis() {
     const counts = queueCounts.value
     if (jobId && !error.value) {
       const base = `截帧完成：入队 ${counts.enqueued} 张${queueSkipped.value ? ` · 上传跳过 ${queueSkipped.value} 张` : ''}。`
-      status.value = `${base}识别仍在后台进行（${queueStatusLabel.value || '统计中'}），进度见“任务视频 / 分析”模块；未检出积水的帧会被自动清理，检出积水的帧保留在任务关键帧。`
+      status.value = `${base}识别仍在后台进行（${queueStatusLabel.value || '统计中'}），进度见“任务视频 / 分析”模块；当前为排查模式，所有已识别帧都保留在任务关键帧，不自动清理。`
     }
   }
 }
