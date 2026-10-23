@@ -5,7 +5,6 @@ import {
   addVideoCaptureTarget,
   createVideoSurveySrt,
   deleteVideoCaptureTarget,
-  fetchVideoSurvey,
   interpolateVideoPosition,
   selectAdaptiveTaskFrames,
 } from './videoSurvey'
@@ -40,7 +39,6 @@ const emit = defineEmits<{
   'open-queue': []
 }>()
 
-const STORAGE_KEY = 'low-altitude-active-video-survey'
 const survey = ref<VideoSurvey | null>(null)
 const videoElement = ref<HTMLVideoElement | null>(null)
 const currentPosition = ref<VideoTelemetryPoint | null>(null)
@@ -216,7 +214,6 @@ async function importVideo(srt: File, localFile: File) {
   status.value = '正在读取 SRT 轨迹…'
   try {
     const result = await createVideoSurveySrt(srt, localFile.name, props.taskId)
-    localStorage.setItem(`${STORAGE_KEY}:${props.taskId}`, result.job_id)
     if (localVideo.value) URL.revokeObjectURL(localVideo.value.url)
     localVideo.value = { file: localFile, url: URL.createObjectURL(localFile) }
     publishSurvey(result)
@@ -610,29 +607,18 @@ function seekTarget(target: VideoCaptureTarget) {
   updatePosition(target.time_seconds)
 }
 
-async function restoreTaskSurvey(taskId: string | null) {
+function resetSurveyState() {
+  // 视频与 SRT 绑定的是本次会话里的本地文件；刷新后不再自动恢复旧轨迹，
+  // 回到「未选择文件夹」的初始状态，由用户重新选择导入。
   publishSurvey(null)
   if (localVideo.value) {
     URL.revokeObjectURL(localVideo.value.url)
     localVideo.value = null
   }
-  if (!taskId) return
-  const jobId = localStorage.getItem(`${STORAGE_KEY}:${taskId}`)
-  if (!jobId) return
-  try {
-    const restored = await fetchVideoSurvey(jobId)
-    if (restored.task_id !== taskId) return
-    publishSurvey(restored)
-    status.value = restored.has_video
-      ? '已恢复当前任务的视频轨迹和近拍点。'
-      : '已恢复当前任务的 SRT 轨迹；该任务的视频未上传到服务器，在视频库重新选择即可预览与截帧。'
-  } catch {
-    localStorage.removeItem(`${STORAGE_KEY}:${taskId}`)
-  }
 }
 
 onMounted(() => {
-  void restoreTaskSurvey(props.taskId)
+  resetSurveyState()
   // 预取识别模型列表，让“自动截帧并排队识别”按钮能直接启用。
   void ensureQueueModels().catch(() => {})
   document.addEventListener('keydown', onLibraryKeydown, true)
@@ -645,7 +631,7 @@ onUnmounted(() => {
   if (previewUrlObject) URL.revokeObjectURL(previewUrlObject)
   if (localVideo.value) URL.revokeObjectURL(localVideo.value.url)
 })
-watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
+watch(() => props.taskId, () => resetSurveyState())
 </script>
 
 <template>
