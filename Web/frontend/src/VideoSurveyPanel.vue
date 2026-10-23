@@ -66,7 +66,22 @@ const srtCounts = ref<Record<string, number>>({})
 const playSpeed = ref(1)
 const previewVideo = ref<HTMLVideoElement | null>(null)
 const previewUrl = ref('')
+const mapRect = ref<{ top: number; left: number; width: number; height: number } | null>(null)
 let previewUrlObject = ''
+
+// 浏览层在地图区域内铺满：以地图区域的矩形做定位。
+const dockStyle = computed(() => {
+  const rect = mapRect.value
+  if (!rect) return {}
+  return { top: `${rect.top}px`, left: `${rect.left}px`, width: `${rect.width}px`, height: `${rect.height}px` }
+})
+
+function updateMapRect() {
+  const region = document.querySelector('#route-map') as HTMLElement | null
+  if (!region) return
+  const rect = region.getBoundingClientRect()
+  mapRect.value = { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
+}
 
 const canCaptureFrame = computed(() => Boolean(survey.value && currentPosition.value && videoElement.value?.videoWidth
   && props.frameCount < 30 && !capturingFrame.value))
@@ -130,9 +145,15 @@ async function importVideo(video: File, srt: File) {
   }
 }
 
-function chooseVideoFolder() { folderInput.value?.click() }
+function chooseVideoFolder() {
+  updateMapRect()
+  folderInput.value?.click()
+}
 
-function openLibraryBrowser() { libraryOpen.value = true }
+function openLibraryBrowser() {
+  updateMapRect()
+  libraryOpen.value = true
+}
 
 function onFolderPicked(event: Event) {
   const input = event.target as HTMLInputElement
@@ -327,9 +348,11 @@ async function restoreTaskSurvey(taskId: string | null) {
 onMounted(() => {
   void restoreTaskSurvey(props.taskId)
   document.addEventListener('keydown', onLibraryKeydown, true)
+  window.addEventListener('resize', updateMapRect)
 })
 onUnmounted(() => {
   document.removeEventListener('keydown', onLibraryKeydown, true)
+  window.removeEventListener('resize', updateMapRect)
   if (previewUrlObject) URL.revokeObjectURL(previewUrlObject)
 })
 watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
@@ -436,7 +459,7 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
     </div>
 
     <Teleport to="body">
-      <div v-if="libraryOpen" class="video-library-page">
+      <div v-if="libraryOpen" class="video-library-page" :style="dockStyle">
         <nav class="video-library-crumbs" aria-label="浏览位置">
           <button type="button" @click="closeLibrary">地图</button>
           <span aria-hidden="true">›</span>
@@ -586,7 +609,7 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
 .video-survey-footnote { display: block; margin-top: 8px; color: var(--ui-muted); line-height: 1.4; }
 .video-survey-input { display: none; }
 
-.video-library-page { position: fixed; z-index: 6000; inset: 0; display: flex; flex-direction: column; background: #f4f7fa; }
+.video-library-page { position: fixed; z-index: 6000; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--ui-line); border-radius: 10px; background: #f4f7fa; box-shadow: 0 14px 40px rgb(15 23 42 / .24); }
 .video-library-crumbs { display: flex; min-width: 0; align-items: center; gap: 8px; padding: 10px 18px; border-bottom: 1px solid var(--ui-line); background: #fff; font-size: 13px; }
 .video-library-crumbs > button { min-height: 30px; padding: 4px 14px; border: 1px solid transparent; border-radius: 15px; background: transparent; color: #34506c; font-size: 13px; cursor: pointer; }
 .video-library-crumbs > button:hover:not(:disabled) { border-color: #d7dfe8; background: #f3f7fb; }
