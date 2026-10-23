@@ -317,6 +317,7 @@ const taskListOpen = ref(false)
 const taskListLoading = ref(false)
 const taskListError = ref('')
 const pendingDeleteTaskId = ref('')
+const pendingDeleteAll = ref(false)
 const deletingTaskId = ref('')
 const ACTIVE_TASK_STORAGE_KEY = 'low-altitude-current-mission-task'
 type Rc2Status = {
@@ -728,6 +729,7 @@ function applyMissionTask(task: MissionTask) {
 async function refreshMissionTaskList() {
   taskListLoading.value = true
   taskListError.value = ''
+  pendingDeleteAll.value = false
   try {
     savedTasks.value = await listMissionTasks()
   } catch (cause) {
@@ -739,14 +741,62 @@ async function refreshMissionTaskList() {
 
 function toggleTaskList() {
   taskListOpen.value = !taskListOpen.value
+  pendingDeleteAll.value = false
   if (taskListOpen.value) void refreshMissionTaskList()
 }
 
-function closeTaskList() { taskListOpen.value = false }
+function closeTaskList() {
+  taskListOpen.value = false
+  pendingDeleteAll.value = false
+}
 
 function requestDeleteMissionTask(taskId: string) {
   pendingDeleteTaskId.value = pendingDeleteTaskId.value === taskId ? '' : taskId
+  pendingDeleteAll.value = false
   taskListError.value = ''
+}
+
+function openSavedTask(taskId: string) {
+  if (taskBusy.value || deletingTaskId.value) return
+  void selectSavedTask(taskId)
+}
+
+function requestDeleteAllMissionTasks() {
+  if (!savedTasks.value.length) return
+  if (!pendingDeleteAll.value) {
+    pendingDeleteAll.value = true
+    pendingDeleteTaskId.value = ''
+    taskListError.value = ''
+    return
+  }
+  void deleteAllMissionTasks()
+}
+
+async function deleteAllMissionTasks() {
+  if (deletingTaskId.value || !savedTasks.value.length) return
+  deletingTaskId.value = '__all__'
+  taskListError.value = ''
+  const targets = savedTasks.value.slice()
+  const activeId = activeTask.value?.task_id
+  try {
+    await Promise.all(targets.map((task) => deleteMissionTask(task.task_id)))
+    savedTasks.value = []
+    pendingDeleteTaskId.value = ''
+    if (activeId && targets.some((task) => task.task_id === activeId)) {
+      localStorage.removeItem(ACTIVE_TASK_STORAGE_KEY)
+      activeTask.value = null
+      taskFrames.value = []
+      analysisMapTargets.value = []
+      routeAssessment.value = null
+      selectModule('route')
+    }
+  } catch (cause) {
+    taskListError.value = cause instanceof Error ? cause.message : '删除全部任务失败。'
+    await refreshMissionTaskList()
+  } finally {
+    deletingTaskId.value = ''
+    pendingDeleteAll.value = false
+  }
 }
 
 async function deleteSavedMissionTask(task: MissionTaskSummary) {
@@ -2765,22 +2815,22 @@ onBeforeUnmount(() => {
           <section class="task-list-dialog" role="dialog" aria-modal="true" aria-labelledby="saved-task-list-title" tabindex="-1" @keydown.esc.stop.prevent="closeTaskList">
             <header class="task-list-heading">
               <div><h2 id="saved-task-list-title">已保存的任务</h2><small>{{ savedTasks.length }} 个任务 · 选择一个继续</small></div>
-              <div><button type="button" :disabled="taskListLoading" @click="refreshMissionTaskList">{{ taskListLoading ? '刷新中…' : '刷新列表' }}</button><button type="button" aria-label="关闭任务列表" @click="closeTaskList">关闭</button></div>
+              <div><button v-if="savedTasks.length" type="button" class="task-delete-all" :class="{ 'is-armed': pendingDeleteAll }" :disabled="taskListLoading || !!deletingTaskId" @click="requestDeleteAllMissionTasks">{{ deletingTaskId === '__all__' ? '删除中…' : pendingDeleteAll ? '确认全部删除' : '全部删除' }}</button><button type="button" :disabled="taskListLoading" @click="refreshMissionTaskList">{{ taskListLoading ? '刷新中…' : '刷新列表' }}</button><button type="button" aria-label="关闭任务列表" @click="closeTaskList">关闭</button></div>
             </header>
             <p v-if="taskListError" class="task-list-feedback is-error" role="alert">{{ taskListError }}</p>
             <p v-else-if="taskListLoading && !savedTasks.length" class="task-list-feedback" role="status">正在读取已保存的任务…</p>
             <p v-else-if="!savedTasks.length" class="task-list-feedback">还没有保存的任务。完成路线和天气检查后，到“命名 / 导出”阶段创建任务。</p>
             <ul v-else class="saved-task-list">
               <li v-for="task in savedTasks" :key="task.task_id">
-                <div class="saved-task-row">
-                  <button type="button" class="saved-task-entry" :class="{ 'is-current': activeTask?.task_id === task.task_id }" :disabled="taskBusy || !!deletingTaskId" @click="selectSavedTask(task.task_id)">
+                <div class="saved-task-row" :class="{ 'is-current': activeTask?.task_id === task.task_id }">
+                  <div class="saved-task-entry" :class="{ 'is-locked': taskBusy || !!deletingTaskId }" role="button" tabindex="0" :aria-disabled="taskBusy || !!deletingTaskId ? 'true' : undefined" @click="openSavedTask(task.task_id)" @keydown.enter.self.prevent="openSavedTask(task.task_id)" @keydown.space.self.prevent="openSavedTask(task.task_id)">
                     <span class="saved-task-entry-title"><strong>{{ task.name || task.route_summary }}</strong><b>{{ activeTask?.task_id === task.task_id ? '当前' : taskStatusText(task.status) }}</b></span>
                     <small>{{ task.route_summary }}</small>
                     <small>{{ taskDateText(task.created_at) }} · {{ task.distance_km === null ? '距离待算' : `${task.distance_km.toFixed(2)} km` }}</small>
                     <small v-if="task.max_wind_m_s !== null || task.max_rain_6h_mm !== null">天气：{{ task.max_wind_m_s === null ? '风缺测' : `最大风 ${task.max_wind_m_s.toFixed(1)} m/s` }} · {{ task.max_rain_6h_mm === null ? '雨缺测' : `六小时雨 ${task.max_rain_6h_mm.toFixed(1)} mm` }}</small>
                     <small>机型 {{ task.drone_model ?? '未选' }} · 关键帧 {{ task.frame_count }} 张{{ task.video_survey_id ? ' · 已导入视频/SRT' : '' }}</small>
-                  </button>
-                  <button type="button" class="saved-task-delete" :disabled="taskBusy || !!deletingTaskId" :aria-label="`删除任务：${task.name || task.route_summary}`" @click="requestDeleteMissionTask(task.task_id)">{{ deletingTaskId === task.task_id ? '删除中…' : pendingDeleteTaskId === task.task_id ? '取消' : '删除' }}</button>
+                    <button type="button" class="saved-task-delete" :disabled="taskBusy || !!deletingTaskId" :aria-label="`删除任务：${task.name || task.route_summary}`" @click.stop="requestDeleteMissionTask(task.task_id)">{{ deletingTaskId === task.task_id ? '删除中…' : pendingDeleteTaskId === task.task_id ? '取消' : '删除' }}</button>
+                  </div>
                   <div v-if="pendingDeleteTaskId === task.task_id" class="saved-task-confirm" role="group" :aria-label="`确认删除任务：${task.name || task.route_summary}`">
                     <span>将永久删除该任务及其视频、关键帧、分析结果和导出文件。</span>
                     <button type="button" class="saved-task-confirm-button" :disabled="!!deletingTaskId" @click="deleteSavedMissionTask(task)">{{ deletingTaskId === task.task_id ? '正在删除…' : '确认删除' }}</button>
