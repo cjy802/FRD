@@ -317,7 +317,11 @@ class VideoSurveyStore:
             try:
                 srt_text = srt_bytes.decode("gb18030")
             except UnicodeDecodeError as error:
-                raise VideoSurveyError("无法读取 SRT 编码，请另存为 UTF-8 后重试。") from error
+                # 两个解码都失败多半说明收到的字节被截断在多字节字符中间，
+                # 而不是文件本身编码不对；报出字节数帮助定位。
+                raise VideoSurveyError(
+                    f"无法解码 SRT（收到 {len(srt_bytes)} 字节）；若原文件是正常字幕，"
+                    "多为上传中断导致的传输截断，请重试。") from error
 
         job_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S") + "-" + uuid.uuid4().hex[:8]
         directory = (self.task_storage_dir / task_id / "media" / "video-surveys" / job_id
@@ -391,7 +395,11 @@ class VideoSurveyStore:
             try:
                 srt_text = srt_bytes.decode("gb18030")
             except UnicodeDecodeError as error:
-                raise VideoSurveyError("无法读取 SRT 编码，请另存为 UTF-8 后重试。") from error
+                # 两个解码都失败多半说明收到的字节被截断在多字节字符中间，
+                # 而不是文件本身编码不对；报出字节数帮助定位。
+                raise VideoSurveyError(
+                    f"无法解码 SRT（收到 {len(srt_bytes)} 字节）；若原文件是正常字幕，"
+                    "多为上传中断导致的传输截断，请重试。") from error
 
         job_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S") + "-" + uuid.uuid4().hex[:8]
         directory = (self.task_storage_dir / task_id / "media" / "video-surveys" / job_id
