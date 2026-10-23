@@ -54,6 +54,7 @@ const overlay = reactive({
   autoNodes: [] as { index: number; x: number; y: number }[],
   drone: null as { x: number; y: number; angle: number } | null,
   videoPosition: null as { x: number; y: number; time_seconds: number; altitude_m: number | null } | null,
+  videoDropLine: null as { x: number; top: number; height: number } | null,
   captureTargets: [] as { id: string; x: number; y: number; label: string; marker: string; time_seconds: number }[],
   weatherPoints: [] as WeatherOverlayPoint[],
 })
@@ -188,6 +189,13 @@ function renderOverlay() {
   const videoPosition = position && props.videoPosition
     ? { ...position, time_seconds: props.videoPosition.time_seconds, altitude_m: props.videoPosition.altitude_m }
     : null
+  // 播放时画出无人机到地面的垂直参考线（2D 没有高度概念，跳过）。
+  const groundPixel = position && props.videoPosition && props.viewMode !== '2d'
+    ? scene.project([props.videoPosition.longitude, props.videoPosition.latitude, 1])
+    : null
+  const videoDropLine = position && groundPixel && Number.isFinite(groundPixel.y) && groundPixel.y > position.y + 4
+    ? { x: position.x, top: position.y, height: groundPixel.y - position.y }
+    : null
   const captureTargets = (props.captureTargets ?? []).flatMap((target, index) => {
     const pixel = scene!.project([target.longitude, target.latitude, props.viewMode === '2d' ? 2 : (target.altitude_m ?? 2)])
     const label = target.label || `近拍点 ${index + 1}`
@@ -241,6 +249,11 @@ function renderOverlay() {
   const drone = projectedDrone()
   if (!sameDrone(drone, overlay.drone)) overlay.drone = drone
   if (!sameVideoPosition(videoPosition, overlay.videoPosition)) overlay.videoPosition = videoPosition
+  const sameDropLine = (overlay.videoDropLine?.x === videoDropLine?.x
+    && overlay.videoDropLine?.top === videoDropLine?.top
+    && overlay.videoDropLine?.height === videoDropLine?.height
+    && (overlay.videoDropLine !== null) === (videoDropLine !== null))
+  if (!sameDropLine) overlay.videoDropLine = videoDropLine
   if (!sameOverlayPoints(captureTargets, overlay.captureTargets)) overlay.captureTargets = captureTargets
   if (!sameWeatherPoints(weatherPoints, overlay.weatherPoints)) overlay.weatherPoints = weatherPoints
 }
@@ -589,6 +602,7 @@ onBeforeUnmount(() => {
       <span v-for="node in overlay.autoNodes" :key="`auto-${node.index}`" class="earth-auto-node" aria-hidden="true" :style="{ left: `${node.x}px`, top: `${node.y}px` }"></span>
       <span v-for="node in overlay.groundNodes" :key="`ground-${node.index}`" class="earth-ground-node" aria-hidden="true" :style="{ left: `${node.x}px`, top: `${node.y}px` }"><span></span></span>
       <button v-for="node in overlay.nodes" :key="node.index" type="button" class="earth-node" :class="{ selected: node.index === selectedIndex }" :aria-label="`选择航点 ${node.index + 1}`" :aria-pressed="node.index === selectedIndex" :data-waypoint-index="node.index" :disabled="flightPose?.playing" :style="{ left: `${node.x}px`, top: `${node.y}px` }" @pointerdown="onNodeDown($event, node.index)" @pointermove="onNodeMove" @pointerup="onNodeUp" @pointercancel="onNodeUp" @lostpointercapture="onNodeUp" @click.stop="onNodeClick(node.index)"><span></span></button>
+      <span v-if="overlay.videoDropLine" class="earth-video-dropline" aria-hidden="true" :style="{ left: `${overlay.videoDropLine.x - 1}px`, top: `${overlay.videoDropLine.top}px`, height: `${overlay.videoDropLine.height}px` }"></span>
       <span v-if="overlay.videoPosition" class="earth-video-position" role="img" :aria-label="`视频当前位置，${overlay.videoPosition.time_seconds.toFixed(1)} 秒`" :title="`视频当前位置 · ${overlay.videoPosition.time_seconds.toFixed(1)} 秒${overlay.videoPosition.altitude_m !== null ? ` · ${overlay.videoPosition.altitude_m.toFixed(1)} m` : ''}`" :style="{ left: `${overlay.videoPosition.x}px`, top: `${overlay.videoPosition.y}px` }">V</span>
       <span v-if="overlay.drone" class="earth-flight-drone" role="img" aria-label="模拟无人机位置" :style="{ left: `${overlay.drone.x}px`, top: `${overlay.drone.y}px`, transform: `translate(-50%, -50%) rotate(${overlay.drone.angle}deg)` }"><img src="/svg/jiantou.svg" alt="" /></span>
     </div>
@@ -653,6 +667,7 @@ onBeforeUnmount(() => {
 .earth-node span { width: 12px; height: 12px; border: 2px solid #fff; border-radius: 50%; background: #00e5a8; box-shadow: 0 1px 5px #12343b; }
 .earth-node.selected span { width: 18px; height: 18px; background: #ffb547; }
 .earth-node:focus-visible { outline: 2px solid #ffb547; }
+.earth-video-dropline { position: absolute; z-index: 2; width: 2px; border-left: 2px dashed rgb(15 108 189 / .75); background: transparent; pointer-events: none; }
 .earth-video-position { position: absolute; z-index: 3; display: grid; width: 26px; height: 26px; transform: translate(-50%, -50%); place-items: center; border: 2px solid #fff; border-radius: 50%; background: #0f6cbd; box-shadow: 0 1px 5px rgb(18 52 59 / .45); color: #fff; font-size: 11px; font-weight: 700; pointer-events: none; }
 .earth-capture-target { position: absolute; z-index: 2; display: grid; width: 24px; height: 24px; transform: translate(-50%, -50%); place-items: center; border: 2px solid #fff; border-radius: 50%; background: #d97706; box-shadow: 0 1px 5px rgb(18 52 59 / .4); color: #fff; font-size: 10px; font-weight: 700; pointer-events: none; }
 .earth-ground-node { position: absolute; width: 14px; height: 14px; transform: translate(-50%, -50%); display: grid; place-items: center; pointer-events: none; }

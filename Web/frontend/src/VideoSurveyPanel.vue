@@ -290,6 +290,19 @@ async function selectAdaptiveFrames() {
       try {
         survey.value = await uploadSurveyVideo(survey.value.job_id, localVideo.value.file,
           percent => { uploadProgress.value = percent })
+      } catch {
+        // 大文件上传可能"成功在后端、响应丢失"：核对服务器状态后再决定。
+        try {
+          const fresh = await fetchVideoSurvey(survey.value.job_id)
+          if (fresh.has_video) survey.value = fresh
+          else {
+            error.value = '完整视频上传失败，请重试。'
+            return
+          }
+        } catch {
+          error.value = '完整视频上传失败，请重试。'
+          return
+        }
       } finally {
         uploadingVideo.value = false
         uploadProgress.value = null

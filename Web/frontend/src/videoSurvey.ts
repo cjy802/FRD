@@ -131,7 +131,8 @@ export function uploadSurveyVideo(jobId: string, video: File,
       if (event.lengthComputable) onProgress(Math.min(100, Math.round(event.loaded / event.total * 100)))
     })
     xhr.addEventListener('load', () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
+      // 409 = 服务器端已有完整视频（此前一次上传实际成功、只是响应丢失），同样视为成功。
+      if ((xhr.status >= 200 && xhr.status < 300) || xhr.status === 409) {
         try {
           resolve(JSON.parse(xhr.responseText) as VideoSurvey)
         } catch {

@@ -444,18 +444,24 @@ class VideoSurveyStore:
             raise
 
     async def attach_video(self, job_id: str, video: UploadFile) -> dict[str, Any]:
-        """Attach the full clip later, e.g. before server-side frame extraction."""
+        """Attach the full clip later, e.g. before server-side frame extraction.
+
+        Idempotent: a retry after an upload whose response was lost returns
+        the finished job instead of erroring.
+        """
         directory = self._directory(job_id)
         metadata = json.loads((directory / "metadata.json").read_text(encoding="utf-8"))
         if metadata.get("has_video"):
-            raise VideoSurveyError("该视频任务已上传过完整视频；如需更换请删除任务后重新导入。", http_status=409)
+            return self.job(job_id)
         video_name = Path(video.filename or "").name
         if Path(video_name).suffix.lower() not in ALLOWED_VIDEO_SUFFIXES:
             raise VideoSurveyError("请选择 MP4、MOV 或 M4V 视频文件。")
+        # 先写临时名再原子替换：响应丢失后的重复上传不会留下半截视频。
         video_path = directory / ("video" + Path(video_name).suffix.lower())
+        pending_path = directory / (uuid.uuid4().hex[:8] + ".uploading")
         total_bytes = 0
         try:
-            with video_path.open("wb") as output:
+            with pending_path.open("wb") as output:
                 while True:
                     chunk = await video.read(CHUNK_BYTES)
                     if not chunk:
@@ -466,8 +472,9 @@ class VideoSurveyStore:
                     output.write(chunk)
             if total_bytes == 0:
                 raise VideoSurveyError("视频文件为空。")
+            pending_path.replace(video_path)
         except Exception:
-            video_path.unlink(missing_ok=True)
+            pending_path.unlink(missing_ok=True)
             raise
         metadata.update(video_name=video_name or metadata.get("video_name"),
                         video_file=video_path.name, video_bytes=total_bytes, has_video=True)
