@@ -15,7 +15,9 @@ from typing import Literal
 
 
 PILOT2_NAMESPACE = "http://www.dji.com/wpmz/1.0.2"
-FLY_NAMESPACE = "http://www.uav.com/wpmz/1.0.2"
+# DJI 官方 WPML 规范的命名空间是 dji.com/wpmz；新版 DJI Fly 自身也写出过
+# uav.com 变体，但按官方文档生成兼容性最好。
+FLY_NAMESPACE = PILOT2_NAMESPACE
 DRONE_PROFILES = {
     "m30": {"namespace": PILOT2_NAMESPACE, "author": "Low Altitude Flight Decision Workbench", "enum": 67, "sub_enum": 0, "payload": 52, "fly": False},
     "m3e": {"namespace": PILOT2_NAMESPACE, "author": "Low Altitude Flight Decision Workbench", "enum": 77, "sub_enum": 0, "payload": 66, "fly": False},
@@ -24,6 +26,11 @@ DRONE_PROFILES = {
     # profile as the RC 2 waypoint files currently available to this project.
     "fly": {"namespace": FLY_NAMESPACE, "author": "fly", "enum": 68, "sub_enum": 0, "payload": None, "fly": True},
 }
+
+# WPML 规范的 waypointTurnMode 只接受 coordinateTurn / toPointAndStop 两个
+# 枚举值；DJI Fly 遇到非法值时按默认平滑转弯绘制，导入的航线会显示成
+# 弯曲交叉的乱线。
+WAYPOINT_TURN_MODE = "coordinateTurn"
 
 # Road geometry contains many short OSM/OSRM segments. DJI renders every
 # waypoint marker and altitude label, so exporting every vertex makes even a
@@ -187,32 +194,19 @@ def _heading_param(setting: dict[str, object] | None = None) -> str:
   </wpml:waypointHeadingParam>""".format(mode=mode, angle=_number(angle), poi_text=poi_text)
 
 
-def _template_waypoint(index: int, longitude: float, latitude: float, altitude_m: float, speed_m_s: float, fly_profile: bool, setting: dict[str, object] | None = None) -> str:
+def _template_waypoint(index: int, longitude: float, latitude: float, altitude_m: float, speed_m_s: float, setting: dict[str, object] | None = None) -> str:
     setting = setting or {}
     raw_altitude = setting.get("altitude_m")
     point_altitude = altitude_m if raw_altitude is None else float(raw_altitude)
     gimbal_pitch = float(setting.get("gimbal_pitch_angle", 0))
-    if fly_profile:
-        settings = f"""  <wpml:useGlobalHeight>0</wpml:useGlobalHeight>
+    settings = f"""  <wpml:useGlobalHeight>0</wpml:useGlobalHeight>
   <wpml:useGlobalSpeed>0</wpml:useGlobalSpeed>
 {_heading_param(setting)}
   <wpml:useGlobalHeadingParam>0</wpml:useGlobalHeadingParam>
   <wpml:useGlobalTurnParam>0</wpml:useGlobalTurnParam>
   <wpml:waypointSpeed>{_number(speed_m_s)}</wpml:waypointSpeed>
   <wpml:waypointTurnParam>
-    <wpml:waypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:waypointTurnMode>
-    <wpml:waypointTurnDampingDist>0</wpml:waypointTurnDampingDist>
-  </wpml:waypointTurnParam>
-  <wpml:gimbalPitchAngle>{_number(gimbal_pitch)}</wpml:gimbalPitchAngle>"""
-    else:
-        settings = f"""  <wpml:useGlobalHeight>0</wpml:useGlobalHeight>
-  <wpml:useGlobalSpeed>0</wpml:useGlobalSpeed>
-{_heading_param(setting)}
-  <wpml:useGlobalHeadingParam>0</wpml:useGlobalHeadingParam>
-  <wpml:useGlobalTurnParam>0</wpml:useGlobalTurnParam>
-  <wpml:waypointSpeed>{_number(speed_m_s)}</wpml:waypointSpeed>
-  <wpml:waypointTurnParam>
-    <wpml:waypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:waypointTurnMode>
+    <wpml:waypointTurnMode>{WAYPOINT_TURN_MODE}</wpml:waypointTurnMode>
     <wpml:waypointTurnDampingDist>0</wpml:waypointTurnDampingDist>
   </wpml:waypointTurnParam>
   <wpml:gimbalPitchAngle>{_number(gimbal_pitch)}</wpml:gimbalPitchAngle>"""
@@ -237,7 +231,7 @@ def _wayline_waypoint(index: int, longitude: float, latitude: float, altitude_m:
   <wpml:waypointSpeed>{_number(speed_m_s)}</wpml:waypointSpeed>
 {_heading_param(setting)}
   <wpml:waypointTurnParam>
-    <wpml:waypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:waypointTurnMode>
+    <wpml:waypointTurnMode>{WAYPOINT_TURN_MODE}</wpml:waypointTurnMode>
     <wpml:waypointTurnDampingDist>0</wpml:waypointTurnDampingDist>
   </wpml:waypointTurnParam>
   <wpml:gimbalPitchAngle>{_number(gimbal_pitch)}</wpml:gimbalPitchAngle>
@@ -247,7 +241,7 @@ def _wayline_waypoint(index: int, longitude: float, latitude: float, altitude_m:
 
 def _template_kml(coordinates: list[tuple[float, float]], altitude_m: float, speed_m_s: float, rth_height_m: float, timestamp_ms: int, drone: dict[str, object], waypoint_settings: list[dict[str, object]] | None = None) -> str:
     waypoint_settings = waypoint_settings or [{} for _ in coordinates]
-    placemarks = "\n".join(_template_waypoint(i, lon, lat, altitude_m, speed_m_s, bool(drone["fly"]), waypoint_settings[i]) for i, (lon, lat) in enumerate(coordinates))
+    placemarks = "\n".join(_template_waypoint(i, lon, lat, altitude_m, speed_m_s, waypoint_settings[i]) for i, (lon, lat) in enumerate(coordinates))
     global_heading = _heading_param().replace("waypointHeadingParam", "globalWaypointHeadingParam", 2) if drone["fly"] else "      <wpml:globalWaypointHeadingParam><wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode></wpml:globalWaypointHeadingParam>"
     gimbal_mode = "usePointSetting"
     return f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -269,7 +263,7 @@ def _template_kml(coordinates: list[tuple[float, float]], altitude_m: float, spe
       <wpml:autoFlightSpeed>{_number(speed_m_s)}</wpml:autoFlightSpeed>
       <wpml:gimbalPitchMode>{gimbal_mode}</wpml:gimbalPitchMode>
 {global_heading}
-      <wpml:globalWaypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:globalWaypointTurnMode>
+      <wpml:globalWaypointTurnMode>{WAYPOINT_TURN_MODE}</wpml:globalWaypointTurnMode>
       <wpml:globalUseStraightLine>1</wpml:globalUseStraightLine>
       {placemarks}
     </Folder>
@@ -398,11 +392,17 @@ def build_dji_kmz(coordinates, altitude_m: float, speed_kmh: float, drone_model:
         longitude, latitude = float(point[0]), float(point[1])
         if not (-180 <= longitude <= 180 and -90 <= latitude <= 90 and isfinite(longitude) and isfinite(latitude)):
             raise KmzExportError("路线包含超出经纬度范围的坐标。")
-        if cleaned and (longitude, latitude) == cleaned[-1] and _has_custom_setting(setting, altitude_m):
-            raise KmzExportError("已编辑航点与前一个航点位置重合；请移动或删除重复点后导出。")
-        if not cleaned or (longitude, latitude) != cleaned[-1]:
-            cleaned.append((longitude, latitude))
-            cleaned_settings.append(setting)
+        point = (longitude, latitude)
+        if cleaned and _distance_m(cleaned[-1], point) < 0.5:
+            # 近重复点合并为一个；完全重合、或两端都带自定义设置时是真正的冲突。
+            if _has_custom_setting(setting, altitude_m):
+                if (longitude, latitude) == cleaned[-1] or _has_custom_setting(cleaned_settings[-1], altitude_m):
+                    raise KmzExportError("已编辑航点与前一个航点位置重合；请移动或删除重复点后导出。")
+                cleaned[-1] = point
+                cleaned_settings[-1] = setting
+            continue
+        cleaned.append(point)
+        cleaned_settings.append(setting)
     if len(cleaned) < 2:
         raise KmzExportError("路线去重后不足 2 个航点。")
     protected_indices = _protected_setting_indices(cleaned_settings, altitude_m)

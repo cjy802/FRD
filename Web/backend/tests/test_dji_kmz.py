@@ -41,7 +41,7 @@ class DjiKmzTests(unittest.TestCase):
         with ZipFile(BytesIO(payload)) as archive:
             template = archive.read("wpmz/template.kml").decode("utf-8")
             waylines = archive.read("wpmz/waylines.wpml").decode("utf-8")
-        self.assertIn('xmlns:wpml="http://www.uav.com/wpmz/1.0.2"', template)
+        self.assertIn('xmlns:wpml="http://www.dji.com/wpmz/1.0.2"', template)
         self.assertIn("<wpml:author>fly</wpml:author>", template)
         self.assertIn("<wpml:droneEnumValue>68</wpml:droneEnumValue>", waylines)
         self.assertIn("<wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>", waylines)
@@ -60,7 +60,7 @@ class DjiKmzTests(unittest.TestCase):
             ],
         )
         with ZipFile(BytesIO(payload)) as archive:
-            namespace = {"wpml": "http://www.uav.com/wpmz/1.0.2", "kml": "http://www.opengis.net/kml/2.2"}
+            namespace = {"wpml": "http://www.dji.com/wpmz/1.0.2", "kml": "http://www.opengis.net/kml/2.2"}
             template = ElementTree.fromstring(archive.read("wpmz/template.kml"))
             waylines = ElementTree.fromstring(archive.read("wpmz/waylines.wpml"))
         self.assertEqual(template.findtext(".//wpml:gimbalPitchMode", namespaces=namespace), "usePointSetting")
@@ -83,7 +83,7 @@ class DjiKmzTests(unittest.TestCase):
         settings[4].update({"heading_mode": "smoothTransition", "heading_angle": 315, "gimbal_pitch_angle": -48, "export_anchor": True})
         payload = build_dji_kmz(coordinates, 80, 36, "fly", settings)
         with ZipFile(BytesIO(payload)) as archive:
-            namespace = {"wpml": "http://www.uav.com/wpmz/1.0.2", "kml": "http://www.opengis.net/kml/2.2"}
+            namespace = {"wpml": "http://www.dji.com/wpmz/1.0.2", "kml": "http://www.opengis.net/kml/2.2"}
             documents = [ElementTree.fromstring(archive.read(name)) for name in ("wpmz/template.kml", "wpmz/waylines.wpml")]
         for document in documents:
             placemarks = document.findall(".//kml:Placemark", namespace)
@@ -105,7 +105,7 @@ class DjiKmzTests(unittest.TestCase):
         settings[300]["export_anchor"] = True
 
         payload = build_dji_kmz(coordinates, 80, 36, "fly", settings)
-        namespace = {"wpml": "http://www.uav.com/wpmz/1.0.2", "kml": "http://www.opengis.net/kml/2.2"}
+        namespace = {"wpml": "http://www.dji.com/wpmz/1.0.2", "kml": "http://www.opengis.net/kml/2.2"}
         with ZipFile(BytesIO(payload)) as archive:
             for name in ("wpmz/template.kml", "wpmz/waylines.wpml"):
                 with self.subTest(name=name):
@@ -138,7 +138,7 @@ class DjiKmzTests(unittest.TestCase):
         payload = build_dji_kmz(coordinates, 80, 36, "fly", [{} for _ in coordinates])
         with ZipFile(BytesIO(payload)) as archive:
             waylines = ElementTree.fromstring(archive.read("wpmz/waylines.wpml"))
-        namespace = {"wpml": "http://www.uav.com/wpmz/1.0.2", "kml": "http://www.opengis.net/kml/2.2"}
+        namespace = {"wpml": "http://www.dji.com/wpmz/1.0.2", "kml": "http://www.opengis.net/kml/2.2"}
         placemarks = waylines.findall(".//kml:Placemark", namespace)
         self.assertLess(len(placemarks), len(coordinates))
         self.assertTrue(all(point.findtext("wpml:gimbalPitchAngle", namespaces=namespace) == "0" for point in placemarks))
@@ -151,7 +151,7 @@ class DjiKmzTests(unittest.TestCase):
             with self.subTest(profile=profile):
                 payload = build_dji_kmz(coordinates, 100, 45, profile, settings)
                 with ZipFile(BytesIO(payload)) as archive:
-                    wpml_namespace = "http://www.uav.com/wpmz/1.0.2" if profile == "fly" else "http://www.dji.com/wpmz/1.0.2"
+                    wpml_namespace = "http://www.dji.com/wpmz/1.0.2" if profile == "fly" else "http://www.dji.com/wpmz/1.0.2"
                     namespace = {"wpml": wpml_namespace, "kml": "http://www.opengis.net/kml/2.2"}
                     for name in ("wpmz/template.kml", "wpmz/waylines.wpml"):
                         points = ElementTree.fromstring(archive.read(name)).findall(".//kml:Placemark", namespace)
@@ -168,7 +168,7 @@ class DjiKmzTests(unittest.TestCase):
             {"heading_mode": "smoothTransition", "heading_angle": 359},
             {"heading_mode": "smoothTransition", "heading_angle": 1},
         ])
-        namespace = {"wpml": "http://www.uav.com/wpmz/1.0.2", "kml": "http://www.opengis.net/kml/2.2"}
+        namespace = {"wpml": "http://www.dji.com/wpmz/1.0.2", "kml": "http://www.opengis.net/kml/2.2"}
         with ZipFile(BytesIO(payload)) as archive:
             for name in ("wpmz/template.kml", "wpmz/waylines.wpml"):
                 headings = ElementTree.fromstring(archive.read(name)).findall(".//kml:Placemark/wpml:waypointHeadingParam", namespace)
