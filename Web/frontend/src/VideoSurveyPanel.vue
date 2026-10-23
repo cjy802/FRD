@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import CustomSelect from './CustomSelect.vue'
 import {
   addVideoCaptureTarget,
@@ -11,6 +11,16 @@ import {
 } from './videoSurvey'
 import type { VideoCaptureTarget, VideoSurvey, VideoTelemetryPoint } from './videoSurvey'
 import type { TaskVideoFrame } from './photoAnalysis'
+import {
+  countSrtTelemetry,
+  formatBytes,
+  formatClock,
+  formatDateTime,
+  formatDurationBetween,
+  groupVideoFiles,
+  makeVideoThumbnail,
+} from './videoLibrary'
+import type { VideoLibraryGroup } from './videoLibrary'
 
 const props = defineProps<{ taskId: string | null; frameCount: number }>()
 
@@ -25,10 +35,6 @@ const emit = defineEmits<{
 
 const STORAGE_KEY = 'low-altitude-active-video-survey'
 const survey = ref<VideoSurvey | null>(null)
-const videoInput = ref<HTMLInputElement | null>(null)
-const srtInput = ref<HTMLInputElement | null>(null)
-const videoFile = ref<File | null>(null)
-const srtFile = ref<File | null>(null)
 const videoElement = ref<HTMLVideoElement | null>(null)
 const currentPosition = ref<VideoTelemetryPoint | null>(null)
 const currentTime = ref(0)
@@ -48,42 +54,35 @@ const minimumSharpnessPercent = ref(40)
 const error = ref('')
 const status = ref('')
 
-const canImport = computed(() => Boolean(props.taskId && videoFile.value && srtFile.value && !loading.value))
+// —— 视频文件夹浏览（面包屑：地图 › 文件夹 › 视频）——
+const folderInput = ref<HTMLInputElement | null>(null)
+const libraryOpen = ref(false)
+const libraryFolderName = ref('')
+const libraryGroups = ref<VideoLibraryGroup[]>([])
+const selectedGroup = ref<VideoLibraryGroup | null>(null)
+const previewGroup = ref<VideoLibraryGroup | null>(null)
+const thumbnails = ref<Record<string, string>>({})
+const srtCounts = ref<Record<string, number>>({})
+const playSpeed = ref(1)
+const previewVideo = ref<HTMLVideoElement | null>(null)
+const previewUrl = ref('')
+let previewUrlObject = ''
+
 const canCaptureFrame = computed(() => Boolean(survey.value && currentPosition.value && videoElement.value?.videoWidth
   && props.frameCount < 30 && !capturingFrame.value))
 const canSelectAdaptiveFrames = computed(() => Boolean(props.taskId && survey.value?.has_gps
   && props.frameCount < 30 && !selectingFrames.value && !loading.value))
 const currentTimeLabel = computed(() => formatVideoTime(currentTime.value))
-const videoSelectionName = computed(() => videoFile.value?.name ?? survey.value?.video_name ?? '尚未选择视频')
-const srtSelectionName = computed(() => srtFile.value?.name ?? survey.value?.srt_name ?? '尚未选择 SRT')
+const previewImportBlockedReason = computed(() => {
+  if (!props.taskId) return '请先创建当前任务'
+  if (!previewGroup.value?.srt) return '此组没有 SRT，无法导入'
+  return ''
+})
+const canImportPreview = computed(() => Boolean(props.taskId && previewGroup.value?.srt && !loading.value))
 
 function formatVideoTime(seconds: number): string {
   const value = Math.max(0, Math.floor(seconds || 0))
   return `${String(Math.floor(value / 60)).padStart(2, '0')}:${String(value % 60).padStart(2, '0')}`
-}
-
-function chooseVideoFile() { videoInput.value?.click() }
-
-function chooseSrtFile() { srtInput.value?.click() }
-
-function pickVideoFile(event: Event) {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (file) {
-    videoFile.value = file
-    error.value = ''
-  }
-  input.value = ''
-}
-
-function pickSrtFile(event: Event) {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (file) {
-    srtFile.value = file
-    error.value = ''
-  }
-  input.value = ''
 }
 
 function compactTrack(points: VideoTelemetryPoint[]): number[][] {
@@ -110,13 +109,13 @@ function updatePosition(time = videoElement.value?.currentTime ?? currentTime.va
   emit('position-change', currentPosition.value)
 }
 
-async function importVideo() {
-  if (!props.taskId || !videoFile.value || !srtFile.value || loading.value) return
+async function importVideo(video: File, srt: File) {
+  if (!props.taskId || loading.value) return
   loading.value = true
   error.value = ''
   status.value = '正在上传视频并读取 SRT 轨迹…'
   try {
-    const result = await createVideoSurvey(videoFile.value, srtFile.value, props.taskId)
+    const result = await createVideoSurvey(video, srt, props.taskId)
     localStorage.setItem(`${STORAGE_KEY}:${props.taskId}`, result.job_id)
     publishSurvey(result)
     status.value = result.has_gps
@@ -130,6 +129,80 @@ async function importVideo() {
     loading.value = false
   }
 }
+
+function chooseVideoFolder() { folderInput.value?.click() }
+
+function openLibraryBrowser() { libraryOpen.value = true }
+
+function onFolderPicked(event: Event) {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files ?? [])
+  input.value = ''
+  if (!files.length) return
+  const groups = groupVideoFiles(files)
+  libraryFolderName.value = files[0]?.webkitRelativePath?.split('/')[0] || '已选文件夹'
+  libraryGroups.value = groups
+  selectedGroup.value = null
+  closePreview()
+  thumbnails.value = {}
+  srtCounts.value = {}
+  libraryOpen.value = true
+  error.value = ''
+  status.value = ''
+  void loadGroupPreviews(groups)
+}
+
+async function loadGroupPreviews(groups: VideoLibraryGroup[]) {
+  for (const group of groups) {
+    // 重新选择文件夹后，旧队列立即失效。
+    if (libraryGroups.value !== groups) return
+    const thumbnail = await makeVideoThumbnail(group.video)
+    if (libraryGroups.value !== groups) return
+    if (thumbnail) thumbnails.value = { ...thumbnails.value, [group.key]: thumbnail }
+    if (group.srt && srtCounts.value[group.key] === undefined) {
+      const count = await countSrtTelemetry(group.srt)
+      if (libraryGroups.value !== groups) return
+      srtCounts.value = { ...srtCounts.value, [group.key]: count }
+    }
+  }
+}
+
+function openPreview(group: VideoLibraryGroup) {
+  selectedGroup.value = group
+  previewGroup.value = group
+  playSpeed.value = 1
+  if (previewUrlObject) URL.revokeObjectURL(previewUrlObject)
+  previewUrlObject = URL.createObjectURL(group.video)
+  previewUrl.value = previewUrlObject
+}
+
+function closePreview() {
+  previewGroup.value = null
+  if (previewUrlObject) URL.revokeObjectURL(previewUrlObject)
+  previewUrlObject = ''
+  previewUrl.value = ''
+}
+
+function closeLibrary() {
+  closePreview()
+  libraryOpen.value = false
+}
+
+async function importPreviewGroup() {
+  const group = previewGroup.value
+  if (!group?.srt || !props.taskId || loading.value) return
+  await importVideo(group.video, group.srt)
+  if (!error.value) closeLibrary()
+}
+
+function onLibraryKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Escape' || !libraryOpen.value) return
+  event.stopPropagation()
+  if (previewGroup.value) closePreview()
+  else libraryOpen.value = false
+}
+
+watch(playSpeed, value => { if (previewVideo.value) previewVideo.value.playbackRate = value })
 
 async function captureCurrentFrame() {
   const video = videoElement.value
@@ -237,8 +310,6 @@ function seekTarget(target: VideoCaptureTarget) {
 }
 
 async function restoreTaskSurvey(taskId: string | null) {
-  videoFile.value = null
-  srtFile.value = null
   publishSurvey(null)
   if (!taskId) return
   const jobId = localStorage.getItem(`${STORAGE_KEY}:${taskId}`)
@@ -253,7 +324,14 @@ async function restoreTaskSurvey(taskId: string | null) {
   }
 }
 
-onMounted(() => { void restoreTaskSurvey(props.taskId) })
+onMounted(() => {
+  void restoreTaskSurvey(props.taskId)
+  document.addEventListener('keydown', onLibraryKeydown, true)
+})
+onUnmounted(() => {
+  document.removeEventListener('keydown', onLibraryKeydown, true)
+  if (previewUrlObject) URL.revokeObjectURL(previewUrlObject)
+})
 watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
 </script>
 
@@ -262,31 +340,22 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
     <header class="video-survey-header">
       <div>
         <h3 id="video-survey-title">视频轨迹定位</h3>
-        <p>导入视频和对应的 SRT。播放或拖动进度时，地图显示该时刻的无人机位置。</p>
+        <p>选择视频文件夹：同名 MP4 / SRT / LRF 自动成组，JPG 图片不读取。导入后播放或拖动进度时，地图显示该时刻的无人机位置。</p>
       </div>
       <span v-if="survey" class="video-survey-badge" :class="survey.has_gps ? 'is-ready' : 'is-warning'">
         {{ survey.has_gps ? `${survey.telemetry_points} 个定位点` : '无 GPS 数据' }}
       </span>
     </header>
 
-    <input ref="videoInput" class="video-survey-input" type="file" accept=".mp4,.mov,.m4v,video/mp4,video/quicktime" @change="pickVideoFile" />
-    <input ref="srtInput" class="video-survey-input" type="file" accept=".srt" @change="pickSrtFile" />
+    <input ref="folderInput" class="video-survey-input" type="file" webkitdirectory multiple @change="onFolderPicked" />
 
     <div class="video-survey-picker-row">
-      <button type="button" :disabled="loading || !taskId" @click="chooseVideoFile">选择视频</button>
-      <span class="video-survey-file-name" :title="videoFile?.name || survey?.video_name || ''">
-        {{ videoSelectionName }}
+      <button type="button" :disabled="loading || !taskId" @click="chooseVideoFolder">选择视频文件夹</button>
+      <button v-if="libraryFolderName" type="button" class="video-survey-browse" :disabled="loading" @click="openLibraryBrowser">浏览</button>
+      <span class="video-survey-file-name" :title="libraryFolderName">
+        {{ !taskId ? '请先创建当前任务' : libraryFolderName || '未选择文件夹' }}
       </span>
     </div>
-    <div class="video-survey-picker-row">
-      <button type="button" :disabled="loading || !taskId" @click="chooseSrtFile">选择 SRT</button>
-      <span class="video-survey-file-name" :title="srtFile?.name || survey?.srt_name || ''">
-        {{ srtSelectionName }}
-      </span>
-    </div>
-    <button class="video-survey-import" type="button" :disabled="!canImport" @click="importVideo">
-      {{ !taskId ? '请先创建当前任务' : loading ? '导入中…' : '导入到当前任务' }}
-    </button>
 
     <p v-if="survey" class="video-survey-note" role="status">{{ survey.message }}</p>
     <p
@@ -365,6 +434,111 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
       </ul>
       <small class="video-survey-footnote">只对手动截取的关键帧运行模型；SRT 依据时间提供无人机位置，不会逐帧调用模型。地图点表示无人机位置，不是水坑地面坐标。</small>
     </div>
+
+    <Teleport to="body">
+      <div v-if="libraryOpen" class="video-library-backdrop" @click.self="closeLibrary">
+        <section class="video-library" role="dialog" aria-modal="true" aria-label="视频文件夹浏览">
+          <header class="video-library-nav">
+            <nav class="video-library-crumbs" aria-label="浏览位置">
+              <button type="button" @click="closeLibrary">地图</button>
+              <span aria-hidden="true">›</span>
+              <button type="button" :disabled="!previewGroup" @click="closePreview">{{ libraryFolderName }}</button>
+              <template v-if="previewGroup">
+                <span aria-hidden="true">›</span>
+                <span class="video-library-crumb-current" :title="previewGroup.video.name">{{ previewGroup.video.name }}</span>
+              </template>
+            </nav>
+            <button type="button" class="video-library-close" aria-label="关闭并回到地图" @click="closeLibrary">关闭</button>
+          </header>
+
+          <div v-if="!previewGroup" class="video-library-body">
+            <div class="video-library-main">
+              <p v-if="!libraryGroups.length" class="video-library-empty">
+                此文件夹没有视频组。视频需与 SRT / LRF 同名成组；单独的 JPG 属于图片，不会显示。
+              </p>
+              <div v-else class="video-library-grid" role="listbox" aria-label="视频列表">
+                <button
+                  v-for="group in libraryGroups"
+                  :key="group.key"
+                  type="button"
+                  role="option"
+                  class="video-library-card"
+                  :class="{ 'is-selected': selectedGroup?.key === group.key }"
+                  :aria-selected="selectedGroup?.key === group.key"
+                  @click="selectedGroup = group"
+                  @dblclick="openPreview(group)"
+                >
+                  <span class="video-library-thumb">
+                    <img v-if="thumbnails[group.key]" :src="thumbnails[group.key]" alt="" loading="lazy" />
+                    <span v-else class="video-library-thumb-loading" aria-hidden="true">…</span>
+                    <span class="video-library-badges">
+                      <i :class="group.srt ? 'is-has' : 'is-miss'">{{ group.srt ? 'SRT' : '无 SRT' }}</i>
+                      <i v-if="group.lrf" class="is-has">LRF</i>
+                    </span>
+                  </span>
+                  <strong :title="group.video.name">{{ group.basename }}</strong>
+                  <small>{{ formatBytes(group.video.size) }} · {{ group.startAt ? formatClock(group.startAt) : '开始未知' }} – {{ formatClock(group.endAt) }}</small>
+                </button>
+              </div>
+              <small class="video-library-hint">单击查看属性 · 双击打开预览 · Esc 逐级返回</small>
+            </div>
+
+            <aside v-if="selectedGroup" class="video-library-properties" aria-label="文件属性">
+              <strong class="video-library-properties-title" :title="selectedGroup.video.name">{{ selectedGroup.video.name }}</strong>
+              <dl>
+                <dt>开始录制</dt>
+                <dd>{{ selectedGroup.startAt ? formatDateTime(selectedGroup.startAt) : '未知（文件名未含时间）' }}</dd>
+                <dt>结束（修改时间）</dt>
+                <dd>{{ formatDateTime(selectedGroup.endAt) }}</dd>
+                <dt>录制时长</dt>
+                <dd>{{ formatDurationBetween(selectedGroup.startAt, selectedGroup.endAt) }}</dd>
+                <dt>视频</dt>
+                <dd>{{ formatBytes(selectedGroup.video.size) }}</dd>
+                <dt>SRT 字幕</dt>
+                <dd>
+                  {{ selectedGroup.srt ? formatBytes(selectedGroup.srt.size) : '无' }}
+                  <template v-if="selectedGroup.srt">
+                    · {{ srtCounts[selectedGroup.key] !== undefined ? `${srtCounts[selectedGroup.key]} 个定位点` : '定位点读取中…' }}
+                  </template>
+                </dd>
+                <dt>LRF 代理</dt>
+                <dd>{{ selectedGroup.lrf ? formatBytes(selectedGroup.lrf.size) : '无' }}</dd>
+              </dl>
+              <button type="button" class="video-library-properties-open" @click="openPreview(selectedGroup)">打开预览</button>
+            </aside>
+          </div>
+
+          <div v-else class="video-library-preview">
+            <video
+              ref="previewVideo"
+              class="video-library-player"
+              :src="previewUrl"
+              controls
+              playsinline
+              preload="metadata"
+            ></video>
+            <div class="video-library-preview-bar">
+              <label class="video-library-speed">倍速
+                <CustomSelect v-model="playSpeed" :options="[{ value: 0.5, label: '0.5×' }, { value: 1, label: '1×' }, { value: 2, label: '2×' }, { value: 4, label: '4×' }]" aria-label="播放倍速" />
+              </label>
+              <div class="video-library-preview-meta">
+                <span>{{ previewGroup.startAt ? formatDateTime(previewGroup.startAt) : '开始时间未知' }}</span>
+                <span>结束 {{ formatDateTime(previewGroup.endAt) }}</span>
+                <span>{{ formatDurationBetween(previewGroup.startAt, previewGroup.endAt) }}</span>
+                <span v-if="previewGroup.srt">{{ srtCounts[previewGroup.key] !== undefined ? `${srtCounts[previewGroup.key]} 个定位点` : '定位点读取中…' }}</span>
+                <span v-else>无 SRT</span>
+              </div>
+              <div class="video-library-preview-actions">
+                <p v-if="error" class="video-library-preview-error" role="alert">{{ error }}</p>
+                <button type="button" class="video-library-import" :disabled="!canImportPreview" @click="importPreviewGroup">
+                  {{ loading ? '导入中…' : previewImportBlockedReason || '导入到当前任务' }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </Teleport>
   </section>
 </template>
 
@@ -377,12 +551,10 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
 .video-survey-badge.is-ready { background: #e7f6ec; color: #16794c; }
 .video-survey-badge.is-warning { background: #fff4e5; color: #9a5b13; }
 .video-survey-picker-row { display: flex; min-width: 0; align-items: center; gap: 7px; margin: 5px 0; }
-.video-survey-picker-row button, .video-survey-target-entry button, .video-survey-target-list button, .video-survey-import, .video-survey-capture { min-height: 28px; padding: 4px 8px; border: 1px solid #d7dfe8; border-radius: 6px; background: #fff; color: #34506c; font-size: 11px; white-space: nowrap; }
+.video-survey-picker-row button, .video-survey-target-entry button, .video-survey-target-list button, .video-survey-capture { min-height: 28px; padding: 4px 8px; border: 1px solid #d7dfe8; border-radius: 6px; background: #fff; color: #34506c; font-size: 11px; white-space: nowrap; }
 .video-survey-picker-row button:hover:not(:disabled), .video-survey-target-entry button:hover:not(:disabled), .video-survey-target-list button:hover:not(:disabled) { border-color: var(--ui-accent); color: var(--ui-accent); background: #eff6ff; }
-.video-survey-picker-row button:disabled, .video-survey-target-entry button:disabled, .video-survey-target-list button:disabled, .video-survey-import:disabled, .video-survey-capture:disabled { opacity: .5; cursor: not-allowed; }
+.video-survey-picker-row button:disabled, .video-survey-target-entry button:disabled, .video-survey-target-list button:disabled, .video-survey-capture:disabled { opacity: .5; cursor: not-allowed; }
 .video-survey-file-name { min-width: 0; overflow: hidden; color: var(--ui-muted); text-overflow: ellipsis; white-space: nowrap; }
-.video-survey-import { width: 100%; margin-top: 4px; border-color: var(--ui-accent); background: var(--ui-accent); color: #fff; }
-.video-survey-import:hover:not(:disabled) { background: var(--ui-accent-hover); color: #fff; }
 .video-survey-capture { width: 100%; margin-top: 7px; border-color: var(--ui-accent); color: var(--ui-accent); }
 .adaptive-selector { display: grid; gap: 7px; margin-top: 9px; padding: 8px; border: 1px solid var(--ui-line); border-radius: 7px; background: #fbfcfe; }
 .adaptive-selector header { display: grid; gap: 3px; }
@@ -423,4 +595,49 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
 .video-survey-target-list .video-survey-remove { flex: 0 0 auto; }
 .video-survey-footnote { display: block; margin-top: 8px; color: var(--ui-muted); line-height: 1.4; }
 .video-survey-input { display: none; }
+
+.video-library-backdrop { position: fixed; z-index: 10000; inset: 0; display: flex; padding: 22px; background: rgb(15 23 42 / .58); }
+.video-library { display: flex; width: min(1180px, 96vw); max-height: 90vh; flex: 1; flex-direction: column; overflow: hidden; align-self: center; border: 1px solid var(--ui-line); border-radius: 12px; background: #fff; color: #27364a; box-shadow: 0 18px 48px rgb(15 23 42 / .3); }
+.video-library-nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--ui-line); }
+.video-library-crumbs { display: flex; min-width: 0; align-items: center; gap: 8px; font-size: 13px; }
+.video-library-crumbs > button { min-height: 28px; padding: 4px 12px; border: 1px solid transparent; border-radius: 14px; background: transparent; color: #34506c; font-size: 13px; cursor: pointer; }
+.video-library-crumbs > button:hover:not(:disabled) { border-color: #d7dfe8; background: #f3f7fb; }
+.video-library-crumbs > button:disabled { opacity: .9; cursor: default; }
+.video-library-crumb-current { min-width: 0; overflow: hidden; padding: 4px 12px; border-radius: 14px; background: #eff6ff; color: var(--ui-accent); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.video-library-close { min-height: 30px; padding: 5px 12px; border: 1px solid #d7dfe8; border-radius: 6px; background: #fff; color: #34506c; font-size: 12px; cursor: pointer; }
+.video-library-close:hover { border-color: var(--ui-accent); background: #eff6ff; color: var(--ui-accent); }
+.video-library-body { display: flex; min-height: 0; flex: 1; }
+.video-library-main { display: flex; min-width: 0; flex: 1; flex-direction: column; }
+.video-library-grid { display: grid; flex: 1; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; align-content: start; overflow-y: auto; padding: 14px 16px; }
+.video-library-card { display: grid; gap: 5px; padding: 8px; border: 1px solid var(--ui-line); border-radius: 9px; background: #fff; text-align: left; cursor: pointer; }
+.video-library-card:hover { border-color: #b9d4ef; background: #f6fafd; }
+.video-library-card.is-selected { border-color: var(--ui-accent); background: #eff6ff; box-shadow: 0 0 0 1px var(--ui-accent); }
+.video-library-card strong { overflow: hidden; color: #27364a; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.video-library-card small { color: var(--ui-muted); font-size: 10px; }
+.video-library-thumb { position: relative; display: block; aspect-ratio: 16 / 9; overflow: hidden; border-radius: 6px; background: #10151d; }
+.video-library-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.video-library-thumb-loading { position: absolute; inset: 0; display: grid; place-items: center; color: #64748b; font-size: 14px; }
+.video-library-badges { position: absolute; right: 5px; bottom: 5px; display: flex; gap: 4px; }
+.video-library-badges i { padding: 2px 6px; border-radius: 4px; font-size: 10px; font-style: normal; }
+.video-library-badges .is-has { background: rgb(22 121 76 / .88); color: #fff; }
+.video-library-badges .is-miss { background: rgb(154 91 19 / .9); color: #fff; }
+.video-library-empty { margin: 30px 16px; color: var(--ui-muted); font-size: 13px; line-height: 1.6; }
+.video-library-hint { padding: 8px 16px 12px; border-top: 1px solid var(--ui-line); color: var(--ui-muted); font-size: 11px; }
+.video-library-properties { display: flex; width: 290px; flex: 0 0 auto; flex-direction: column; gap: 10px; overflow-y: auto; padding: 14px 16px; border-left: 1px solid var(--ui-line); background: #f9fafb; }
+.video-library-properties-title { overflow: hidden; color: #27364a; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.video-library-properties dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; margin: 0; font-size: 12px; }
+.video-library-properties dt { color: var(--ui-muted); white-space: nowrap; }
+.video-library-properties dd { margin: 0; color: #27364a; overflow-wrap: anywhere; }
+.video-library-properties-open { margin-top: auto; min-height: 32px; border: 1px solid var(--ui-accent); border-radius: 7px; background: var(--ui-accent); color: #fff; font-size: 12px; cursor: pointer; }
+.video-library-properties-open:hover { background: var(--ui-accent-hover); }
+.video-library-preview { display: flex; min-height: 0; flex: 1; flex-direction: column; }
+.video-library-player { display: block; width: 100%; flex: 1; min-height: 0; background: #0b0f16; }
+.video-library-preview-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--ui-line); }
+.video-library-speed { display: flex; align-items: center; gap: 7px; color: var(--ui-muted); font-size: 12px; }
+.video-library-preview-meta { display: flex; min-width: 0; flex: 1; flex-wrap: wrap; gap: 4px 14px; color: var(--ui-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.video-library-preview-actions { display: flex; align-items: center; gap: 10px; }
+.video-library-preview-error { margin: 0; color: #a4262c; font-size: 11px; max-width: 320px; overflow-wrap: anywhere; }
+.video-library-import { min-height: 34px; padding: 6px 16px; border: 1px solid var(--ui-accent); border-radius: 7px; background: var(--ui-accent); color: #fff; font-size: 12px; cursor: pointer; }
+.video-library-import:hover:not(:disabled) { background: var(--ui-accent-hover); }
+.video-library-import:disabled { opacity: .55; cursor: not-allowed; }
 </style>
