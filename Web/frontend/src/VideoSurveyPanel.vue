@@ -218,7 +218,7 @@ async function importVideo(srt: File, localFile: File) {
     localVideo.value = { file: localFile, url: URL.createObjectURL(localFile) }
     publishSurvey(result)
     status.value = result.has_gps
-      ? '已导入 SRT 轨迹；视频保留在本机，预览与截帧直接使用本地文件，不会上传。'
+      ? `已导入 SRT 轨迹（本任务之前的视频已自动替换清理）；视频保留在本机，预览与截帧直接使用本地文件，不会上传。`
       : 'SRT 已导入，但没有识别到 GPS 坐标。请确认使用的是与此视频对应、含 GPS 的视频字幕文件。'
     if (videoElement.value) videoElement.value.currentTime = 0
   } catch (cause) {

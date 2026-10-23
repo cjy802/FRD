@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import shutil
 import re
 import uuid
 from datetime import datetime, timezone
@@ -488,6 +489,25 @@ class VideoSurveyStore:
                         video_file=video_path.name, video_bytes=total_bytes, has_video=True)
         (directory / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return self.job(job_id)
+
+    def delete_survey(self, job_id: str) -> None:
+        """Remove one survey directory (video, telemetry, targets).
+
+        Only deletes inside the two known roots, after re-resolving, so a
+        forged job id can never point elsewhere.
+        """
+        directory = self._directory(job_id)
+        for root in (self.storage_dir, self.task_storage_dir):
+            try:
+                resolved_root = root.resolve(strict=True)
+                resolved = directory.resolve(strict=True)
+            except OSError:
+                continue
+            if resolved == resolved_root or resolved_root not in resolved.parents:
+                continue
+            shutil.rmtree(resolved, ignore_errors=True)
+            return
+        raise VideoSurveyError("视频任务目录位置无效，无法删除。", http_status=400)
 
     def job(self, job_id: str) -> dict[str, Any]:
         directory = self._directory(job_id)

@@ -47,6 +47,11 @@ function selectModule(module: ModuleKey) {
     return
   }
   activeModule.value = module
+  if (module === 'photos') {
+    // 模块 4 不做逐点编辑：退出 node 模式，避免整条路线渲染成编号节点。
+    mapEditMode.value = 'route'
+    selectedWaypointIndex.value = null
+  }
   if (module === 'route' || module === 'photos') {
     workspacePanel.value = 'settings'
     settingsPage.value = module === 'photos' ? 'photos' : 'points'
@@ -451,6 +456,7 @@ async function createCurrentTask() {
       localStorage.setItem(ACTIVE_TASK_STORAGE_KEY, taskId)
       taskFrames.value = []
       analysisMapTargets.value = []
+      selectedWaypointIndex.value = null
       void refreshMissionTaskList()
     }
 
@@ -704,6 +710,13 @@ async function restoreCurrentTask() {
 function applyMissionTask(task: MissionTask) {
   activeTask.value = task
   localStorage.setItem(ACTIVE_TASK_STORAGE_KEY, task.task_id)
+  // 任务边界即状态边界：视频轨迹/近拍点/节点编辑态随任务切换一并重置，
+  // 不依赖子组件 prop 联动（prop 值不变时会漏清）。
+  videoTelemetryTrack.value = []
+  videoTelemetryPosition.value = null
+  videoCaptureTargets.value = []
+  mapEditMode.value = 'route'
+  selectedWaypointIndex.value = null
   preview.value = null
   previewKey.value = ''
   settingsRoute.value = null
@@ -749,6 +762,14 @@ function applyMissionTask(task: MissionTask) {
   if (Array.isArray(savedAnchors) && savedAnchors.length >= 2) {
     anchors.value = savedAnchors.map((anchor: any) => ({ id: String(anchor.id), latitude: Number(anchor.latitude), longitude: Number(anchor.longitude) }))
     selectedAnchorId.value = anchors.value[0].id
+  } else {
+    // 任务没有可用的主点记录：重置为默认主点，而不是沿用上一个任务的 A/B。
+    anchors.value = [
+      { id: 'anchor-1', latitude: form.start.latitude, longitude: form.start.longitude },
+      { id: 'anchor-2', latitude: form.end.latitude, longitude: form.end.longitude },
+    ]
+    nextAnchorNumber = 3
+    selectedAnchorId.value = 'anchor-1'
   }
   if (planningMode.value === 'area') syncAreaWeatherBounds(coveragePolygon.value)
   if (route.road_source === 'local' || route.road_source === 'online') roadSource.value = route.road_source
@@ -829,6 +850,7 @@ async function deleteAllMissionTasks() {
       activeTask.value = null
       taskFrames.value = []
       analysisMapTargets.value = []
+      selectedWaypointIndex.value = null
       routeAssessment.value = null
       selectModule('route')
     }
@@ -859,6 +881,7 @@ async function deleteSavedMissionTask(task: MissionTaskSummary) {
       activeTask.value = null
       taskFrames.value = []
       analysisMapTargets.value = []
+      selectedWaypointIndex.value = null
       routeAssessment.value = null
       selectModule('route')
     }
@@ -903,7 +926,12 @@ async function selectSavedTask(taskId: string) {
 
 function restoreTaskWaypointSettings() {
   const saved = activeTask.value?.aircraft?.waypoint_settings
-  if (!Array.isArray(saved) || saved.length !== waypointSettings.value.length) return
+  if (!Array.isArray(saved)) return
+  if (saved.length !== waypointSettings.value.length) {
+    // 路线重算后的点数与保存时不一致（道路数据变化等），逐点设置无法对位。
+    taskError.value = '任务的逐点高度/视角设置与当前重算路线的点数不一致，未恢复。'
+    return
+  }
   waypointSettings.value = waypointSettings.value.map((setting, index) => ({ ...setting, ...saved[index] }))
   scheduleWaypointRender()
 }

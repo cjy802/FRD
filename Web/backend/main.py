@@ -962,12 +962,19 @@ async def video_survey_create(request: Request, srt: UploadFile = File(...),
     require_local_request(request, mutation=True, label="视频定位")
     try:
         task_record = tasks.get(task_id) if task_id else None
+        previous_survey_id = str(task_record.get("video_survey_id") or "") if task_record else ""
         if video is None or not (video.filename or "").strip():
             result = await video_surveys.create_srt_only(srt, video_name.strip()[:200], task_id or None, task_record)
         else:
             result = await video_surveys.create(video, srt, task_id or None, task_record)
         if task_id:
             tasks.update(task_id, {"video_survey_id": result["job_id"]})
+            # 一个任务只保留一个视频：新导入成功后清理旧 survey 目录。
+            if previous_survey_id and previous_survey_id != result["job_id"]:
+                try:
+                    video_surveys.delete_survey(previous_survey_id)
+                except VideoSurveyError:
+                    pass  # 旧目录缺失/位置异常不阻塞新导入
         return result
     except VideoSurveyError as error:
         raise HTTPException(status_code=error.http_status, detail=str(error)) from error

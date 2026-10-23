@@ -517,6 +517,13 @@ function onDocumentPointerdown(event: PointerEvent) {
 </script>
 
 <template>
+  <div v-if="activeJob" class="photo-active-job" role="status">
+    <span class="photo-active-job-text">
+      后台识别进行中（{{ activeJob.counts?.done ?? 0 }}/{{ activeJob.counts?.total ?? '?' }}{{ activeJob.task_id && activeJob.task_id !== taskId ? ' · 其他任务' : '' }}）{{ job?.job_id === activeJob.job_id ? '· 进度见识别队列' : '' }}
+    </span>
+    <button v-if="job?.job_id !== activeJob.job_id" type="button" :disabled="busy" @click="resumeActiveJob">进入进度</button>
+    <button type="button" class="photo-active-terminate" :disabled="terminatingJob" @click="terminateActiveJob">{{ terminatingJob ? '终止中…' : '终止' }}</button>
+  </div>
   <details class="photo-panel" @toggle="onPhotoPanelToggle">
     <summary>
       <span class="photo-heading">飞行后照片分析</span>
@@ -527,14 +534,6 @@ function onDocumentPointerdown(event: PointerEvent) {
     <div class="photo-panel-body">
       <p v-if="healthError" class="photo-feedback is-error" role="alert">{{ healthError }}</p>
       <p v-else-if="health && !health.available" class="photo-feedback is-error" role="alert">{{ health.message }}</p>
-
-      <div v-if="activeJob" class="photo-active-job" role="status">
-        <span class="photo-active-job-text">
-          后台识别进行中（{{ activeJob.counts?.done ?? 0 }}/{{ activeJob.counts?.total ?? '?' }}{{ activeJob.task_id && activeJob.task_id !== taskId ? ' · 其他任务' : '' }}）{{ job?.job_id === activeJob.job_id ? '· 进度见识别队列' : '' }}
-        </span>
-        <button v-if="job?.job_id !== activeJob.job_id" type="button" :disabled="busy" @click="resumeActiveJob">进入进度</button>
-        <button type="button" class="photo-active-terminate" :disabled="terminatingJob" @click="terminateActiveJob">{{ terminatingJob ? '终止中…' : '终止' }}</button>
-      </div>
 
       <div class="photo-toolbar">
         <small>只分析勾选的任务关键帧。关键帧可从任务视频截取，也可直接选择本机照片；没有拍摄高度的帧不换算积水面积。</small>
