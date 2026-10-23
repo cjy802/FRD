@@ -45,6 +45,43 @@ export async function createBaiduScene(element: HTMLElement, center: Coordinate,
   return createMapScene(element, center, 'baidu', preview)
 }
 
+// 全局滚轮缩放灵敏度。SDK 有两套交互控制器，随 2D/3D 投影切换重建：
+// · 地球视图 Earth → ScreenSpaceCameraController：一格滚轮移动
+//   _zoomFactor × (滚轮像素/屏高) × 相机距离，默认 _zoomFactor=5 时一格
+//   约跳掉 70% 距离；钉到 1.5（一格约 20%）。
+// · 平面视图 → MapControl/MapControl3D：zoom = zoom + deltaY × zoomSpeed，
+//   默认 0.005 时一格 0.5 个 zoom 单位（≈1.4 倍）；钉到 0.002（≈15%）。
+const GLOBE_WHEEL_ZOOM_FACTOR = 1.5
+const PLANAR_WHEEL_ZOOM_SPEED = 0.002
+
+function pinWheelZoomSpeed(engine: any) {
+  const seen = new Set<object>()
+  // 控制器实例随投影/底图切换会被重建，且分布在不同私有路径，所以每帧对
+  // 全部候选路径钉一遍，谁持有哪个字段就钉哪个。
+  const candidates = [
+    engine?.controller,
+    engine?.map,
+    engine?.map?._map,
+    engine?.map?._map?.control,
+    engine?.map?._map?.controller,
+    engine?.map?.control,
+    engine?.map?.controller,
+    engine?.map?.map,
+    engine?.map?.map?.control,
+    engine?.map?.map?.controller,
+  ]
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== 'object' || seen.has(candidate)) continue
+    seen.add(candidate)
+    if ('_zoomFactor' in candidate && candidate._zoomFactor !== GLOBE_WHEEL_ZOOM_FACTOR) {
+      candidate._zoomFactor = GLOBE_WHEEL_ZOOM_FACTOR
+    }
+    if ('zoomSpeed' in candidate && candidate.zoomSpeed !== PLANAR_WHEEL_ZOOM_SPEED) {
+      candidate.zoomSpeed = PLANAR_WHEEL_ZOOM_SPEED
+    }
+  }
+}
+
 export class BaiduScene {
   private routeLayers: any[] = []
   private telemetryLayers: any[] = []
@@ -54,18 +91,19 @@ export class BaiduScene {
   private disposed = false
   private activeProjection: string | null = null
   private beforeRender = () => {
-    // 滚轮缩放步长由 MapControl3D.zoomSpeed 决定（SDK 默认 0.005，一格 0.5 个
-    // zoom 单位 ≈ 1.4 倍）。调低到 0.002 让一格约放大 15%；控制器可能随底图
-    // 或模式重建，所以每帧钉住。
-    if (this.interactive) {
-      const controller = this.engine?.map?._map?.controller
-      if (controller && controller.zoomSpeed !== 0.002) controller.zoomSpeed = 0.002
-    }
+    if (this.interactive) pinWheelZoomSpeed(this.engine)
     for (const callback of this.frameListeners) callback()
   }
+  // 2D 平面视图不经过 engine 的 beforeRender 管线，每帧钉住在那里不生效；
+  // 在输入事件捕获阶段（早于 SDK 自己的监听器）钉一次，两种视图都覆盖。
+  private pinOnInput = () => { if (this.interactive) pinWheelZoomSpeed(this.engine) }
 
   constructor(readonly engine: any, private sdk: any, private element: HTMLElement, private interactive = true, private geoDatum: 'bd09' | 'wgs84' = 'bd09') {
     engine.addBeforeRenderListener(this.beforeRender)
+    if (interactive) {
+      this.element.addEventListener('wheel', this.pinOnInput, { capture: true, passive: true })
+      this.element.addEventListener('pointerdown', this.pinOnInput, { capture: true, passive: true })
+    }
   }
 
   private clear(layers: any[]) {
@@ -328,6 +366,10 @@ export class BaiduScene {
   dispose() {
     if (this.disposed) return
     this.disposed = true
+    if (this.interactive) {
+      this.element.removeEventListener('wheel', this.pinOnInput, { capture: true })
+      this.element.removeEventListener('pointerdown', this.pinOnInput, { capture: true })
+    }
     this.engine.removeBeforeRenderListener(this.beforeRender)
     this.frameListeners.clear()
     this.clear(this.routeLayers)
