@@ -50,9 +50,10 @@ export async function createBaiduScene(element: HTMLElement, center: Coordinate,
 //   _zoomFactor × (滚轮像素/屏高) × 相机距离，默认 _zoomFactor=5 时一格
 //   约跳掉 70% 距离；钉到 1.5（一格约 20%）。
 // · 平面视图 → MapControl/MapControl3D：zoom = zoom + deltaY × zoomSpeed，
-//   默认 0.005 时一格 0.5 个 zoom 单位（≈1.4 倍）；钉到 0.001（≈7%）。
+//   默认 0.005 时一格 0.5 个 zoom 单位（≈1.4 倍）；钉到 0.0014（一格
+//   0.14 个 zoom 单位 ≈ 10%）。当前底图与地球模式的 2D 共用此控制器。
 const GLOBE_WHEEL_ZOOM_FACTOR = 1.5
-const PLANAR_WHEEL_ZOOM_SPEED = 0.001
+const PLANAR_WHEEL_ZOOM_SPEED = 0.0014
 
 function pinWheelZoomSpeed(engine: any) {
   const seen = new Set<object>()
