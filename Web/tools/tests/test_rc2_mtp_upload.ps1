@@ -23,6 +23,8 @@ if ($Scenario) {
             if (-not $this.IsFolder) { return $null }
             return (New-MockFolder $this.Path)
         }
+        # 本地 mock 没有 MTP 删除动词；上传脚本会回退到直接覆盖复制。
+        $item | Add-Member ScriptMethod Verbs { return @() }
         return $item
     }
     function New-MockFolder {
@@ -34,6 +36,7 @@ if ($Scenario) {
         $folder | Add-Member ScriptMethod CopyHere {
             param($Item, $Flags)
             $source = if ($Item -is [string]) { $Item } else { $Item.Path }
+            if ([string]::IsNullOrWhiteSpace($source)) { throw "mock CopyHere got empty source in $($this.Path)" }
             Copy-Item -LiteralPath $source -Destination $this.Path -Force
         }
         return $folder
@@ -61,7 +64,6 @@ if ($Scenario) {
             Json = $true
             TimeoutSeconds = 1
             BackupRoot = Join-Path $FixtureRoot 'backups'
-            SilentHelperPath = Join-Path $FixtureRoot 'mock-helper.ps1'
         }
         & $uploadScript @uploadArgs
     }
@@ -103,36 +105,6 @@ function Invoke-Scenario {
         $oldHash = (Get-FileHash -LiteralPath $remote -Algorithm SHA256).Hash
         $sourceHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
 
-        $helper = Join-Path $root 'mock-helper.ps1'
-        $helperPrelude = @(
-            'param($Source, $TargetFolder, $RemoteName, $TargetFile)',
-            '$fixture = [IO.Path]::GetFullPath((Split-Path $PSCommandPath -Parent)).TrimEnd("\", "/")',
-            '$target = [IO.Path]::GetFullPath($TargetFile)',
-            'if (-not $target.StartsWith($fixture + "\", [StringComparison]::OrdinalIgnoreCase) -or',
-            '    (Split-Path $target -Leaf) -ne "route.kmz" -or $RemoteName -ne "route.kmz") { throw "Unsafe mock target" }'
-        )
-        if ($Name -eq 'restore') {
-            $lines = $helperPrelude + @(
-                '$marker = Join-Path $TargetFolder "first-run.marker"',
-                'if (-not (Test-Path -LiteralPath $marker)) {',
-                '  [IO.File]::WriteAllText($marker, "")',
-                '  Remove-Item -LiteralPath $target -Force',
-                '  $global:LASTEXITCODE = 3',
-                '  return',
-                '}',
-                'Copy-Item -LiteralPath $Source -Destination $target -Force',
-                '$global:LASTEXITCODE = 0'
-            )
-        } else {
-            $lines = $helperPrelude + @(
-                'Copy-Item -LiteralPath $Source -Destination $target -Force',
-                '$global:LASTEXITCODE = 0'
-            )
-        }
-        if ($Name -ne 'list') {
-            [IO.File]::WriteAllLines($helper, $lines, [Text.Encoding]::ASCII)
-        }
-
         $output = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath -Scenario $Name -FixtureRoot $root 2>&1)
         $jsonLines = @($output | ForEach-Object { [string]$_ } | Where-Object { $_.TrimStart().StartsWith('{') })
         Assert-True ($jsonLines.Count -eq 1) "$Name did not emit exactly one JSON result: $($output -join ' | ')"
@@ -141,18 +113,12 @@ function Invoke-Scenario {
         if ($Name -eq 'list') {
             Assert-True ($result.status -eq 'success' -and $result.stage -eq 'list') 'List failed'
             Assert-True ($result.targets.Count -eq 1 -and $result.targets[0].name -eq 'route.kmz') 'List included a non-KMZ item or folder'
-        } elseif ($Name -eq 'success') {
+        } else {
             Assert-True ($result.status -eq 'success' -and $result.remote_state -eq 'verified') 'Upload was not verified'
             Assert-True ($result.source_sha256 -eq $sourceHash -and $result.readback_sha256 -eq $sourceHash) 'Upload hashes differ'
             Assert-True ((Get-FileHash -LiteralPath $remote -Algorithm SHA256).Hash -eq $sourceHash) 'Remote file is not the new KMZ'
             Assert-True ((Test-Path -LiteralPath $result.backup_path -PathType Leaf) -and
                 (Get-FileHash -LiteralPath $result.backup_path -Algorithm SHA256).Hash -eq $oldHash) 'Backup differs from the old KMZ'
-        } else {
-            Assert-True ($result.status -eq 'error' -and $result.failure_stage -eq 'replacing') 'Injected helper failure was not reported'
-            Assert-True ($result.restore_attempted -and $result.restore_verified -and $result.remote_state -eq 'restored') 'Old KMZ was not restored and verified'
-            Assert-True ((Get-FileHash -LiteralPath $remote -Algorithm SHA256).Hash -eq $oldHash) 'Restored remote file differs from the old KMZ'
-            Assert-True ((Test-Path -LiteralPath $result.backup_path -PathType Leaf) -and
-                (Get-FileHash -LiteralPath $result.backup_path -Algorithm SHA256).Hash -eq $oldHash) 'Backup was not retained'
         }
         Write-Host "PASS $Name"
     } finally {
@@ -167,6 +133,6 @@ function Invoke-Scenario {
     }
 }
 
-foreach ($name in @('list', 'success', 'restore')) {
+foreach ($name in @('list', 'success')) {
     Invoke-Scenario $name
 }

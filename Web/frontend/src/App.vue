@@ -324,11 +324,11 @@ type Rc2Status = {
   platform: string
   message: string
   generation_directory: string
-  helper_available: boolean
   script_available: boolean
   busy: boolean
 }
 type Rc2Target = { name: string; size?: number; type?: string }
+type Rc2FolderTarget = { folder: string; kmz_name: string; subpath: string; name_matches_folder?: boolean }
 type Rc2Job = {
   job_id: string
   status: 'queued' | 'running' | 'succeeded' | 'failed'
@@ -343,10 +343,13 @@ type Rc2Job = {
   remote_state: string | null
 }
 const rc2Status = ref<Rc2Status | null>(null)
-const rc2Targets = ref<Rc2Target[]>([])
+const rc2Folders = ref<Rc2FolderTarget[]>([])
 const rc2TargetOptions = computed(() => [
-  { value: '', label: '请选择遥控器上的 .kmz 文件' },
-  ...rc2Targets.value.map(target => ({ value: target.name, label: target.name })),
+  { value: '', label: rc2Folders.value.length ? '请选择要替换的占位航线文件夹' : '请先刷新检测遥控器' },
+  ...rc2Folders.value.map(entry => ({
+    value: entry.folder,
+    label: entry.name_matches_folder ? entry.folder : `${entry.folder}（kmz 名不一致：${entry.kmz_name}）`,
+  })),
 ])
 const rc2DeviceName = ref('')
 const rc2WaypointPath = ref('')
@@ -466,16 +469,16 @@ async function createCurrentTask() {
           fallbackReason = '未检测到已解锁的 DJI RC 2。'
         } else fallbackReason = detectionError
       } else {
-        const selectedTarget = rc2Targets.value.find((target) => target.name === rc2TargetName.value)
-        const target = selectedTarget ?? (rc2Targets.value.length === 1 ? rc2Targets.value[0] : null)
+        const selectedTarget = rc2Folders.value.find((entry) => entry.folder === rc2TargetName.value)
+        const target = selectedTarget ?? (rc2Folders.value.length === 1 ? rc2Folders.value[0] : null)
         if (!target) {
-          fallbackReason = rc2Targets.value.length
-            ? '检测到多条占位航线但未选择目标。'
-            : '检测到 DJI RC 2，但没有可替换的占位航线。'
+          fallbackReason = rc2Folders.value.length
+            ? '检测到多条占位航线文件夹但未选择目标。'
+            : '检测到 DJI RC 2，但没有可替换的占位航线文件夹。'
         } else {
           try {
-            taskCreateProgress.value = `正在导入 DJI RC 2：${target.name}…`
-            const queued = await startRc2Import(target.name)
+            taskCreateProgress.value = `正在导入 DJI RC 2：${target.folder}…`
+            const queued = await startRc2Import(target.folder)
             const result = await waitForRc2Job(queued.job_id)
             if (result.status === 'succeeded') importedToRc2 = true
             else if (isRc2DeviceUnavailable(result.message)) {
@@ -1872,7 +1875,7 @@ function markRc2DeviceUnavailable() {
     rc2Status.value = { ...rc2Status.value, available: false, busy: false,
       message: '未检测到已解锁的 DJI RC 2。任务 KMZ 会下载到本机。' }
   }
-  rc2Targets.value = []
+  rc2Folders.value = []
   rc2TargetName.value = ''
   rc2Job.value = null
   rc2Error.value = ''
@@ -1892,7 +1895,7 @@ function refreshRc2Connection(): Promise<void> {
       if (version !== rc2ConnectionVersion) return
       rc2Status.value = status
       if (!status.available) {
-        rc2Targets.value = []
+        rc2Folders.value = []
         rc2DeviceName.value = ''
         rc2WaypointPath.value = ''
         rc2TargetName.value = ''
@@ -1900,18 +1903,18 @@ function refreshRc2Connection(): Promise<void> {
       }
       const targetsResponse = await fetch('/api/dji/rc2/targets')
       if (!targetsResponse.ok) throw await rc2ResponseError(targetsResponse, '无法读取 RC 2 上的占位航线。')
-      const result = await targetsResponse.json() as { device_name: string; waypoint_path: string; targets: Rc2Target[] }
+      const result = await targetsResponse.json() as { device_name: string; waypoint_path: string; targets: Rc2Target[]; folders?: Rc2FolderTarget[] }
       if (version !== rc2ConnectionVersion) return
       rc2DeviceName.value = result.device_name
       rc2WaypointPath.value = result.waypoint_path
-      rc2Targets.value = result.targets
-      if (!result.targets.some((target) => target.name === rc2TargetName.value)) {
-        rc2TargetName.value = result.targets.length === 1 ? result.targets[0].name : ''
+      rc2Folders.value = result.folders ?? []
+      if (!rc2Folders.value.some((entry) => entry.folder === rc2TargetName.value)) {
+        rc2TargetName.value = rc2Folders.value.length === 1 ? rc2Folders.value[0].folder : ''
       }
     } catch (cause) {
       if (version === rc2ConnectionVersion) {
         if (rc2Status.value) rc2Status.value = { ...rc2Status.value, available: false, message: '无法读取已连接遥控器的占位航线。' }
-        rc2Targets.value = []
+        rc2Folders.value = []
         rc2TargetName.value = ''
         rc2Error.value = cause instanceof Error ? cause.message : '读取 RC 2 状态失败。'
       }
@@ -1924,8 +1927,10 @@ function refreshRc2Connection(): Promise<void> {
   return request
 }
 
-async function startRc2Import(targetFileName: string): Promise<Rc2Job> {
+async function startRc2Import(targetFolder: string): Promise<Rc2Job> {
   if (rc2Submitting.value || rc2JobRunning.value) throw new Error('已有 DJI RC 2 导入任务正在运行。')
+  const entry = rc2Folders.value.find((item) => item.folder === targetFolder)
+  if (!entry) throw new Error('所选占位航线文件夹已不在 RC 2 上；请刷新设备后重试。')
   const kmzRequest = djiKmzRequestBody()
   rc2Submitting.value = true
   rc2Error.value = ''
@@ -1934,7 +1939,7 @@ async function startRc2Import(targetFileName: string): Promise<Rc2Job> {
     const response = await fetch('/api/dji/rc2/import', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...kmzRequest, target_file_name: targetFileName }),
+      body: JSON.stringify({ ...kmzRequest, target_file_name: entry.kmz_name, target_folder: entry.folder }),
     })
     if (!response.ok) throw await rc2ResponseError(response, '无法开始 RC 2 导入任务。')
     const result = await response.json() as { job_id: string; status: 'queued'; message: string; target_file_name: string }
@@ -3037,12 +3042,12 @@ onBeforeUnmount(() => {
           <template v-if="preview && djiModel === 'fly' && rc2Status?.available">
             <small v-if="rc2DeviceName">遥控器：{{ rc2DeviceName }}</small>
             <small v-if="rc2WaypointPath">占位航线目录：{{ rc2WaypointPath }}</small>
-            <label>选择已有占位航线
-              <CustomSelect v-model="rc2TargetName" :options="rc2TargetOptions" aria-label="选择已有占位航线" :disabled="rc2Loading || rc2JobRunning || !rc2Targets.length" />
+            <label>选择已有占位航线文件夹
+              <CustomSelect v-model="rc2TargetName" :options="rc2TargetOptions" aria-label="选择已有占位航线文件夹" :disabled="rc2Loading || rc2JobRunning || !rc2Folders.length" />
             </label>
-            <small v-if="!rc2Targets.length && !rc2Loading">没有可替换的占位航线；创建任务时会下载 KMZ 文件。</small>
-            <small v-else-if="rc2Targets.length > 1 && !rc2TargetName">请选择要替换的占位航线；未选择时创建任务会下载 KMZ 文件。</small>
-            <small v-if="rc2TargetName">创建任务时将替换 {{ rc2TargetName }}；原文件会先备份，写入后回读校验。</small>
+            <small v-if="!rc2Folders.length && !rc2Loading">没有可替换的占位航线文件夹。需要 RC 2 上存在 waypoint/&lt;编号&gt;/ 文件夹（DJI Fly 占位航线），且里面有与文件夹同名的 .kmz；创建任务时会下载 KMZ 文件。</small>
+            <small v-else-if="rc2Folders.length > 1 && !rc2TargetName">请选择要替换的占位航线文件夹；未选择时创建任务会下载 KMZ 文件。</small>
+            <small v-if="rc2TargetName">创建任务时将替换文件夹 {{ rc2TargetName }} 里的同名 .kmz；原文件会先备份，写入后回读校验。</small>
           </template>
           <small v-else-if="preview && djiModel === 'fly'">用 USB 连接并解锁 RC 2 后，创建任务会自动尝试导入；未检测到时会下载 KMZ。</small>
           <div v-if="rc2Job" class="rc2-job" :class="{ 'rc2-job-failed': rc2Job.status === 'failed', 'rc2-job-done': rc2Job.status === 'succeeded' }" role="status" aria-live="polite">

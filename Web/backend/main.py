@@ -172,6 +172,7 @@ class KmzExportRequest(BaseModel):
 class Rc2ImportRequest(KmzExportRequest):
     drone_model: Literal["fly"] = "fly"
     target_file_name: str = Field(min_length=5, max_length=128)
+    target_folder: str | None = Field(default=None, min_length=36, max_length=36)
 
 
 class VideoCaptureTargetRequest(BaseModel):
@@ -802,7 +803,7 @@ def rc2_import(request: Request, import_request: Rc2ImportRequest):
             import_request.coordinates, import_request.altitude_m, import_request.speed_kmh,
             "fly", settings,
         )
-        return rc2_imports.start(payload, import_request.target_file_name)
+        return rc2_imports.start(payload, import_request.target_file_name, import_request.target_folder)
     except KmzExportError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except Rc2Error as error:

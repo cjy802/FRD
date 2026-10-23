@@ -1,7 +1,7 @@
 """Local, Windows-only bridge from a DJI Fly KMZ draft to an RC 2 MTP slot.
 
-The browser can select only an existing remote KMZ basename. Paths, PowerShell
-arguments and the MTP helper are owned by this module, never by the request.
+The browser selects a waypoint folder on the remote; paths, PowerShell
+arguments and the MTP transfer are owned by this module, never by the request.
 """
 
 from __future__ import annotations
@@ -26,11 +26,11 @@ from zipfile import BadZipFile, ZipFile
 
 TOOLS_DIR = Path(__file__).resolve().parents[1] / "tools"
 SCRIPT_PATH = TOOLS_DIR / "rc2_mtp_upload.ps1"
-HELPER_PATH = TOOLS_DIR / "bin" / "silent_mtp_replace.exe"
 MAX_FLY_WAYPOINTS = 200
 MAX_REMEMBERED_JOBS = 100
 JOB_RETENTION = timedelta(hours=24)
 _SAFE_KMZ_NAME = re.compile(r"^[^/\\\x00-\x1f\x7f:<>|?*]{1,124}\.kmz$", re.IGNORECASE)
+_UUID_FOLDER = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 _KML_POINT = "{http://www.opengis.net/kml/2.2}Placemark"
 
 
@@ -70,6 +70,10 @@ def validate_target_name(name: str) -> bool:
     return bool(_SAFE_KMZ_NAME.fullmatch(name)) and ".." not in name and name == name.strip()
 
 
+def validate_folder_name(name: str) -> bool:
+    return bool(_UUID_FOLDER.fullmatch(name))
+
+
 def count_fly_waypoints(payload: bytes) -> int:
     """Count actual exported waypoints after the KMZ builder has simplified them."""
     with ZipFile(BytesIO(payload)) as archive:
@@ -102,9 +106,8 @@ def _last_json(stdout: str) -> dict[str, Any] | None:
 
 
 class Rc2ImportManager:
-    def __init__(self, *, script_path: Path = SCRIPT_PATH, helper_path: Path = HELPER_PATH):
+    def __init__(self, *, script_path: Path = SCRIPT_PATH):
         self.script_path = script_path
-        self.helper_path = helper_path
         self._lock = threading.Lock()
         self._jobs: dict[str, dict[str, Any]] = {}
         self._active_id: str | None = None
@@ -126,7 +129,6 @@ class Rc2ImportManager:
         windows = platform.system() == "Windows"
         interactive = _interactive_windows_session() if windows else False
         script_available = self.script_path.is_file()
-        helper_available = self.helper_path.is_file()
         powershell_available = shutil.which("powershell.exe") is not None if windows else False
         with self._lock:
             busy = self._active_id is not None
@@ -138,16 +140,13 @@ class Rc2ImportManager:
             message = "找不到 tools/rc2_mtp_upload.ps1。"
         elif not powershell_available:
             message = "找不到 Windows PowerShell（powershell.exe）。"
-        elif not helper_available:
-            message = "缺少无提示 MTP 助手。请先运行 tools/build_silent_mtp_helper.ps1。"
         else:
             message = "本机导入组件已就绪；请连接并解锁 DJI RC 2。"
         return {
-            "available": windows and interactive and script_available and helper_available and powershell_available,
+            "available": windows and interactive and script_available and powershell_available,
             "platform": "windows" if windows else platform.system().lower(),
             "message": message,
             "generation_directory": str(import_root()),
-            "helper_available": helper_available,
             "script_available": script_available,
             "busy": busy,
         }
@@ -157,8 +156,6 @@ class Rc2ImportManager:
         if state["platform"] != "windows" or not _interactive_windows_session():
             raise Rc2Error(state["message"])
         if not state["script_available"] or shutil.which("powershell.exe") is None:
-            raise Rc2Error(state["message"])
-        if for_upload and not state["helper_available"]:
             raise Rc2Error(state["message"])
 
     def _run_script(self, args: list[str], *, timeout: int) -> dict[str, Any]:
@@ -182,6 +179,44 @@ class Rc2ImportManager:
             raise Rc2Error(detail, result=result)
         return result
 
+    @staticmethod
+    def _safe_subfolder(path: str) -> str | None:
+        # 空串表示 kmz 就在文件夹根层，是合法位置；仅拒绝包含 . / .. 的路径。
+        segments = [segment for segment in path.replace("\\", "/").split("/") if segment]
+        if any(segment in {".", ".."} for segment in segments):
+            return None
+        return "/".join(segments)
+
+    @staticmethod
+    def _folder_entries(items: Any) -> list[dict[str, Any]]:
+        """Normalize the script's waypoint/<UUID>/ folder listing."""
+        entries: list[dict[str, Any]] = []
+        if not isinstance(items, list):
+            return entries
+        seen: set[tuple[str, str]] = set()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            folder, kmz_name, subpath = item.get("folder"), item.get("name"), item.get("subpath")
+            if not (isinstance(folder, str) and validate_folder_name(folder)):
+                continue
+            if not (isinstance(kmz_name, str) and validate_target_name(kmz_name)):
+                continue
+            subfolder = Rc2ImportManager._safe_subfolder(subpath) if isinstance(subpath, str) else None
+            if subfolder is None:
+                continue
+            key = (folder.casefold(), kmz_name.casefold())
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append({
+                "folder": folder,
+                "kmz_name": kmz_name,
+                "subpath": subfolder,
+                "name_matches_folder": kmz_name.casefold() == f"{folder}.kmz".casefold(),
+            })
+        return entries
+
     def targets(self) -> dict[str, Any]:
         self._require_runtime(for_upload=False)
         with self._lock:
@@ -202,11 +237,14 @@ class Rc2ImportManager:
             "device_name": result.get("device_name") or "DJI RC 2",
             "waypoint_path": result.get("waypoint_path") or "Android/data/dji.go.v5/files/waypoint",
             "targets": safe_targets,
+            "folders": self._folder_entries(result.get("folders")),
         }
 
-    def start(self, payload: bytes, target_file_name: str) -> dict[str, Any]:
+    def start(self, payload: bytes, target_file_name: str, target_folder: str | None = None) -> dict[str, Any]:
         if not validate_target_name(target_file_name):
             raise Rc2Error("请选择 RC 2 上已有的 .kmz 占位航线文件。", http_status=422)
+        if target_folder is not None and not validate_folder_name(target_folder):
+            raise Rc2Error("占位航线文件夹编号无效。", http_status=422)
         ensure_fly_waypoint_limit(payload)
         self._require_runtime(for_upload=True)
         with self._lock:
@@ -217,10 +255,28 @@ class Rc2ImportManager:
         job_id: str | None = None
         try:
             current_targets = self.targets_for_import()
-            matched = [item["name"] for item in current_targets["targets"] if item["name"].casefold() == target_file_name.casefold()]
-            if len(matched) != 1:
-                raise Rc2Error("所选占位航线已不在 RC 2 上；请刷新列表后重新选择。", http_status=409)
-            canonical_name = matched[0]
+            if target_folder is not None:
+                matched_folders = [entry for entry in current_targets["folders"]
+                                   if entry["folder"].casefold() == target_folder.casefold()]
+                if len(matched_folders) != 1:
+                    raise Rc2Error("所选占位航线文件夹已不在 RC 2 上；请刷新列表后重新选择。", http_status=409)
+                entry = matched_folders[0]
+                if not entry["name_matches_folder"]:
+                    raise Rc2Error(
+                        f"文件夹 {entry['folder']} 里的 KMZ 文件名是 {entry['kmz_name']}，"
+                        "与文件夹不一致；实验表明这样替换不会被 DJI Fly 识别，请使用 DJI Fly 生成的占位航线文件夹。",
+                        http_status=422,
+                    )
+                canonical_name = entry["kmz_name"]
+                # 脚本的 -RemoteSubFolder 相对 waypoint 根；kmz 相对 UUID 文件夹，
+                # 所以要拼上文件夹本身（subpath 为空表示 kmz 就在文件夹根层）。
+                target_subpath = "/".join(part for part in (target_folder, entry["subpath"]) if part)
+            else:
+                matched = [item["name"] for item in current_targets["targets"] if item["name"].casefold() == target_file_name.casefold()]
+                if len(matched) != 1:
+                    raise Rc2Error("所选占位航线已不在 RC 2 上；请刷新列表后重新选择。", http_status=409)
+                canonical_name = matched[0]
+                target_subpath = None
             job_id = uuid4().hex
             job = {
                 "job_id": job_id,
@@ -228,6 +284,8 @@ class Rc2ImportManager:
                 "stage": "queued",
                 "message": "已确认 RC 2 占位航线，等待生成 KMZ。",
                 "target_file_name": canonical_name,
+                "target_folder": target_folder,
+                "target_subpath": target_subpath,
                 "source_path": None,
                 "backup_directory": str(import_root().parent / "backups" / job_id),
                 "backup_path": None,
@@ -265,7 +323,7 @@ class Rc2ImportManager:
             if isinstance(item, dict) and isinstance(item.get("name"), str)
             and validate_target_name(item["name"])
             and not (item.get("is_folder") or item.get("isFolder"))
-        ]}
+        ], "folders": self._folder_entries(result.get("folders"))}
 
     def _update(self, job_id: str, **values: Any) -> None:
         with self._lock:
@@ -275,6 +333,7 @@ class Rc2ImportManager:
         with self._lock:
             target_name = self._jobs[job_id]["target_file_name"]
             backup_directory = self._jobs[job_id]["backup_directory"]
+            target_subpath = self._jobs[job_id].get("target_subpath")
         source_path: Path | None = None
         try:
             self._update(job_id, status="running", stage="generating", message="正在生成并保存 DJI Fly KMZ。")
@@ -286,10 +345,11 @@ class Rc2ImportManager:
             source_hash = hashlib.sha256(payload).hexdigest()
             self._update(job_id, source_path=str(source_path), source_sha256=source_hash,
                          stage="uploading", message="KMZ 已保存，正在备份并替换 RC 2 占位航线。")
-            result = self._run_script([
-                "-SourceKmz", str(source_path), "-RemoteFileName", target_name, "-ReplaceExisting",
-                "-BackupRoot", backup_directory,
-            ], timeout=600)
+            script_args = ["-SourceKmz", str(source_path), "-RemoteFileName", target_name, "-ReplaceExisting",
+                           "-BackupRoot", backup_directory]
+            if target_subpath:
+                script_args += ["-RemoteSubFolder", target_subpath]
+            result = self._run_script(script_args, timeout=600)
             if (result.get("remote_state") != "verified"
                     or result.get("source_sha256", "").lower() != source_hash
                     or result.get("readback_sha256", "").lower() != source_hash):
