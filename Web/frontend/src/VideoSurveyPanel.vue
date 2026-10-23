@@ -559,7 +559,7 @@ async function selectAdaptiveFramesWithAnalysis() {
     const counts = queueCounts.value
     if (jobId && !error.value) {
       const base = `截帧完成：入队 ${counts.enqueued} 张${queueSkipped.value ? ` · 上传跳过 ${queueSkipped.value} 张` : ''}。`
-      status.value = `${base}识别仍在后台进行（${queueStatusLabel.value || '统计中'}），进度见“任务视频 / 分析”模块。`
+      status.value = `${base}识别仍在后台进行（${queueStatusLabel.value || '统计中'}），进度见“任务视频 / 分析”模块；未检出积水的帧会被自动清理，检出积水的帧保留在任务关键帧。`
     }
   }
 }
