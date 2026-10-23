@@ -211,6 +211,20 @@ export async function retryFailedPhotoAnalysisFrames(jobId: string): Promise<num
   return payload.retried
 }
 
+export type ActivePhotoAnalysisJob = {
+  job_id: string
+  task_id?: string | null
+  model_id?: string | null
+  state: 'pending' | 'running'
+  created_at?: string | null
+  closed?: boolean
+  counts?: PhotoAnalysisJobCounts | null
+}
+
+export function fetchActivePhotoAnalysisJob(): Promise<{ active: ActivePhotoAnalysisJob | null }> {
+  return request<{ active: ActivePhotoAnalysisJob | null }>(`${endpoint}/jobs/active`)
+}
+
 export function fetchPhotoAnalysisJob(jobId: string, signal?: AbortSignal): Promise<PhotoAnalysisJob> {
   return request<PhotoAnalysisJob>(`${endpoint}/jobs/${encodeURIComponent(jobId)}`, { signal })
 }

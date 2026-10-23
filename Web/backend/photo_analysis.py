@@ -552,6 +552,26 @@ class PhotoAnalysisManager:
                 runtime["last_activity"] = time.time()
         self._persist(job_id)
 
+    def active_job(self) -> dict[str, Any] | None:
+        """Summary of the single running/pending queue job, if any."""
+        with self._lock:
+            active = next((job for job in self._jobs.values()
+                           if job.get("mode") == "frames" and job["state"] in ("pending", "running")), None)
+            if active is None:
+                return None
+            job_id = active["job_id"]
+        snapshot = self.job(job_id)
+        counts = snapshot.get("counts") or {}
+        return {
+            "job_id": snapshot["job_id"],
+            "task_id": snapshot.get("task_id"),
+            "model_id": snapshot.get("model_id"),
+            "state": snapshot["state"],
+            "created_at": snapshot.get("created_at"),
+            "closed": bool(snapshot.get("closed")),
+            "counts": counts,
+        }
+
     def cancel_job(self, job_id: str) -> None:
         with self._lock:
             job = self._jobs.get(job_id)

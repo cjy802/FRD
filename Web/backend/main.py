@@ -925,6 +925,12 @@ def photo_analysis_retry_failed(request: Request, job_id: str):
     return {"job_id": job_id, "retried": retried}
 
 
+@app.get("/api/photo-analysis/jobs/active")
+def photo_analysis_active_job(request: Request):
+    require_local_request(request, label="照片分析")
+    return {"active": photo_analysis.active_job()}
+
+
 @app.get("/api/photo-analysis/jobs/{job_id}")
 def photo_analysis_job(request: Request, job_id: str):
     require_local_request(request, label="照片分析")

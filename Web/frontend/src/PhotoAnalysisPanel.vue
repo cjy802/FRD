@@ -4,6 +4,7 @@ import {
   PhotoAnalysisApiError,
   assessWaterAlert,
   cancelPhotoAnalysisJob,
+  fetchActivePhotoAnalysisJob,
   fetchPhotoAnalysisHealth,
   fetchPhotoAnalysisJob,
   photoAnalysisFileUrl,
@@ -11,7 +12,7 @@ import {
   sanitizeWaterAlertThresholds,
   submitPhotoAnalysisJob,
 } from './photoAnalysis'
-import type { PhotoAnalysisHealth, PhotoAnalysisJob, PhotoAnalysisJobItem, PhotoAnalysisResultImage, WaterAlertThresholds } from './photoAnalysis'
+import type { ActivePhotoAnalysisJob, PhotoAnalysisHealth, PhotoAnalysisJob, PhotoAnalysisJobItem, PhotoAnalysisResultImage, WaterAlertThresholds } from './photoAnalysis'
 import type { TaskVideoFrame } from './photoAnalysis'
 
 const props = withDefaults(defineProps<{ taskId: string | null; frames: TaskVideoFrame[]; thresholds: WaterAlertThresholds; activeJobId?: string | null; queueOpen?: boolean }>(), { activeJobId: null, queueOpen: false })
@@ -284,6 +285,43 @@ function pollJob(jobId: string) {
   }, 1500)
 }
 
+// —— 后台识别任务感知：页面刷新后仍能看到/终止/回到正在跑的任务 ——
+const activeJob = ref<ActivePhotoAnalysisJob | null>(null)
+const terminatingJob = ref(false)
+let activeJobTimer: number | null = null
+
+async function refreshActiveJob() {
+  try {
+    const result = await fetchActivePhotoAnalysisJob()
+    activeJob.value = result.active
+  } catch {
+    activeJob.value = null
+  }
+}
+
+async function resumeActiveJob() {
+  if (!activeJob.value || busy.value) return
+  emit('job-started', activeJob.value.job_id)
+  emit('open-queue')
+  await attachJob(activeJob.value.job_id)
+}
+
+async function terminateActiveJob() {
+  if (!activeJob.value || terminatingJob.value) return
+  terminatingJob.value = true
+  try {
+    await cancelPhotoAnalysisJob(activeJob.value.job_id)
+    stopPolling()
+    busy.value = false
+    status.value = '已终止后台识别任务；已完成的结果保留。'
+    await refreshActiveJob()
+  } catch (cause) {
+    error.value = cause instanceof PhotoAnalysisApiError ? cause.message : '终止后台任务失败。'
+  } finally {
+    terminatingJob.value = false
+  }
+}
+
 async function attachJob(jobId: string) {
   if (!jobId || (pollTimer !== null && job.value?.job_id === jobId)) return
   try {
@@ -461,10 +499,13 @@ function onPreviewDialogClose() {
 
 refreshHealth()
 onMounted(() => {
+  void refreshActiveJob()
+  activeJobTimer = window.setInterval(() => { void refreshActiveJob() }, 5000)
   document.addEventListener('pointerdown', onDocumentPointerdown)
   window.addEventListener('resize', updateQueueMapRect)
 })
 onUnmounted(() => {
+  if (activeJobTimer !== null) window.clearInterval(activeJobTimer)
   stopPolling()
   document.removeEventListener('pointerdown', onDocumentPointerdown)
   window.removeEventListener('resize', updateQueueMapRect)
@@ -486,6 +527,14 @@ function onDocumentPointerdown(event: PointerEvent) {
     <div class="photo-panel-body">
       <p v-if="healthError" class="photo-feedback is-error" role="alert">{{ healthError }}</p>
       <p v-else-if="health && !health.available" class="photo-feedback is-error" role="alert">{{ health.message }}</p>
+
+      <div v-if="activeJob" class="photo-active-job" role="status">
+        <span class="photo-active-job-text">
+          后台识别进行中（{{ activeJob.counts?.done ?? 0 }}/{{ activeJob.counts?.total ?? '?' }}{{ activeJob.task_id && activeJob.task_id !== taskId ? ' · 其他任务' : '' }}）{{ job?.job_id === activeJob.job_id ? '· 进度见识别队列' : '' }}
+        </span>
+        <button v-if="job?.job_id !== activeJob.job_id" type="button" :disabled="busy" @click="resumeActiveJob">进入进度</button>
+        <button type="button" class="photo-active-terminate" :disabled="terminatingJob" @click="terminateActiveJob">{{ terminatingJob ? '终止中…' : '终止' }}</button>
+      </div>
 
       <div class="photo-toolbar">
         <small>只分析勾选的任务关键帧。关键帧可从任务视频截取，也可直接选择本机照片；没有拍摄高度的帧不换算积水面积。</small>
@@ -717,6 +766,13 @@ function onDocumentPointerdown(event: PointerEvent) {
 .photo-file-trigger:hover:not(:disabled) { border-color: var(--ui-accent); background: #eff6ff; color: var(--ui-accent); }
 .photo-file-trigger:disabled { opacity: .5; cursor: not-allowed; }
 .photo-file-hint { display: block; margin: 0 0 6px; color: var(--ui-muted); line-height: 1.4; }
+.photo-active-job { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; padding: 7px 9px; border: 1px solid #f3d9a4; border-radius: 7px; background: #fff8ec; color: #8a5a12; font-size: 11px; }
+.photo-active-job-text { flex: 1; min-width: 0; line-height: 1.4; }
+.photo-active-job button { min-height: 26px; padding: 3px 10px; border: 1px solid #d7c9a8; border-radius: 6px; background: #fff; color: #7a5510; font-size: 11px; white-space: nowrap; cursor: pointer; }
+.photo-active-job button:hover:not(:disabled) { border-color: #b98f2d; color: #8a5a12; }
+.photo-active-job button:disabled { opacity: .55; cursor: not-allowed; }
+.photo-active-job .photo-active-terminate { border-color: #e4b1ab; color: #a4262c; }
+.photo-active-job .photo-active-terminate:hover:not(:disabled) { border-color: #a4262c; background: #fef2f2; }
 .photo-file-selection { min-width: 0; overflow: hidden; color: var(--ui-muted); text-overflow: ellipsis; white-space: nowrap; }
 .photo-frame-list { display: grid; max-height: 200px; gap: 5px; margin: 5px 0; padding: 0; overflow: auto; list-style: none; }
 .photo-frame-list li { display: flex; align-items: center; justify-content: space-between; gap: 5px; padding: 5px 6px; border: 1px solid var(--ui-line); border-radius: 6px; }
