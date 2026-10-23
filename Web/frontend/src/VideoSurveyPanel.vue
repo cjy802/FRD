@@ -113,6 +113,8 @@ const previewImportBlockedReason = computed(() => {
   return ''
 })
 const canImportPreview = computed(() => Boolean(props.taskId && previewGroup.value?.srt && !loading.value))
+const canCapturePreview = computed(() => Boolean(previewGroup.value && survey.value && previewVideo.value?.videoWidth
+  && props.frameCount < 30 && !capturingPreview.value))
 
 function formatVideoTime(seconds: number): string {
   const value = Math.max(0, Math.floor(seconds || 0))
@@ -242,6 +244,37 @@ function onLibraryKeydown(event: KeyboardEvent) {
   event.stopPropagation()
   if (previewGroup.value) closePreview()
   else libraryOpen.value = false
+}
+
+const capturingPreview = ref(false)
+async function capturePreviewFrame() {
+  const video = previewVideo.value
+  const group = previewGroup.value
+  if (!video || !group || !video.videoWidth || !survey.value || capturingPreview.value) return
+  capturingPreview.value = true
+  error.value = ''
+  try {
+    const time = video.currentTime
+    const point = interpolateVideoPosition(survey.value.telemetry, time)
+    if (!point) throw new Error('此时刻没有 SRT 位置记录，无法作为分析关键帧。')
+    const canvas = document.createElement('canvas')
+    const scale = Math.min(1, 1920 / Math.max(video.videoWidth, video.videoHeight))
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale))
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale))
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error('浏览器无法读取视频画面。')
+    context.drawImage(video, 0, 0, canvas.width, canvas.height)
+    const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error('截取视频帧失败。')), 'image/jpeg', 0.92))
+    const totalSeconds = Math.max(0, Math.floor(time))
+    const name = `frame-${String(Math.floor(totalSeconds / 60)).padStart(2, '0')}m${String(totalSeconds % 60).padStart(2, '0')}s.jpg`
+    emit('frame-capture', { file: new File([blob], name, { type: 'image/jpeg' }), time_seconds: time,
+      latitude: point.latitude, longitude: point.longitude, altitude_m: point.altitude_m, gimbal_pitch_deg: point.gimbal_pitch_deg })
+    status.value = `已把 ${formatVideoTime(time)} 的画面加入当前任务分析队列。`
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : '截取视频帧失败。'
+  } finally {
+    capturingPreview.value = false
+  }
 }
 
 watch(playSpeed, value => { if (previewVideo.value) previewVideo.value.playbackRate = value })
@@ -608,9 +641,18 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
               <span v-if="previewGroup.srt">{{ srtCounts[previewGroup.key] !== undefined ? `${srtCounts[previewGroup.key]} 个定位点` : '定位点读取中…' }}</span>
               <span v-else>无 SRT</span>
             </div>
-            <button type="button" class="video-library-import" :disabled="!canImportPreview" @click="importPreviewGroup">
-              {{ loading ? '导入中…' : previewImportBlockedReason || '导入到当前任务' }}
-            </button>
+            <div class="video-library-preview-actions">
+              <button
+                type="button"
+                class="video-library-capture"
+                :disabled="!canCapturePreview"
+                :title="!survey ? '先点击「导入到当前任务」，截帧才能带上 SRT 位置' : props.frameCount >= 30 ? '关键帧已达 30 张上限' : '把当前画面按 SRT 位置存为任务关键帧'"
+                @click="capturePreviewFrame"
+              >{{ capturingPreview ? '截取中…' : '截取当前画面' }}</button>
+              <button type="button" class="video-library-import" :disabled="!canImportPreview" @click="importPreviewGroup">
+                {{ loading ? '导入中…' : previewImportBlockedReason || '导入到当前任务' }}
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -709,6 +751,10 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
 .video-library-preview-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 18px; border-top: 1px solid var(--ui-line); background: #fff; }
 .video-library-speed { display: flex; align-items: center; gap: 7px; color: var(--ui-muted); font-size: 12px; }
 .video-library-preview-meta { display: flex; min-width: 0; flex: 1; flex-wrap: wrap; gap: 4px 14px; color: var(--ui-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.video-library-preview-actions { display: flex; align-items: center; gap: 10px; }
+.video-library-capture { min-height: 34px; padding: 6px 14px; border: 1px solid var(--ui-accent); border-radius: 7px; background: #fff; color: var(--ui-accent); font-size: 12px; cursor: pointer; }
+.video-library-capture:hover:not(:disabled) { background: #eff6ff; }
+.video-library-capture:disabled { opacity: .55; cursor: not-allowed; }
 .video-library-import { min-height: 34px; padding: 6px 16px; border: 1px solid var(--ui-accent); border-radius: 7px; background: var(--ui-accent); color: #fff; font-size: 12px; cursor: pointer; }
 .video-library-import:hover:not(:disabled) { background: var(--ui-accent-hover); }
 .video-library-import:disabled { opacity: .55; cursor: not-allowed; }
