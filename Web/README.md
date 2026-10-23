@@ -81,7 +81,7 @@ npm run dev
 
 左侧工作顺序是“选定航线 → 查看天气 → 机型模板与飞行 → 任务视频 / 分析”。侧栏“任务列表”可查看全部已保存任务及其路线、天气、机型和关键帧摘要，并切换当前任务。航线计算完成后点击“设为当前任务”，系统会在 `backend/user_data/tasks/<任务 ID>/` 记录本次路线。任务标识会保存在本机浏览器，刷新页面后恢复当前任务。KMZ 同时保存到任务目录；“标记本次任务已开始”只更新任务记录，不会控制无人机。
 
-第 4 步必须选择当前任务的视频和对应 SRT。播放或拖动视频时，SRT 按时间映射无人机位置；点击“截取当前画面用于分析”后，关键帧和位置（含云台俯仰）会存入任务目录。照片分析页只从任务关键帧队列选择，不再接受任意图片。可选本地 `ABCDWaveNet`、`YOLOv8n-seg 4090` 或 `GLM-5.3-Flash 测试模型`。本地模型沿用 `WATER_ANALYSIS_PYTHON`、`WATER_ANALYSIS_MODEL_DIR`、`WATER_ANALYSIS_YOLO_PYTHON` 和 `WATER_ANALYSIS_YOLO_MODEL` 配置；YOLOv8n-seg 微调权重与 ONNX 模型清单（`registry.json`）已随仓库分发，ABCDWaveNet 的 `.onnx` 与 `.onnx.data` 大文件仍放置在 `model/` 本地忽略目录，放置路径见仓库根 [README](../README.md) 的模型清单。
+第 4 步必须选择当前任务的视频和对应 SRT。DJI 的媒体文件名只有递增序号，导入时后端会解析 SRT 内的相机本地拍摄时间，并把 SRT 轨迹与任务路线快照比对（中位偏差、30 米内定位点占比），在面板上给出“吻合 / 接近 / 偏离”的素材归属提示；也可通过资源管理器按文件修改时间辅助筛选。播放或拖动视频时，SRT 按时间映射无人机位置；点击“截取当前画面用于分析”后，关键帧和位置（含云台俯仰）会存入任务目录。照片分析页只从任务关键帧队列选择，不再接受任意图片。可选本地 `ABCDWaveNet`、`YOLOv8n-seg 4090` 或 `GLM-5.3-Flash 测试模型`。本地模型沿用 `WATER_ANALYSIS_PYTHON`、`WATER_ANALYSIS_MODEL_DIR`、`WATER_ANALYSIS_YOLO_PYTHON` 和 `WATER_ANALYSIS_YOLO_MODEL` 配置；YOLOv8n-seg 微调权重与 ONNX 模型清单（`registry.json`）已随仓库分发，ABCDWaveNet 的 `.onnx` 与 `.onnx.data` 大文件仍放置在 `model/` 本地忽略目录，放置路径见仓库根 [README](../README.md) 的模型清单。
 
 远程测试模型由后端 `backend/.env` 读取 `WATER_ANALYSIS_REMOTE_URL`、`WATER_ANALYSIS_REMOTE_API_KEY` 和 `WATER_ANALYSIS_REMOTE_MODEL`。Key 不进入浏览器或 Git。模型返回归一化的水坑多边形，`run_water_glm.py` 在本机生成掩膜、置信度图与叠图。它是语言视觉模型给出的候选边界，**不等同于专用像素级分割权重，结果必须人工复核**；也不表示真实面积、水深或飞行安全结论。选择此模型时，所选关键帧会发送到配置的 BigModel 接口。若 GLM-5.3-Flash 的接口或账号不支持图像输入，任务会显示接口错误，不会伪造掩膜。上传与分析只在本机回环地址开放。
 

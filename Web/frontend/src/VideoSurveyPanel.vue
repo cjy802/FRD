@@ -289,6 +289,17 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
     </button>
 
     <p v-if="survey" class="video-survey-note" role="status">{{ survey.message }}</p>
+    <p
+      v-if="survey?.task_match"
+      class="video-survey-match"
+      :class="`is-${survey.task_match.status.replace('_', '-')}`"
+      role="status"
+    >
+      {{ survey.task_match.message }}
+      <template v-if="survey.recording">
+        拍摄于 {{ survey.recording.started_at_local }} 至 {{ survey.recording.ended_at_local }}（相机本地时间）。
+      </template>
+    </p>
     <p v-if="error" class="video-survey-feedback is-error" role="alert">{{ error }}</p>
     <p v-else-if="status" class="video-survey-feedback" role="status">{{ status }}</p>
 
@@ -389,6 +400,10 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
 .adaptive-selector-note { margin: 0; }
 .video-survey-note, .video-survey-feedback { margin: 7px 0; padding: 6px 8px; border-radius: 6px; background: #eff6ff; color: #1d4ed8; line-height: 1.4; overflow-wrap: anywhere; }
 .video-survey-feedback.is-error { background: #fef2f2; color: #a4262c; }
+.video-survey-match { margin: 7px 0; padding: 6px 8px; border-radius: 6px; background: #f3f4f6; color: #4b5563; line-height: 1.4; overflow-wrap: anywhere; }
+.video-survey-match.is-matched { background: #e7f6ec; color: #16794c; }
+.video-survey-match.is-near { background: #fff4e5; color: #9a5b13; }
+.video-survey-match.is-off-route { background: #fef2f2; color: #a4262c; }
 .video-survey-review { margin-top: 9px; }
 .video-survey-player { display: block; width: 100%; max-height: 270px; border-radius: 7px; background: #111; }
 .video-survey-timeline { display: flex; align-items: center; gap: 7px; margin-top: 5px; color: var(--ui-muted); font-size: 10px; }

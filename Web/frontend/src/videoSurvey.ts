@@ -14,6 +14,21 @@ export type VideoCaptureTarget = VideoTelemetryPoint & {
   created_at: string
 }
 
+export type VideoRecordingWindow = {
+  started_at_local: string
+  ended_at_local: string
+}
+
+export type VideoTaskMatch = {
+  status: 'matched' | 'near' | 'off_route' | 'no_gps' | 'no_route'
+  median_deviation_m?: number
+  p90_deviation_m?: number
+  max_deviation_m?: number
+  within_30m_percent?: number
+  sample_points?: number
+  message: string
+}
+
 export type VideoSurvey = {
   job_id: string
   task_id?: string | null
@@ -24,6 +39,8 @@ export type VideoSurvey = {
   video_bytes: number
   telemetry_points: number
   has_gps: boolean
+  recording?: VideoRecordingWindow | null
+  task_match?: VideoTaskMatch | null
   message: string
   telemetry: VideoTelemetryPoint[]
   targets: VideoCaptureTarget[]

@@ -899,9 +899,8 @@ async def video_survey_create(request: Request, video: UploadFile = File(...), s
                               task_id: str = Form(default="")):
     require_local_request(request, mutation=True, label="视频定位")
     try:
-        if task_id:
-            tasks.get(task_id)
-        result = await video_surveys.create(video, srt, task_id or None)
+        task_record = tasks.get(task_id) if task_id else None
+        result = await video_surveys.create(video, srt, task_id or None, task_record)
         if task_id:
             tasks.update(task_id, {"video_survey_id": result["job_id"]})
         return result
