@@ -123,7 +123,7 @@ class PhotoAnalysisManager:
              "available": onnx_ready, "message": onnx_message},
             {"id": YOLO_MODEL_ID, "label": "YOLOv8n-seg 4090 混训冠军", "description": "实例分割 · Puddle/FRED/FloodNet/本地种子混训",
              "available": yolo_ready, "message": yolo_message},
-            {"id": REMOTE_MODEL_ID, "label": "GLM-5.3-Flash 测试模型", "description": "远程视觉识别水坑候选；本机把返回的多边形栅格化为掩膜和叠图",
+            {"id": REMOTE_MODEL_ID, "label": "远程测试模型", "description": "远程视觉识别水坑候选；本机把返回的多边形栅格化为掩膜和叠图",
              "available": remote_ready, "message": remote_message},
         ]
 
