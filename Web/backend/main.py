@@ -64,6 +64,7 @@ def _resolve_task_frame(task_id: str, frame_id: str) -> dict:
 
 
 photo_analysis.frame_resolver = _resolve_task_frame
+photo_analysis.frame_cleaner = lambda task_id, frame_id: tasks.remove_frame(task_id, frame_id)
 
 
 @app.on_event("startup")
@@ -855,6 +856,7 @@ class PhotoAnalysisSubmitBody(BaseModel):
     note: str = ""
     camera_fov_deg: float | None = Field(default=None, ge=30.0, le=120.0)
     streaming: bool = False
+    discard_clean_frames: bool = False
 
 
 class PhotoAnalysisAppendBody(BaseModel):
@@ -869,6 +871,8 @@ def photo_analysis_submit(request: Request, body: PhotoAnalysisSubmitBody):
         context: dict = {"site_name": body.site_name, "note": body.note}
         if body.camera_fov_deg is not None:
             context["camera_fov_deg"] = body.camera_fov_deg
+        if body.discard_clean_frames:
+            context["discard_clean_frames"] = True
         job_id = photo_analysis.submit_frames(
             body.task_id, body.frame_ids, model_id=body.model_id or None,
             context=context, streaming=body.streaming)

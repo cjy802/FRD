@@ -14,8 +14,8 @@ import {
 import type { PhotoAnalysisHealth, PhotoAnalysisJob, PhotoAnalysisJobItem, PhotoAnalysisResultImage, WaterAlertThresholds } from './photoAnalysis'
 import type { TaskVideoFrame } from './photoAnalysis'
 
-const props = withDefaults(defineProps<{ taskId: string | null; frames: TaskVideoFrame[]; thresholds: WaterAlertThresholds; activeJobId?: string | null }>(), { activeJobId: null })
-const emit = defineEmits<{ 'remove-frame': [index: number]; 'frames-add': [frames: TaskVideoFrame[]]; 'job-started': [jobId: string]; 'analysis-update': [job: PhotoAnalysisJob]; 'thresholds-change': [thresholds: WaterAlertThresholds] }>()
+const props = withDefaults(defineProps<{ taskId: string | null; frames: TaskVideoFrame[]; thresholds: WaterAlertThresholds; activeJobId?: string | null; queueOpen?: boolean }>(), { activeJobId: null, queueOpen: false })
+const emit = defineEmits<{ 'remove-frame': [index: number]; 'frames-add': [frames: TaskVideoFrame[]]; 'job-started': [jobId: string]; 'analysis-update': [job: PhotoAnalysisJob]; 'thresholds-change': [thresholds: WaterAlertThresholds]; 'open-queue': []; 'close-queue': [] }>()
 
 const health = ref<PhotoAnalysisHealth | null>(null)
 const healthError = ref('')
@@ -408,6 +408,26 @@ function stopPolling() {
   }
 }
 
+// —— 队列浮层：和视频文件夹浏览一样铺满 #route-map 地图矩形 ——
+const queueMapRect = ref<{ top: number; left: number; width: number; height: number } | null>(null)
+
+function updateQueueMapRect() {
+  const region = document.querySelector('#route-map') as HTMLElement | null
+  if (!region) return
+  const rect = region.getBoundingClientRect()
+  queueMapRect.value = { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
+}
+
+const queueDockStyle = computed(() => {
+  const rect = queueMapRect.value
+  if (!rect) return {}
+  return { top: `${rect.top}px`, left: `${rect.left}px`, width: `${rect.width}px`, height: `${rect.height}px` }
+})
+
+watch(() => props.queueOpen, open => {
+  if (open) void nextTick(updateQueueMapRect)
+})
+
 function fileUrl(name: string): string {
   return job.value ? photoAnalysisFileUrl(job.value.job_id, name) : ''
 }
@@ -450,12 +470,20 @@ function onPreviewDialogClose() {
 }
 
 refreshHealth()
-onMounted(() => document.addEventListener('pointerdown', onDocumentPointerDown))
+onMounted(() => {
+  document.addEventListener('pointerdown', onDocumentPointerdown)
+  window.addEventListener('resize', updateQueueMapRect)
+})
 onUnmounted(() => {
   stopPolling()
   releaseThumbUrls()
-  document.removeEventListener('pointerdown', onDocumentPointerDown)
+  document.removeEventListener('pointerdown', onDocumentPointerdown)
+  window.removeEventListener('resize', updateQueueMapRect)
 })
+
+function onDocumentPointerdown(event: PointerEvent) {
+  onDocumentPointerDown(event)
+}
 </script>
 
 <template>
@@ -525,35 +553,12 @@ onUnmounted(() => {
       <p v-if="error" class="photo-feedback is-error" role="alert">{{ error }}</p>
       <p v-else-if="status" class="photo-feedback" role="status">{{ status }}</p>
 
-      <div v-if="job && job.mode === 'frames'" class="analysis-queue" aria-label="识别队列进度">
-        <div class="analysis-queue-head">
-          <strong>识别队列</strong>
-          <small>{{ queueSummaryText }}</small>
-          <span class="analysis-queue-actions">
-            <button v-if="canCancelJob" type="button" @click="cancelAnalysis">取消分析</button>
-            <button v-if="canRetryFailed" type="button" class="is-danger" @click="retryFailed">重试失败帧（{{ queueCounts.failed }}）</button>
-          </span>
-        </div>
-        <div class="analysis-queue-progress" role="progressbar" :aria-valuenow="queueCounts.done + queueCounts.failed" :aria-valuemax="queueCounts.total" aria-label="已识别帧数">
-          <span class="is-done" :style="{ width: segmentWidth('done') }"></span>
-          <span class="is-failed" :style="{ width: segmentWidth('failed') }"></span>
-          <span class="is-running" :style="{ width: segmentWidth('running') }"></span>
-        </div>
-        <small v-if="etaText" class="analysis-queue-eta">{{ etaText }}</small>
-        <ul v-if="queueItems.length" class="analysis-queue-grid">
-          <li v-for="item in queueItems" :key="item.frame_id" :class="`is-${item.state}`" :title="item.error ?? item.name">
-            <button v-if="item.state === 'done'" type="button" class="analysis-queue-thumb" :aria-label="`查看 ${item.name} 的识别结果`" @click="openQueueItemPreview(item)">
-              <img v-if="queueThumbUrl(item)" :src="queueThumbUrl(item)" :alt="item.name" loading="lazy" />
-              <span v-else class="analysis-queue-blank" aria-hidden="true">已识别</span>
-              <span class="analysis-queue-state">{{ itemStateText(item) }}</span>
-            </button>
-            <div v-else class="analysis-queue-thumb is-static" :title="item.error ?? item.name">
-              <img v-if="queueThumbUrl(item)" :src="queueThumbUrl(item)" :alt="item.name" loading="lazy" />
-              <span v-else class="analysis-queue-blank" aria-hidden="true">无预览</span>
-              <span class="analysis-queue-state">{{ itemStateText(item) }}</span>
-            </div>
-          </li>
-        </ul>
+      <div v-if="job && job.mode === 'frames'" class="analysis-queue-inline">
+        <small>{{ queueSummaryText || '识别队列已就绪' }}</small>
+        <span>
+          <button v-if="canCancelJob" type="button" @click="cancelAnalysis">取消分析</button>
+          <button type="button" @click="emit('open-queue')">打开识别队列</button>
+        </span>
       </div>
 
       <div v-if="job?.results" class="photo-results">
@@ -606,31 +611,80 @@ onUnmounted(() => {
         </div>
       </div>
     </dialog>
+
+    <Teleport to="body">
+      <div v-if="queueOpen && job && job.mode === 'frames'" class="analysis-queue-overlay" :style="queueDockStyle" role="dialog" aria-label="识别队列进度">
+        <header class="analysis-queue-overlay-head">
+          <div class="analysis-queue-overlay-title">
+            <strong>识别队列</strong>
+            <small>{{ queueSummaryText || '等待关键帧入队' }}</small>
+          </div>
+          <div class="analysis-queue-overlay-actions">
+            <button v-if="canCancelJob" type="button" @click="cancelAnalysis">取消分析</button>
+            <button v-if="canRetryFailed" type="button" class="is-danger" @click="retryFailed">重试失败帧（{{ queueCounts.failed }}）</button>
+            <button type="button" class="analysis-queue-overlay-close" aria-label="关闭识别队列" @click="emit('close-queue')">关闭</button>
+          </div>
+        </header>
+        <div class="analysis-queue-overlay-body">
+          <div class="analysis-queue-progress" role="progressbar" :aria-valuenow="queueCounts.done + queueCounts.failed" :aria-valuemax="queueCounts.total" aria-label="已识别帧数">
+            <span class="is-done" :style="{ width: segmentWidth('done') }"></span>
+            <span class="is-failed" :style="{ width: segmentWidth('failed') }"></span>
+            <span class="is-running" :style="{ width: segmentWidth('running') }"></span>
+          </div>
+          <small v-if="etaText" class="analysis-queue-eta">{{ etaText }}</small>
+          <ul v-if="queueItems.length" class="analysis-queue-grid">
+            <li v-for="item in queueItems" :key="item.frame_id" :class="`is-${item.state}`" :title="item.error ?? item.name">
+              <button v-if="item.state === 'done'" type="button" class="analysis-queue-thumb" :aria-label="`查看 ${item.name} 的识别结果`" @click="openQueueItemPreview(item)">
+                <img v-if="queueThumbUrl(item)" :src="queueThumbUrl(item)" :alt="item.name" loading="lazy" />
+                <span v-else class="analysis-queue-blank" aria-hidden="true">已识别</span>
+                <span class="analysis-queue-state">{{ itemStateText(item) }}</span>
+              </button>
+              <div v-else class="analysis-queue-thumb is-static" :title="item.error ?? item.name">
+                <img v-if="queueThumbUrl(item)" :src="queueThumbUrl(item)" :alt="item.name" loading="lazy" />
+                <span v-else class="analysis-queue-blank" aria-hidden="true">无预览</span>
+                <span class="analysis-queue-state">{{ itemStateText(item) }}</span>
+              </div>
+            </li>
+          </ul>
+          <p v-else class="analysis-queue-empty">还没有关键帧入队；截帧开始后这里会逐张显示识别进度。</p>
+        </div>
+      </div>
+    </Teleport>
   </details>
 </template>
 
 <style scoped>
-.analysis-queue { margin: 8px 0 10px; padding: 8px 9px; border: 1px solid var(--ui-line); border-radius: 7px; background: #fbfcfe; }
-.analysis-queue-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.analysis-queue-head strong { font-size: 11px; color: #173b5c; }
-.analysis-queue-head small { min-width: 0; flex: 1 1 120px; color: var(--ui-muted); font-size: 11px; }
-.analysis-queue-actions { display: inline-flex; gap: 6px; }
-.analysis-queue-actions .is-danger { border-color: #d5a3a3 !important; color: #a4262c !important; background: #fff7f7 !important; }
-.analysis-queue-progress { display: flex; gap: 1px; height: 8px; margin-top: 7px; border-radius: 4px; overflow: hidden; background: #e3e9f0; }
+.analysis-queue-inline { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin: 8px 0 10px; padding: 6px 8px; border: 1px solid var(--ui-line); border-radius: 7px; background: #fbfcfe; }
+.analysis-queue-inline small { min-width: 0; flex: 1 1 120px; color: #526273; font-size: 11px; line-height: 1.4; }
+.analysis-queue-inline > span { display: inline-flex; gap: 6px; }
+.analysis-queue-overlay { position: fixed; z-index: 6000; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--ui-line); border-radius: 10px; background: #f4f7fa; box-shadow: 0 14px 40px rgb(15 23 42 / .24); }
+.analysis-queue-overlay-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--ui-line); background: #fff; }
+.analysis-queue-overlay-title { display: grid; min-width: 0; gap: 2px; }
+.analysis-queue-overlay-title strong { font-size: 13px; color: #173b5c; }
+.analysis-queue-overlay-title small { color: var(--ui-muted); font-size: 11px; }
+.analysis-queue-overlay-actions { display: flex; align-items: center; gap: 6px; }
+.analysis-queue-overlay-actions button { min-height: 30px; padding: 4px 10px; border: 1px solid #d7dfe8; border-radius: 6px; background: #fff; color: #34506c; white-space: nowrap; font-size: 11px; cursor: pointer; }
+.analysis-queue-overlay-actions button:hover:not(:disabled) { border-color: var(--ui-accent); color: var(--ui-accent); background: #eff6ff; }
+.analysis-queue-overlay-actions button:disabled { opacity: .5; cursor: not-allowed; }
+.analysis-queue-overlay-actions .is-danger { border-color: #d5a3a3; color: #a4262c; background: #fff7f7; }
+.analysis-queue-overlay-actions .analysis-queue-overlay-close { font-weight: 700; }
+.analysis-queue-overlay-body { min-height: 0; flex: 1; overflow-y: auto; padding: 12px 14px; }
+.analysis-queue-empty { margin: 0; color: var(--ui-muted); font-size: 12px; line-height: 1.6; }
+.analysis-queue-progress { display: flex; gap: 1px; height: 10px; border-radius: 5px; overflow: hidden; background: #e3e9f0; }
 .analysis-queue-progress > span { height: 100%; transition: width .4s ease; }
 .analysis-queue-progress .is-done { background: #2f9e63; }
 .analysis-queue-progress .is-failed { background: #d64545; }
 .analysis-queue-progress .is-running { background: #4a90d9; animation: analysis-queue-pulse 1.4s ease-in-out infinite; }
 @keyframes analysis-queue-pulse { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
-.analysis-queue-eta { display: block; margin-top: 5px; color: var(--ui-muted); font-size: 10px; }
-.analysis-queue-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 5px; margin: 8px 0 0; padding: 0; list-style: none; }
+.analysis-queue-eta { display: block; margin-top: 6px; color: var(--ui-muted); font-size: 11px; }
+.analysis-queue-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; margin: 12px 0 0; padding: 0; list-style: none; }
 .analysis-queue-grid li { min-width: 0; }
-.analysis-queue-thumb { position: relative; display: block; width: 100%; padding: 0 !important; border: 1px solid var(--ui-line) !important; border-radius: 5px; background: #fff !important; overflow: hidden; cursor: default; }
+.analysis-queue-thumb { position: relative; display: block; width: 100%; padding: 0 !important; border: 1px solid var(--ui-line) !important; border-radius: 6px; background: #fff !important; overflow: hidden; cursor: default; }
 .analysis-queue-thumb:not(.is-static) { cursor: zoom-in; }
 .analysis-queue-thumb:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 1px; }
 .analysis-queue-thumb img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; }
-.analysis-queue-blank { display: grid; place-items: center; width: 100%; aspect-ratio: 4 / 3; color: var(--ui-muted); font-size: 9px; background: #eef2f6; }
-.analysis-queue-state { position: absolute; left: 0; bottom: 0; padding: 1px 4px; border-radius: 0 4px 0 0; background: rgb(23 36 49 / .72); color: #fff; font-size: 9px; line-height: 1.5; white-space: nowrap; }
+.analysis-queue-blank { display: grid; place-items: center; width: 100%; aspect-ratio: 4 / 3; color: var(--ui-muted); font-size: 10px; background: #eef2f6; }
+.analysis-queue-state { position: absolute; left: 0; bottom: 0; padding: 2px 6px; border-radius: 0 4px 0 0; background: rgb(23 36 49 / .72); color: #fff; font-size: 10px; line-height: 1.5; white-space: nowrap; }
 .analysis-queue-grid .is-done .analysis-queue-state { background: rgb(31 125 74 / .9); }
 .analysis-queue-grid .is-failed .analysis-queue-thumb { border-color: #e3b3b3 !important; }
 .analysis-queue-grid .is-failed .analysis-queue-state { background: rgb(180 50 50 / .92); }

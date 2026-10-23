@@ -124,6 +124,7 @@ class PhotoAnalysisManager:
         self.yolo_runner_path = yolo_runner_path if yolo_runner_path is not None else YOLO_RUNNER
         self.remote_runner_path = REMOTE_RUNNER
         self.frame_resolver: FrameResolver | None = None
+        self.frame_cleaner: Callable[[str, str], None] | None = None
         self._lock = threading.Lock()
         self._jobs: dict[str, dict[str, Any]] = {}
         self._job_dirs: dict[str, Path] = {}
@@ -697,8 +698,11 @@ class PhotoAnalysisManager:
             runtime["procs"].discard(proc)
         records = self._read_new_jsonl(job_id)
         retries: list[tuple[int, str]] = []
+        discard_clean = False
+        clean_frames: list[tuple[str, str]] = []
         with self._lock:
             job = self._jobs[job_id]
+            discard_clean = bool(job["context"].get("discard_clean_frames"))
             for index in indices:
                 item = job["items"][index]
                 record = records.get(item["name"])
@@ -709,6 +713,9 @@ class PhotoAnalysisManager:
                     runtime["results_map"][item["name"]] = enriched
                     runtime["success_count"] += 1
                     runtime["consec_failures"] = 0
+                    # 干净帧（未检出疑似积水）按需自动删除，任务里只保留有问题的帧。
+                    if discard_clean and int(enriched.get("suspected_pixels") or 0) == 0:
+                        clean_frames.append((job["task_id"], item["frame_id"]))
                     continue
                 if record is not None and record.get("error"):
                     detail = str(record["error"])[:600]
@@ -737,6 +744,13 @@ class PhotoAnalysisManager:
                 self._absorb_runner_metadata(job_id, runtime)
             runtime["last_activity"] = time.time()
         self._persist(job_id)
+        for task_id, frame_id in clean_frames:
+            if self.frame_cleaner is None:
+                break
+            try:
+                self.frame_cleaner(task_id, frame_id)
+            except Exception:  # noqa: BLE001 - 删除失败仅保留该帧，不影响队列
+                pass
         for index, delay in retries:
             time.sleep(delay)
             if runtime["stop"].is_set():

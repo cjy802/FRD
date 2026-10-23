@@ -52,7 +52,8 @@ print(json.dumps(payload))
 '''
 
 # 队列 stub：按帧内容决定行为 —— FAIL 永远失败；FLAKY 第一次失败、重试成功；
-# SLOW 睡 2 秒（用于取消/超时）；其余直接成功。逐帧追加 results.jsonl。
+# SLOW 睡 2 秒（用于取消/超时）；CLEAN 成功但零疑似像素（用于自动删帧）；
+# 其余直接成功且带疑似像素。逐帧追加 results.jsonl。
 QUEUE_STUB_RUNNER = r'''
 import base64, json, sys, time
 from pathlib import Path
@@ -83,13 +84,15 @@ with (output_dir / "results.jsonl").open("a", encoding="utf-8") as jsonl:
             if record is None:
                 if data.startswith(b"SLOW"):
                     time.sleep(2.0)
+                suspected = 0 if data.startswith(b"CLEAN") else 1
                 (output_dir / f"{stem}__overlay.png").write_bytes(png)
                 (output_dir / f"{stem}__suspected.png").write_bytes(png)
                 (output_dir / f"{stem}__confidence.png").write_bytes(png)
                 record = {"name": path.name, "sha256": "0" * 64, "width": 1, "height": 1,
-                          "model_input_size": 256, "suspected_pixels": 1, "suspected_fraction": 1.0,
-                          "suspected_patch_count": 1, "patch_area_pixels": [1],
-                          "mean_confidence_on_suspected": 0.9,
+                          "model_input_size": 256, "suspected_pixels": suspected,
+                          "suspected_fraction": float(suspected),
+                          "suspected_patch_count": suspected, "patch_area_pixels": [suspected],
+                          "mean_confidence_on_suspected": 0.9 if suspected else 0.0,
                           "overlay": f"{stem}__overlay.png", "suspected_mask": f"{stem}__suspected.png",
                           "confidence_map": f"{stem}__confidence.png"}
         jsonl.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -418,6 +421,27 @@ class QueuePhotoAnalysisTests(unittest.TestCase):
         self.assertEqual(job["counts"]["done"], 2)
         # 已完成帧的结果来自重放的 results.jsonl，不重复识别。
         self.assertEqual(job["items"][0]["attempts"], 0)
+
+    def test_queue_discards_clean_frames_when_requested(self):
+        clean = self._add_frame(payload=b"CLEAN-data")
+        problem = self._add_frame(payload=TINY_PNG)
+        self.manager.frame_cleaner = lambda task_id, frame_id: self.store.remove_frame(task_id, frame_id)
+        job_id = self.manager.submit_frames(self.task["task_id"], [clean, problem],
+                                            context={"discard_clean_frames": True})
+        job = self._wait_state(job_id)
+        self.assertEqual(job["state"], "done", job.get("error"))
+        self.assertEqual(job["counts"]["done"], 2)
+        remaining = [item["frame_id"] for item in self.store.frames(self.task["task_id"])]
+        self.assertNotIn(clean, remaining)   # 无疑似积水的帧自动删除
+        self.assertIn(problem, remaining)    # 有疑似积水的帧保留
+        # 不开标志时帧全部保留。
+        clean_two = self._add_frame(payload=b"CLEAN-data")
+        problem_two = self._add_frame(payload=TINY_PNG)
+        job_id_two = self.manager.submit_frames(self.task["task_id"], [clean_two, problem_two])
+        self._wait_state(job_id_two)
+        remaining_two = {item["frame_id"] for item in self.store.frames(self.task["task_id"])}
+        self.assertIn(clean_two, remaining_two)
+        self.assertIn(problem_two, remaining_two)
 
     def test_queue_second_submit_rejected_while_busy(self):
         self._add_frame(payload=b"SLOW-image-data")

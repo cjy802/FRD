@@ -37,7 +37,7 @@ const emit = defineEmits<{
   'frames-added': [count: number]
   'survey-change': [survey: VideoSurvey | null]
   'job-started': [jobId: string]
-  'navigate-photos': []
+  'open-queue': []
 }>()
 
 const STORAGE_KEY = 'low-altitude-active-video-survey'
@@ -152,10 +152,13 @@ function updateMapRect() {
   mapRect.value = { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
 }
 
+// 保险上限与后端 TaskStore.MAX_FRAMES_PER_TASK 保持一致；实际存量由“干净帧自动删除”维持。
+const FRAME_LIMIT = 300
+
 const canCaptureFrame = computed(() => Boolean(survey.value && currentPosition.value && videoElement.value?.videoWidth
-  && props.frameCount < 100 && !capturingFrame.value))
+  && props.frameCount < FRAME_LIMIT && !capturingFrame.value))
 const canSelectAdaptiveFrames = computed(() => Boolean(props.taskId && survey.value?.has_gps
-  && props.frameCount < 100 && !selectingFrames.value && !loading.value && !extractingLocal.value))
+  && props.frameCount < FRAME_LIMIT && !selectingFrames.value && !loading.value && !extractingLocal.value))
 const adaptiveButtonLabel = computed(() => {
   if (extractingLocal.value) {
     const progress = extractionProgress.value
@@ -163,7 +166,7 @@ const adaptiveButtonLabel = computed(() => {
   }
   if (selectingFrames.value) return '正在自适应筛帧…'
   if (survey.value && !survey.value.has_gps) return '需要带 GPS 的 SRT'
-  if (props.frameCount >= 100) return '关键帧已达 100 张上限'
+  if (props.frameCount >= FRAME_LIMIT) return '关键帧已达上限'
   if (survey.value && !survey.value.has_video) return '自动筛选关键帧（本地处理）'
   return '自动筛选并保存关键帧'
 })
@@ -372,7 +375,7 @@ async function selectAdaptiveFrames() {
   if (!props.taskId || !survey.value || !canSelectAdaptiveFrames.value) return
   selectingFrames.value = true
   error.value = ''
-  const remaining = 100 - props.frameCount
+  const remaining = FRAME_LIMIT - props.frameCount
   try {
     // 有本地视频：直接在浏览器里扫描本地文件，不要求上传完整视频。
     if (localVideo.value) {
@@ -482,17 +485,19 @@ async function selectAdaptiveFramesWithAnalysis() {
     status.value = '正在创建识别队列…'
     const submitted = await submitPhotoAnalysisJob({
       taskId: props.taskId, frameIds: [], modelId: queueModel.value, streaming: true,
+      discardCleanFrames: true,
     })
     jobId = submitted.job_id
     queueJobId.value = jobId
     emit('job-started', jobId)
+    emit('open-queue')
     startQueuePolling(jobId)
     status.value = '正在本地扫描视频画面；选出的帧会立即上传并排队识别，无需等全部截帧结束…'
     await extractAdaptiveFramesClient(
       localVideo.value.file,
       survey.value.telemetry,
       {
-        maxFrames: 100 - props.frameCount,
+        maxFrames: FRAME_LIMIT - props.frameCount,
         scanFps: scanFps.value,
         straightOverlapPercent: straightOverlapPercent.value,
         turnOverlapPercent: turnOverlapPercent.value,
@@ -717,7 +722,7 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
         <button type="button" :disabled="!currentPosition || busyTarget" @click="addTarget">加入近拍清单</button>
       </div>
       <button class="video-survey-capture" type="button" :disabled="!canCaptureFrame" @click="captureCurrentFrame">
-        {{ capturingFrame ? '截取中…' : frameCount >= 100 ? '关键帧已达 100 张上限' : '截取当前画面用于分析' }}
+        {{ capturingFrame ? '截取中…' : frameCount >= FRAME_LIMIT ? '关键帧已达上限' : '截取当前画面用于分析' }}
       </button>
 
       <section class="adaptive-selector" aria-label="自适应筛选视频关键帧">
@@ -746,9 +751,9 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
         </div>
         <p v-if="queueStatusLabel" class="adaptive-queue-status" role="status">
           {{ queueStatusLabel }}
-          <button type="button" class="adaptive-queue-jump" @click="emit('navigate-photos')">查看识别队列</button>
+          <button type="button" class="adaptive-queue-jump" @click="emit('open-queue')">查看识别队列</button>
         </p>
-        <small class="adaptive-selector-note">系统用画面变化估算相邻覆盖，用 SRT 轨迹变化识别转弯；匹配不确定时会保留画面以降低漏区风险。有本地视频时自动截帧在浏览器里直接处理，不上传完整视频；重叠值是筛选目标，不代表地面覆盖的测绘级保证。“自动截帧并排队识别”会边截边传：每选出一张立即入队识别，结果逐张返回，失败帧会自动重试且不拖累整批。</small>
+        <small class="adaptive-selector-note">系统用画面变化估算相邻覆盖，用 SRT 轨迹变化识别转弯；匹配不确定时会保留画面以降低漏区风险。有本地视频时自动截帧在浏览器里直接处理，不上传完整视频；重叠值是筛选目标，不代表地面覆盖的测绘级保证。“自动截帧并排队识别”会边截边传：每选出一张立即入队识别，结果逐张返回，失败帧会自动重试且不拖累整批；<strong>识别后没有疑似积水的帧会自动删除，任务里只保留有问题的帧</strong>。</small>
       </section>
 
       <ul v-if="survey.targets.length" class="video-survey-target-list">

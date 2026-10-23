@@ -571,6 +571,7 @@ async function recordTaskWeather(assessment: RouteAssessment | null) {
 }
 
 const activeAnalysisJobId = ref('')
+const analysisQueueOpen = ref(false)
 const absorbedTargetKeys = new Set<string>()
 
 type AnalysisFrameMeta = { time_seconds?: number | null; latitude: number; longitude: number; altitude_m?: number | null; gimbal_pitch_deg?: number | null }
@@ -651,8 +652,8 @@ async function addTaskFrame(frame: TaskVideoFrame) {
 
 async function addManualTaskFrames(frames: TaskVideoFrame[]) {
   for (const frame of frames) {
-    if (taskFrames.value.length >= 100) {
-      taskError.value = '每个任务最多保留 100 张关键帧；余下照片没有加入。'
+    if (taskFrames.value.length >= 300) {
+      taskError.value = '每个任务最多保留 300 张关键帧；余下照片没有加入。'
       break
     }
     await addTaskFrame(frame)
@@ -3005,9 +3006,9 @@ onBeforeUnmount(() => {
 
            <div class="settings-group" data-settings-page="photos" :class="{ 'settings-active': settingsPage === 'photos' }">
           <p class="form-scope-note">当前任务导入视频与对应 SRT。拖动时间线核对无人机位置，只截取需要分析的关键帧。</p>
-          <VideoSurveyPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frame-count="taskFrames.length" @track-change="setVideoTelemetryTrack" @position-change="setVideoTelemetryPosition" @targets-change="setVideoCaptureTargets" @frame-capture="addTaskFrame" @frames-added="onAdaptiveFramesAdded" @survey-change="onTaskSurveyChange" @job-started="onAnalysisJobStarted" @navigate-photos="selectModule('photos')" />
+          <VideoSurveyPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frame-count="taskFrames.length" @track-change="setVideoTelemetryTrack" @position-change="setVideoTelemetryPosition" @targets-change="setVideoCaptureTargets" @frame-capture="addTaskFrame" @frames-added="onAdaptiveFramesAdded" @survey-change="onTaskSurveyChange" @job-started="onAnalysisJobStarted" @open-queue="analysisQueueOpen = true" />
           <p class="form-scope-note">关键帧会保存在任务文件夹中。模型只分析勾选的帧，SRT 位置会随结果一同记录。</p>
-          <PhotoAnalysisPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frames="taskFrames" :thresholds="waterAlertThresholds" :active-job-id="activeAnalysisJobId" @remove-frame="removeTaskFrame" @frames-add="addManualTaskFrames" @job-started="onAnalysisJobStarted" @analysis-update="absorbAnalysisResults" @thresholds-change="updateWaterAlertThresholds" />
+          <PhotoAnalysisPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frames="taskFrames" :thresholds="waterAlertThresholds" :active-job-id="activeAnalysisJobId" :queue-open="analysisQueueOpen" @remove-frame="removeTaskFrame" @frames-add="addManualTaskFrames" @job-started="onAnalysisJobStarted" @analysis-update="absorbAnalysisResults" @thresholds-change="updateWaterAlertThresholds" @open-queue="analysisQueueOpen = true" @close-queue="analysisQueueOpen = false" />
           </div>
           </div>
             <fluent-button v-if="activeModule === 'route'" class="primary-button" appearance="primary" type="button" :disabled="!weatherCoordinates || loading || checkingPoint || locatingPoint !== null" @click="selectModule('status')"><span class="svg-icon icon-cloud-rain" aria-hidden="true"></span><span>继续查看天气</span></fluent-button>
