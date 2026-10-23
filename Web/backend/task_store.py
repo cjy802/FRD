@@ -16,7 +16,7 @@ DEFAULT_STORAGE = BACKEND_ROOT / "user_data" / "tasks"
 _TASK_ID = re.compile(r"\d{14}-[0-9a-f]{8}")
 MAX_TASK_BYTES = 16 * 1024 * 1024
 MAX_FRAME_BYTES = 40 * 1024 * 1024
-MAX_FRAMES_PER_TASK = 30
+MAX_FRAMES_PER_TASK = 100
 
 
 class TaskError(Exception):

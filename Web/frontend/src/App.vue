@@ -621,8 +621,8 @@ async function addTaskFrame(frame: TaskVideoFrame) {
 
 async function addManualTaskFrames(frames: TaskVideoFrame[]) {
   for (const frame of frames) {
-    if (taskFrames.value.length >= 30) {
-      taskError.value = '每个任务最多保留 30 张关键帧；余下照片没有加入。'
+    if (taskFrames.value.length >= 100) {
+      taskError.value = '每个任务最多保留 100 张关键帧；余下照片没有加入。'
       break
     }
     await addTaskFrame(frame)

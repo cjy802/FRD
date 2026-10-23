@@ -101,7 +101,10 @@ def _call_model(image: np.ndarray, url: str, api_key: str, model: str) -> dict:
         "没有水坑时返回空 detections。建议每个明显独立水坑一个多边形，最多 30 个。"
     )
     try:
-        response = requests.post(
+        # 本接口是国内直连端点；系统代理/VPN 常导致 ProxyError，这里显式绕开。
+        session = requests.Session()
+        session.trust_env = False
+        response = session.post(
             _endpoint(url),
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json={

@@ -35,6 +35,7 @@ export type ClientAdaptiveProgress = {
   total: number
   selected: number
   blurred: number
+  blank: number
 }
 
 export class ExtractionCancelled extends Error {
@@ -80,12 +81,20 @@ function laplacianVariance(gray: Uint8ClampedArray, width: number, height: numbe
 }
 
 // Coverage of the anchor frame still visible in the current frame, estimated
-// by scanning integer translations for the best block match.
+// by scanning integer translations for the best block match. Mean brightness
+// is removed per frame so exposure drift (snow, auto-exposure) cannot fake
+// or break matches.
 function translationCoverage(anchor: Uint8ClampedArray, current: Uint8ClampedArray,
   width: number, height: number, radiusX: number, radiusY: number, sadThreshold: number): number {
   let bestCoverage = 0
   let bestSad = Number.POSITIVE_INFINITY
   const total = width * height
+  let anchorMean = 0
+  for (let index = 0; index < total; index += 1) anchorMean += anchor[index]
+  anchorMean /= total
+  let currentMean = 0
+  for (let index = 0; index < total; index += 1) currentMean += current[index]
+  currentMean /= total
   for (let dy = -radiusY; dy <= radiusY; dy += 1) {
     for (let dx = -radiusX; dx <= radiusX; dx += 1) {
       let sad = 0
@@ -94,7 +103,7 @@ function translationCoverage(anchor: Uint8ClampedArray, current: Uint8ClampedArr
         const anchorRow = y * width
         const currentRow = (y + dy) * width
         for (let x = Math.max(0, -dx); x < Math.min(width, width - dx); x += 1) {
-          sad += Math.abs(anchor[anchorRow + x] - current[currentRow + x + dx])
+          sad += Math.abs((anchor[anchorRow + x] - anchorMean) - (current[currentRow + x + dx] - currentMean))
           count += 1
         }
       }
@@ -175,6 +184,20 @@ export async function extractAdaptiveFramesClient(
     const workContext = workCanvas.getContext('2d', { willReadFrequently: true })!
     const smallContext = smallCanvas.getContext('2d', { willReadFrequently: true })!
 
+    // 等待真实画面呈现：快速 seek 后立即 draw 常拿到黑帧/上一帧。
+    async function settleAfterSeek(): Promise<void> {
+      const anyVideo = element as HTMLVideoElement & {
+        requestVideoFrameCallback?: (callback: () => void) => number
+      }
+      if (typeof anyVideo.requestVideoFrameCallback === 'function') {
+        await new Promise<void>(resolve => {
+          const timer = window.setTimeout(resolve, 350)
+          anyVideo.requestVideoFrameCallback(() => { window.clearTimeout(timer); resolve() })
+        })
+      }
+      await new Promise(resolve => window.setTimeout(resolve, 60))
+    }
+
     let step = 1 / options.scanFps
     let total = Math.floor(duration / step)
     if (total > 900) { total = 900; step = duration / total }
@@ -185,7 +208,9 @@ export async function extractAdaptiveFramesClient(
     let anchorPitch: number | null = null
     const sharpnessHistory: number[] = []
     let blurred = 0
+    let blank = 0
     let scanned = 0
+    let lastSelectedSeconds: number | null = null
 
     for (let index = 0; index < total && selected.length < options.maxFrames; index += 1) {
       if (isCancelled()) throw new ExtractionCancelled()
@@ -193,12 +218,23 @@ export async function extractAdaptiveFramesClient(
       const position = interpolateVideoPosition(telemetry, seconds)
       if (!position) continue
       await seekTo(element, seconds)
+      await settleAfterSeek()
       saveContext.drawImage(element, 0, 0, saveCanvas.width, saveCanvas.height)
       workContext.drawImage(saveCanvas, 0, 0, workCanvas.width, workCanvas.height)
       smallContext.drawImage(saveCanvas, 0, 0, smallCanvas.width, smallCanvas.height)
       const workGray = grayData(workCanvas)
       const smallGray = grayData(smallCanvas)
       scanned += 1
+
+      // 未解码/黑帧：亮度过低的画面既不能当关键帧也不能参与匹配。
+      let brightness = 0
+      for (let index2 = 0; index2 < workGray.length; index2 += 1) brightness += workGray[index2]
+      brightness /= workGray.length
+      if (brightness < 14) {
+        blank += 1
+        onProgress({ scanned, total, selected: selected.length, blurred, blank })
+        continue
+      }
 
       const sharpness = laplacianVariance(workGray, workCanvas.width, workCanvas.height)
       const baseline = sharpnessHistory.length
@@ -210,7 +246,7 @@ export async function extractAdaptiveFramesClient(
       sharpnessHistory.push(sharpness)
       if (isBlurry) {
         blurred += 1
-        onProgress({ scanned, total, selected: selected.length, blurred })
+        onProgress({ scanned, total, selected: selected.length, blurred, blank })
         continue
       }
 
@@ -220,14 +256,18 @@ export async function extractAdaptiveFramesClient(
       if (anchorGray === null) {
         reason = '首帧建立覆盖基线'
       } else {
-        overlap = translationCoverage(anchorGray, smallGray, smallCanvas.width, smallCanvas.height, 16, 8, 28)
+        overlap = translationCoverage(anchorGray, smallGray, smallCanvas.width, smallCanvas.height, 16, 8, 24)
         turnChange = bearingChange(telemetry, seconds)
         const pitchChange = anchorPitch !== null && position.gimbal_pitch_deg !== null
           ? Math.abs(position.gimbal_pitch_deg - anchorPitch) : null
         const turnActive = turnChange !== null && turnChange >= options.turnAngleDegrees
         const targetOverlap = turnActive ? options.turnOverlapPercent : options.straightOverlapPercent
+        // 转弯/镜头变化不受最小间隔限制；直线覆盖至少间隔 1.5 秒，避免几乎相同的帧成对出现。
+        const minGapSeconds = 1.5
+        const tooClose = lastSelectedSeconds !== null && seconds - lastSelectedSeconds < minGapSeconds
         if (pitchChange !== null && pitchChange >= options.cameraChangeDegrees) reason = '镜头角度明显变化'
         else if (turnActive && (overlap === null || overlap <= targetOverlap)) reason = '转弯补覆盖'
+        else if (tooClose) reason = ''
         else if (overlap === null) reason = '画面匹配不确定，保留以免漏区'
         else if (overlap <= targetOverlap) reason = '直线新增覆盖'
       }
@@ -247,6 +287,7 @@ export async function extractAdaptiveFramesClient(
           turn_angle_deg: turnChange === null ? null : Math.round(turnChange * 10) / 10,
           sharpness_ratio_percent: Math.round(sharpnessRatio * 10) / 10,
         })
+        lastSelectedSeconds = seconds
         anchorGray = smallGray
         anchorTime = seconds
         anchorPitch = position.gimbal_pitch_deg
@@ -255,7 +296,7 @@ export async function extractAdaptiveFramesClient(
         anchorGray = smallGray
         anchorTime = seconds
       }
-      onProgress({ scanned, total, selected: selected.length, blurred })
+      onProgress({ scanned, total, selected: selected.length, blurred, blank })
     }
     void anchorTime
     return selected

@@ -98,9 +98,9 @@ function updateMapRect() {
 }
 
 const canCaptureFrame = computed(() => Boolean(survey.value && currentPosition.value && videoElement.value?.videoWidth
-  && props.frameCount < 30 && !capturingFrame.value))
+  && props.frameCount < 100 && !capturingFrame.value))
 const canSelectAdaptiveFrames = computed(() => Boolean(props.taskId && survey.value?.has_gps
-  && props.frameCount < 30 && !selectingFrames.value && !loading.value && !extractingLocal.value))
+  && props.frameCount < 100 && !selectingFrames.value && !loading.value && !extractingLocal.value))
 const adaptiveButtonLabel = computed(() => {
   if (extractingLocal.value) {
     const progress = extractionProgress.value
@@ -108,7 +108,7 @@ const adaptiveButtonLabel = computed(() => {
   }
   if (selectingFrames.value) return '正在自适应筛帧…'
   if (survey.value && !survey.value.has_gps) return '需要带 GPS 的 SRT'
-  if (props.frameCount >= 30) return '关键帧已达 30 张上限'
+  if (props.frameCount >= 100) return '关键帧已达 100 张上限'
   if (survey.value && !survey.value.has_video) return '自动筛选关键帧（本地处理）'
   return '自动筛选并保存关键帧'
 })
@@ -120,7 +120,7 @@ const previewImportBlockedReason = computed(() => {
 })
 const canImportPreview = computed(() => Boolean(props.taskId && previewGroup.value?.srt && !loading.value))
 const canCapturePreview = computed(() => Boolean(previewGroup.value && survey.value && previewVideo.value?.videoWidth
-  && props.frameCount < 30 && !capturingPreview.value))
+  && props.frameCount < 100 && !capturingPreview.value))
 
 function formatVideoTime(seconds: number): string {
   const value = Math.max(0, Math.floor(seconds || 0))
@@ -317,7 +317,7 @@ async function selectAdaptiveFrames() {
   if (!props.taskId || !survey.value || !canSelectAdaptiveFrames.value) return
   selectingFrames.value = true
   error.value = ''
-  const remaining = 30 - props.frameCount
+  const remaining = 100 - props.frameCount
   try {
     // 有本地视频：直接在浏览器里扫描本地文件，不要求上传完整视频。
     if (localVideo.value) {
@@ -553,7 +553,7 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
         <button type="button" :disabled="!currentPosition || busyTarget" @click="addTarget">加入近拍清单</button>
       </div>
       <button class="video-survey-capture" type="button" :disabled="!canCaptureFrame" @click="captureCurrentFrame">
-        {{ capturingFrame ? '截取中…' : frameCount >= 30 ? '关键帧已达 30 张上限' : '截取当前画面用于分析' }}
+        {{ capturingFrame ? '截取中…' : frameCount >= 100 ? '关键帧已达 100 张上限' : '截取当前画面用于分析' }}
       </button>
 
       <section class="adaptive-selector" aria-label="自适应筛选视频关键帧">
@@ -680,7 +680,7 @@ watch(() => props.taskId, taskId => { void restoreTaskSurvey(taskId) })
                 type="button"
                 class="video-library-capture"
                 :disabled="!canCapturePreview"
-                :title="!survey ? '先点击「导入到当前任务」，截帧才能带上 SRT 位置' : props.frameCount >= 30 ? '关键帧已达 30 张上限' : '把当前画面按 SRT 位置存为任务关键帧'"
+                :title="!survey ? '先点击「导入到当前任务」，截帧才能带上 SRT 位置' : props.frameCount >= 100 ? '关键帧已达 100 张上限' : '把当前画面按 SRT 位置存为任务关键帧'"
                 @click="capturePreviewFrame"
               >{{ capturingPreview ? '截取中…' : '截取当前画面' }}</button>
               <button type="button" class="video-library-import" :disabled="!canImportPreview" @click="importPreviewGroup">
