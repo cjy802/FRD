@@ -276,6 +276,32 @@ class QueuePhotoAnalysisTests(unittest.TestCase):
         task_record = self.store.get(self.task["task_id"])
         self.assertIn(job_id, task_record["analysis_job_ids"])
 
+    def test_finished_job_is_served_after_backend_restart(self):
+        frame_id = self._add_frame()
+        submit = self.client.post("/api/photo-analysis/jobs", headers=self.headers, json={
+            "task_id": self.task["task_id"], "frame_ids": [frame_id]})
+        self.assertEqual(submit.status_code, 202, submit.text)
+        job_id = submit.json()["job_id"]
+        job = self._wait_state(job_id)
+        file_name = job["items"][0]["file_name"]
+        # 模拟后端重启（含 --reload）：同一磁盘、全新内存的 manager。
+        restarted = _make_stub_manager(Path(self.temp.name), QUEUE_STUB_RUNNER)
+        restarted.frame_resolver = self._resolve_frame
+        with patch.object(main, "photo_analysis", restarted):
+            fetched = self.client.get(f"/api/photo-analysis/jobs/{job_id}", headers=self.headers)
+            self.assertEqual(fetched.status_code, 200, fetched.text)
+            payload = fetched.json()
+            self.assertEqual(payload["state"], "done")
+            self.assertEqual(payload["counts"]["done"], 1)
+            self.assertEqual(len(payload["results"]["images"]), 1)
+            original = self.client.get(
+                f"/api/photo-analysis/jobs/{job_id}/files/inputs/{file_name}", headers=self.headers)
+            self.assertEqual(original.status_code, 200)
+            overlay = payload["results"]["images"][0]["overlay"]
+            overlaid = self.client.get(
+                f"/api/photo-analysis/jobs/{job_id}/files/{overlay}", headers=self.headers)
+            self.assertEqual(overlaid.status_code, 200)
+
     def test_queue_streaming_append_and_close(self):
         submit = self.client.post("/api/photo-analysis/jobs", headers=self.headers, json={
             "task_id": self.task["task_id"], "frame_ids": [], "streaming": True})

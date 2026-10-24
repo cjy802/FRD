@@ -22,6 +22,7 @@ manual review, never depth/water-level conclusions.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import math
 import os
@@ -433,7 +434,8 @@ class PhotoAnalysisManager:
             job_dir = self._job_dir_for(job_id, task_id)
             (job_dir / "outputs").mkdir(parents=True, exist_ok=True)
             items = [{"frame_id": info["frame_id"], "name": info["name"], "file_name": info["path"].name,
-                      "meta": info["meta"], "state": "pending", "error": None, "attempts": 0}
+                      "meta": info["meta"], "state": "pending", "error": None, "attempts": 0,
+                      "_source": str(info["path"])}
                      for info in resolved]
             job = {
                 "job_id": job_id,
@@ -964,6 +966,78 @@ class PhotoAnalysisManager:
             self._persist(job_id)
         return 1
 
+    @staticmethod
+    def _read_jsonl_records(path: Path) -> dict[str, dict[str, Any]]:
+        records: dict[str, dict[str, Any]] = {}
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            return records
+        for line in raw.decode("utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(record.get("name"), str):
+                records[record["name"]] = record
+        return records
+
+    def _load_archived_frame_job(self, job_id: str) -> None:
+        """Reload a finished frame-queue job from disk on first access."""
+        if not re.fullmatch(r"\d{14}-[0-9a-f]{8}", job_id) or not self.tasks_root.is_dir():
+            return
+        for job_json in self.tasks_root.glob(f"*/media/photo-analysis/{job_id}/job.json"):
+            try:
+                data = json.loads(job_json.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if data.get("mode") != "frames":
+                continue
+            job_dir = job_json.parent
+            items = [item for item in data.get("items", []) if isinstance(item, dict)]
+            context = data.get("context") or {}
+            fov_deg = self._context_fov(context)
+            records = self._read_jsonl_records(job_dir / "outputs" / "results.jsonl")
+            images = [self._enrich_image(dict(record), item.get("meta") or {}, fov_deg)
+                      for item in items
+                      if (record := records.get(str(item.get("name") or ""))) is not None
+                      and "error" not in record and item.get("state") == "done"]
+            model_block: dict[str, Any] | None = None
+            interpretation = FALLBACK_INTERPRETATION
+            try:
+                summary = json.loads((job_dir / "outputs" / "results.json").read_text(encoding="utf-8"))
+                if isinstance(summary.get("model"), dict):
+                    model_block = summary["model"]
+                if isinstance(summary.get("interpretation"), str):
+                    interpretation = summary["interpretation"]
+            except (OSError, ValueError):
+                pass
+            job = {
+                "job_id": job_id,
+                "state": data.get("state") or "done",
+                "mode": "frames",
+                "created_at": data.get("created_at"),
+                "finished_at": data.get("finished_at"),
+                "context": context,
+                "task_id": job_dir.parents[2].name,
+                "model_id": data.get("model_id") or ONNX_MODEL_ID,
+                "items": items,
+                "closed": bool(data.get("closed")),
+                "inputs": [],
+                "results": None,
+                "error": data.get("error"),
+            }
+            if images or model_block:
+                job["results"] = {"model": model_block, "images": images,
+                                  "elapsed_seconds": None, "interpretation": interpretation}
+            with self._lock:
+                self._jobs.setdefault(job_id, job)
+                self._job_dirs.setdefault(job_id, job_dir)
+            return
+
     # ------------------------------------------------------------------
     # queries
     # ------------------------------------------------------------------
@@ -976,6 +1050,12 @@ class PhotoAnalysisManager:
         return blocks.get(model_id, {"default_model": model_id})
 
     def job(self, job_id: str) -> dict[str, Any]:
+        with self._lock:
+            job = self._jobs.get(job_id)
+        if job is None:
+            # 后端重启（含 --reload）后已完成的队列任务只在磁盘上；按需回读，
+            # 否则缩略图/结果文件会整批 404，看起来像截图被删了。
+            self._load_archived_frame_job(job_id)
         with self._lock:
             job = self._jobs.get(job_id)
             if job is None:
@@ -1014,15 +1094,24 @@ class PhotoAnalysisManager:
                     if artifact:
                         allowed[Path(artifact).name] = outputs / artifact
             inputs = self._job_dirs[job_id] / "inputs"
+            frames_root = self.tasks_root / str(job.get("task_id") or "") / "frames"
             for item in job.get("items", []):
-                if item.get("state") in ("done", "failed"):
-                    allowed[f"inputs/{item['name']}"] = inputs / item["name"]
+                if item.get("state") not in ("done", "failed"):
+                    continue
+                # 优先用归档进任务目录的副本；旧任务的 inputs 可能没归档过，
+                # 回退到任务关键帧原件（帧只增不删，原件始终在）。
+                archived_copy = inputs / str(item.get("name") or "")
+                fallback = frames_root / str(item.get("file_name") or "")
+                source = archived_copy if archived_copy.is_file() else fallback
+                if source.is_file():
+                    allowed[f"inputs/{item['name']}"] = source
             relative = allowed.get(name) or allowed.get(Path(name).name)
             if relative is None:
                 raise PhotoAnalysisError("不允许的文件名。", http_status=404)
             target = relative.resolve()
-            outputs_root = outputs.resolve()
-            if outputs_root != target and outputs_root not in target.parents:
+            # outputs/、inputs/ 与任务关键帧目录都是合法来源；其余路径一律拒绝。
+            if all(root != target and root not in target.parents
+                   for root in (outputs.resolve(), inputs.resolve(), frames_root.resolve())):
                 raise PhotoAnalysisError("不允许的文件名。", http_status=404)
             if not target.is_file():
                 raise PhotoAnalysisError("找不到文件。", http_status=404)
