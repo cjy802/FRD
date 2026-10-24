@@ -961,6 +961,14 @@ watch(waypointSettings, () => {
     void persistTask({ aircraft: { drone_model: djiModel.value, waypoint_settings: waypointSettings.value } })
   }, 500)
 }, { deep: true })
+// 全局离地高度是全部航点高度的基准：改动即整体覆盖，之后仍可逐点单独调整。
+// 不标记 export_anchor：整体改高不算逐点编辑，不能阻止导出时的航线抽稀。
+watch(() => form.altitude_m, (value) => {
+  const altitude = Number(value)
+  if (!Number.isFinite(altitude) || altitude <= 0 || !waypointSettings.value.length) return
+  waypointSettings.value.forEach((setting) => { setting.altitude_m = altitude })
+  scheduleWaypointRender(true)
+})
 const mapAnchorPicker = ref<HTMLElement | null>(null)
 const mapAnchorPickerButton = ref<HTMLButtonElement | null>(null)
 const mapAnchorMenuOpen = ref(false)
