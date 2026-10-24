@@ -628,26 +628,30 @@ function onDocumentPointerdown(event: PointerEvent) {
         <p class="photo-warning">{{ interpretation }}</p>
       </div>
     </div>
-    <dialog v-if="preview" ref="previewDialog" class="photo-lightbox" :aria-labelledby="`photo-preview-title-${preview.index}`" @click="onPreviewDialogClick" @close="onPreviewDialogClose">
-      <div class="photo-lightbox-content">
-        <header class="photo-lightbox-header">
-          <div class="photo-lightbox-heading">
-            <strong :id="`photo-preview-title-${preview.index}`">{{ preview.image.name }}</strong>
-            <small>{{ viewMode === 'overlay' ? '分析叠图' : '原始照片' }}</small>
-          </div>
-          <div class="photo-lightbox-actions">
-            <div class="photo-view-toggle" role="group" aria-label="预览图片类型">
-              <button type="button" :class="{ 'is-active': viewMode === 'overlay' }" @click="viewMode = 'overlay'">叠图</button>
-              <button type="button" :class="{ 'is-active': viewMode === 'original' }" @click="viewMode = 'original'">原图</button>
+    <!-- 必须挂在 body 下：留在折叠的 details 里时 showModal 只画遮罩、
+         对话框本体不渲染，整页被原生模态 inert 卡死且没有关闭按钮。 -->
+    <Teleport to="body">
+      <dialog v-if="preview" ref="previewDialog" class="photo-lightbox" :aria-labelledby="`photo-preview-title-${preview.index}`" @click="onPreviewDialogClick" @close="onPreviewDialogClose">
+        <div class="photo-lightbox-content">
+          <header class="photo-lightbox-header">
+            <div class="photo-lightbox-heading">
+              <strong :id="`photo-preview-title-${preview.index}`">{{ preview.image.name }}</strong>
+              <small>{{ viewMode === 'overlay' ? '分析叠图' : '原始照片' }}</small>
             </div>
-            <button type="button" class="photo-lightbox-close" aria-label="关闭图片预览" @click="closePreview">关闭</button>
+            <div class="photo-lightbox-actions">
+              <div class="photo-view-toggle" role="group" aria-label="预览图片类型">
+                <button type="button" :class="{ 'is-active': viewMode === 'overlay' }" @click="viewMode = 'overlay'">叠图</button>
+                <button type="button" :class="{ 'is-active': viewMode === 'original' }" @click="viewMode = 'original'">原图</button>
+              </div>
+              <button type="button" class="photo-lightbox-close" aria-label="关闭图片预览" @click="closePreview">关闭</button>
+            </div>
+          </header>
+          <div class="photo-lightbox-body">
+            <img class="photo-lightbox-image" :src="previewUrl" :alt="`${viewMode === 'overlay' ? '分析叠图' : '原始照片'} ${preview.image.name}`" />
           </div>
-        </header>
-        <div class="photo-lightbox-body">
-          <img class="photo-lightbox-image" :src="previewUrl" :alt="`${viewMode === 'overlay' ? '分析叠图' : '原始照片'} ${preview.image.name}`" />
         </div>
-      </div>
-    </dialog>
+      </dialog>
+    </Teleport>
 
     <Teleport to="body">
       <div v-if="queueOpen && job && job.mode === 'frames'" class="analysis-queue-overlay" :style="queueDockStyle" role="dialog" aria-label="识别队列进度">
