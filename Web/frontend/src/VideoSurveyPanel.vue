@@ -81,13 +81,18 @@ const extractionCancel = ref(false)
 
 // —— 截帧即入队：抽帧阶段每选出一张就上传并入队识别 ——
 const queueModels = ref<PhotoAnalysisModelOption[]>([])
-const queueModel = ref('')
 const queueHealthLoaded = ref(false)
 const queueJobId = ref('')
-// 第一遍（YOLO 等队列模型）跑完后，疑似积水帧自动用 GLM 再识别一遍原图；
-// 复检结果里仍检出的帧才算“双模型确认”。
-const RECHECK_MODEL_ID = 'remote-glm-puddle'
-const queuePhase = ref<'first' | 'recheck'>('first')
+// 固定三级流水线，不再让用户选模型：ABCD 本地初筛 → YOLO 复查 → GLM 终审，
+// 每级只把上一级检出的疑似帧交给下一级；末级仍检出的才算“确认”。
+// 某级模型不可用时自动跳过该级（例如 GLM 未配置则止步于 YOLO 复查）。
+const PIPELINE_STAGES: Array<{ id: string; short: string; noun: string }> = [
+  { id: 'abcd-local', short: 'ABCD 初筛', noun: 'ABCD' },
+  { id: 'yolo-champion', short: 'YOLO 复查', noun: 'YOLO' },
+  { id: 'remote-glm-puddle', short: 'GLM 终审', noun: 'GLM' },
+]
+const queueStages = ref< Array<{ id: string; short: string; noun: string }>>([])
+const queueStageIndex = ref(0)
 const queueCounts = ref({ enqueued: 0, done: 0, failed: 0 })
 const queueSkipped = ref(0)
 let queuePollTimer: number | null = null
@@ -96,21 +101,21 @@ async function ensureQueueModels() {
   if (queueHealthLoaded.value) return
   const health = await fetchPhotoAnalysisHealth()
   queueModels.value = health.models.filter(model => model.available)
-  if (!queueModels.value.some(model => model.id === queueModel.value)) {
-    queueModel.value = health.default_model_id
-  }
+  const available = new Set(queueModels.value.map(model => model.id))
+  queueStages.value = PIPELINE_STAGES.filter(stage => available.has(stage.id))
   queueHealthLoaded.value = true
 }
 
-const queueModelOptions = computed(() => queueModels.value.map(model => ({ value: model.id, label: model.label })))
-const canQueueAnalyze = computed(() => Boolean(canSelectAdaptiveFrames.value && localVideo.value && queueModels.value.length))
+const canQueueAnalyze = computed(() => Boolean(canSelectAdaptiveFrames.value && localVideo.value && queueStages.value.length))
 const queueStatusLabel = computed(() => {
   if (!queueJobId.value) return ''
   const counts = queueCounts.value
   const parts = [`已入队 ${counts.enqueued}`, `已识别 ${counts.done}`]
   if (counts.failed) parts.push(`失败 ${counts.failed}`)
   if (queueSkipped.value) parts.push(`上传跳过 ${queueSkipped.value}`)
-  return `${queuePhase.value === 'recheck' ? 'GLM 复检 · ' : ''}${parts.join(' · ')}`
+  const stage = queueStages.value[queueStageIndex.value]
+  const prefix = queueStageIndex.value > 0 && stage ? `${stage.short} · ` : ''
+  return `${prefix}${parts.join(' · ')}`
 })
 
 function stopQueuePolling() {
@@ -138,41 +143,42 @@ function startQueuePolling(jobId: string) {
 }
 
 async function onQueueJobDone(jobId: string, job: PhotoAnalysisJob) {
-  if (queuePhase.value === 'first') {
-    await startRecheckJob(jobId, job)
+  const nextIndex = queueStageIndex.value + 1
+  if (nextIndex < queueStages.value.length) {
+    await startNextStage(jobId, job, nextIndex)
     return
   }
   const images = job.results?.images ?? []
   const confirmed = images.filter(image => (image.suspected_pixels ?? 0) > 0).length
   const singleOnly = Math.max(0, (job.counts?.done ?? images.length) - confirmed)
-  status.value = `GLM 复检完成：双模型确认疑似积水 ${confirmed} 帧${singleOnly ? `（另有 ${singleOnly} 帧仅第一遍模型检出，未确认）` : ''}；确认帧已生成地图积水目标，含经纬度与所在道路位置。`
+  const confirmWord = queueStages.value.length >= 3 ? '三模型确认' : queueStages.value.length === 2 ? '双模型确认' : '模型确认'
+  status.value = `识别流水线完成：${confirmWord}疑似积水 ${confirmed} 帧${singleOnly ? `（另有 ${singleOnly} 帧仅前序模型检出，未确认）` : ''}；确认帧已生成地图积水目标，含经纬度与所在道路位置。`
 }
 
-async function startRecheckJob(firstJobId: string, job: PhotoAnalysisJob) {
+async function startNextStage(prevJobId: string, job: PhotoAnalysisJob, nextIndex: number) {
   if (!props.taskId) return
+  const stage = queueStages.value[nextIndex]
+  const prevStage = queueStages.value[nextIndex - 1]
+  if (!stage || !prevStage) return
   const suspectedNames = new Set((job.results?.images ?? [])
     .filter(image => (image.suspected_pixels ?? 0) > 0).map(image => image.name))
   const frameIds = (job.items ?? []).filter(item => suspectedNames.has(item.name)).map(item => item.frame_id)
   if (!frameIds.length) {
-    status.value = '第一遍识别完成：未检出疑似积水帧，跳过 GLM 复检。'
-    return
-  }
-  if (!queueModels.value.some(model => model.id === RECHECK_MODEL_ID)) {
-    status.value = `第一遍识别完成：检出 ${frameIds.length} 张疑似积水帧，但 GLM 复检模型当前不可用（未配置或离线），已跳过复检。`
+    status.value = `${prevStage.short}完成：未检出疑似积水帧，流水线提前结束。`
     return
   }
   try {
-    status.value = `第一遍识别完成：检出 ${frameIds.length} 张疑似积水帧，正在提交 GLM 复检（喂原图）…`
+    status.value = `${prevStage.short}完成：检出 ${frameIds.length} 张疑似积水帧，正在提交${stage.short}…`
     const submitted = await submitPhotoAnalysisJob({
-      taskId: props.taskId, frameIds, modelId: RECHECK_MODEL_ID, recheckOfJobId: firstJobId,
+      taskId: props.taskId, frameIds, modelId: stage.id, recheckOfJobId: prevJobId,
     })
-    queuePhase.value = 'recheck'
+    queueStageIndex.value = nextIndex
     queueJobId.value = submitted.job_id
     queueCounts.value = { enqueued: frameIds.length, done: 0, failed: 0 }
     emit('job-started', submitted.job_id)
     startQueuePolling(submitted.job_id)
   } catch (cause) {
-    status.value = `第一遍识别完成，但 GLM 复检提交失败：${cause instanceof Error ? cause.message : '未知错误'}。疑似帧仍保留在任务关键帧。`
+    status.value = `${prevStage.short}完成，但 ${stage.noun}提交失败：${cause instanceof Error ? cause.message : '未知错误'}。疑似帧仍保留在任务关键帧。`
   }
 }
 
@@ -518,7 +524,7 @@ async function selectAdaptiveFramesWithAnalysis() {
     error.value = cause instanceof Error ? cause.message : '无法获取识别模型列表。'
     return
   }
-  if (!queueModel.value) {
+  if (!queueStages.value.length) {
     error.value = '没有可用的识别模型，请检查后端配置。'
     return
   }
@@ -528,7 +534,7 @@ async function selectAdaptiveFramesWithAnalysis() {
   extractionCancel.value = false
   error.value = ''
   queueJobId.value = ''
-  queuePhase.value = 'first'
+  queueStageIndex.value = 0
   queueSkipped.value = 0
   queueCounts.value = { enqueued: 0, done: 0, failed: 0 }
   let uploadChain: Promise<void> = Promise.resolve()
@@ -537,7 +543,7 @@ async function selectAdaptiveFramesWithAnalysis() {
   try {
     status.value = '正在创建识别队列…'
     const submitted = await submitPhotoAnalysisJob({
-      taskId: props.taskId, frameIds: [], modelId: queueModel.value, streaming: true,
+      taskId: props.taskId, frameIds: [], modelId: queueStages.value[0].id, streaming: true,
     })
     jobId = submitted.job_id
     queueJobId.value = jobId
@@ -776,8 +782,8 @@ watch(() => props.taskId, () => resetSurveyState())
           <label>最低清晰度 · 近期中位数 %<input v-model.number="minimumSharpnessPercent" type="number" min="0" max="100" step="5" :disabled="selectingFrames || !blurFilterEnabled" /></label>
         </div>
         <div class="adaptive-selector-fields adaptive-queue-row">
-          <label>识别模型<CustomSelect v-model="queueModel" :options="queueModelOptions" :disabled="selectingFrames || !queueModelOptions.length" aria-label="排队识别使用的模型" /></label>
-          <small v-if="!queueModelOptions.length">识别服务未就绪，只能先截帧。</small>
+          <small class="adaptive-pipeline-note">识别流水线（自动逐级复检，无需选模型）：ABCD 初筛 → YOLO 复查 → GLM 终审，每级只复查上一级检出的疑似帧。</small>
+          <small v-if="queueHealthLoaded && !queueStages.length">识别服务未就绪，只能先截帧。</small>
         </div>
         <div class="adaptive-selector-actions-row">
           <button class="adaptive-selector-action" type="button" :disabled="!canSelectAdaptiveFrames" @click="selectAdaptiveFrames">

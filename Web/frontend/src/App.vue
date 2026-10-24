@@ -613,9 +613,11 @@ function analysisTargetsFromJob(job: PhotoAnalysisJob): VideoCaptureTarget[] {
 }
 
 function buildTargets(pairs: { image: PhotoAnalysisResultImage; meta: AnalysisFrameMeta }[], job: PhotoAnalysisJob): VideoCaptureTarget[] {
-  // 复检 job 的输入帧都是第一遍模型检出帧：这里再检出即“双模型确认”，
-  // 不再套面积阈值——用户口径是“两遍都有才算疑似积水”。
+  // 复检 job 的输入帧都是前序模型检出帧：这里再检出即多模型确认，
+  // 不再套面积阈值——用户口径是“每一级都检出才算疑似积水”。
+  // 三级流水线下 GLM 终审 = 三模型确认；YOLO 复查（GLM 不可用时的末级）= 双模型确认。
   const isRecheck = Boolean(job.context?.recheck_of_job_id)
+  const confirmWord = job.model_id === 'remote-glm-puddle' ? '三模型确认' : '双模型确认'
   return pairs
     .filter(({ image }) => isRecheck
       ? (image.suspected_pixels ?? 0) > 0
@@ -631,9 +633,10 @@ function buildTargets(pairs: { image: PhotoAnalysisResultImage; meta: AnalysisFr
       return {
         id: `analysis-${job.job_id}-${image.name}`,
         label: isRecheck
-          ? `疑似积水（双模型确认）${index + 1}${positionText ? ` · ${positionText}` : ''} · ${meta.latitude.toFixed(5)}, ${meta.longitude.toFixed(5)} · ${areaText}`
+          ? `疑似积水（${confirmWord}）${index + 1}${positionText ? ` · ${positionText}` : ''} · ${meta.latitude.toFixed(5)}, ${meta.longitude.toFixed(5)} · ${areaText}`
           : `积水候选 ${dateStamp} ${index + 1} · ${areaText}`,
         created_at: new Date().toISOString(),
+        analysis_kind: isRecheck ? 'confirmed' : 'candidate',
         time_seconds: meta.time_seconds ?? 0,
         latitude: meta.latitude,
         longitude: meta.longitude,
@@ -691,12 +694,22 @@ function describeRoutePosition(latitude: number, longitude: number): string {
 
 async function absorbAnalysisResults(job: PhotoAnalysisJob) {
   if (!activeTask.value) return
+  const isRecheck = Boolean(job.context?.recheck_of_job_id)
   const targets = analysisTargetsFromJob(job)
+  if (isRecheck) {
+    // 流水线逐级复检：更末级的确认点取代上一级的确认点（如 GLM 终审取代 YOLO 复查），
+    // 首级产出的候选点保留不动；末级一帧都没检出时也要把上一级确认点清掉再落盘。
+    for (const stale of analysisMapTargets.value.filter(target => target.analysis_kind === 'confirmed')) {
+      absorbedTargetKeys.delete(stale.id)
+    }
+    analysisMapTargets.value = analysisMapTargets.value.filter(target => target.analysis_kind !== 'confirmed')
+  }
   const fresh = targets.filter(target => !absorbedTargetKeys.has(target.id))
-  if (!fresh.length) return
   for (const target of fresh) absorbedTargetKeys.add(target.id)
-  analysisMapTargets.value = [...fresh, ...analysisMapTargets.value].slice(0, 50)
-  await persistTask({ analysis_job_id: job.job_id, analysis_targets: analysisMapTargets.value as unknown as Record<string, unknown>[] })
+  if (fresh.length) analysisMapTargets.value = [...fresh, ...analysisMapTargets.value].slice(0, 50)
+  if (fresh.length || isRecheck) {
+    await persistTask({ analysis_job_id: job.job_id, analysis_targets: analysisMapTargets.value as unknown as Record<string, unknown>[] })
+  }
 }
 
 async function clearAnalysisTargets() {

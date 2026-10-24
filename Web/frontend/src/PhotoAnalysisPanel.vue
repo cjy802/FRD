@@ -120,8 +120,17 @@ function hideAllNoWaterImages() {
 function restoreHiddenNoWaterImages() {
   hiddenNoWaterNames.value = []
 }
-// 复检 job：输入帧均已被第一遍模型检出，这里再检出即双模型确认。
+// 复检 job（带 recheck_of_job_id）：输入帧均已被前序模型检出，这里再检出即确认。
+// 三级流水线下中间级（如 YOLO 复查）也是复检 job，措辞按当前 job 的模型取。
 const isRecheckJob = computed(() => Boolean(job.value?.context?.recheck_of_job_id))
+const STAGE_LABELS: Record<string, string> = {
+  'abcd-local': 'ABCD 初筛',
+  'yolo-champion': 'YOLO 复查',
+  'remote-glm-puddle': 'GLM 终审',
+}
+const stageLabel = computed(() => STAGE_LABELS[job.value?.model_id ?? ''] ?? '复检')
+// GLM 终审是流水线末级，此前已过 ABCD+YOLO 两级 → 三模型确认；其余复检按双模型表述。
+const confirmWord = computed(() => job.value?.model_id === 'remote-glm-puddle' ? '三模型确认' : '双模型确认')
 const recheckConfirmedCount = computed(() => (job.value?.results?.images ?? [])
   .filter(image => (image.suspected_pixels ?? 0) > 0).length)
 const alertSummary = computed(() => {
@@ -429,7 +438,7 @@ const queueSummaryText = computed(() => {
   if (counts.failed) parts.push(`失败 ${counts.failed}`)
   if (waiting) parts.push(`排队中 ${waiting}`)
   if (job.value?.closed === false) parts.push('仍可追加关键帧')
-  return `${isRecheckJob.value ? 'GLM 复检 · ' : ''}${parts.join(' · ')}`
+  return `${isRecheckJob.value ? `${stageLabel.value} · ` : ''}${parts.join(' · ')}`
 })
 const canCancelJob = computed(() => busy.value && job.value?.state === 'running')
 const canRetryFailed = computed(() => !busy.value && Boolean(job.value && job.value.counts?.failed))
@@ -610,7 +619,7 @@ function onDocumentPointerdown(event: PointerEvent) {
           </div>
         </div>
         <p :class="['photo-alert-summary', { 'is-elevated': !isRecheckJob && alertSummary.elevated > 0 }]" role="status">
-          <template v-if="isRecheckJob">复检完成：双模型确认疑似积水 {{ recheckConfirmedCount }} 帧 · 复检未检出 {{ (job?.results?.images ?? []).length - recheckConfirmedCount }} 帧</template>
+          <template v-if="isRecheckJob">{{ stageLabel }}完成：{{ confirmWord }}疑似积水 {{ recheckConfirmedCount }} 帧 · 复检未检出 {{ (job?.results?.images ?? []).length - recheckConfirmedCount }} 帧</template>
           <template v-else>{{ alertSummary.elevated || alertSummary.attention
             ? `积水警报 ${alertSummary.elevated} 帧 · 注意 ${alertSummary.attention} 帧`
             : '未触发积水警报' }}（阈值 {{ thresholds.minAlertAreaM2 }} m² · 视场角 {{ thresholds.cameraFovDeg }}°）</template>
@@ -625,7 +634,7 @@ function onDocumentPointerdown(event: PointerEvent) {
                 <strong :title="image.name">{{ image.name }}</strong>
                 <button v-if="!hasSuspectedWater(image)" type="button" class="photo-result-remove" @click.stop="hideNoWaterImage(image)">移除</button>
               </div>
-              <span v-if="isRecheckJob && (image.suspected_pixels ?? 0) > 0" class="photo-alert-badge is-recheck">双模型确认</span>
+              <span v-if="isRecheckJob && (image.suspected_pixels ?? 0) > 0" class="photo-alert-badge is-recheck">{{ confirmWord }}</span>
               <span v-else-if="isRecheckJob" class="photo-alert-badge is-none">复检未检出</span>
               <span v-else :class="['photo-alert-badge', `is-${assessment.level}`]">{{ assessment.label }}</span>
               <small v-if="assessment.areaText">{{ assessment.areaText }} · 高度 {{ image.altitude_m !== null && image.altitude_m !== undefined ? `${image.altitude_m.toFixed(0)} m` : '未知' }}</small>

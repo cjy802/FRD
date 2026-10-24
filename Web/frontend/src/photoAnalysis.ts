@@ -94,6 +94,7 @@ export type PhotoAnalysisJob = {
   job_id: string
   state: 'pending' | 'running' | 'done' | 'error' | 'cancelled'
   mode?: 'frames' | 'legacy'
+  model_id?: string | null
   created_at: string
   finished_at: string | null
   closed?: boolean

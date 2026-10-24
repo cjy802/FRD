@@ -12,6 +12,8 @@ export type VideoCaptureTarget = VideoTelemetryPoint & {
   id: string
   label: string
   created_at: string
+  /** 分析确认点标记：candidate＝单模型候选；confirmed＝多级流水线确认，会被更末级的确认点取代。 */
+  analysis_kind?: 'candidate' | 'confirmed'
 }
 
 export type VideoRecordingWindow = {

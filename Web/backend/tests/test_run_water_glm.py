@@ -1,4 +1,4 @@
-"""Unit tests for the GLM runner's crop-based recheck (regions, mapping, fallback)."""
+"""Unit tests for the GLM runner: whole-image PNG transport, encoding fallback, manifest."""
 
 from __future__ import annotations
 
@@ -30,71 +30,39 @@ def load_runner_module():
     return module
 
 
-def write_jpeg(path: Path, width: int, height: int) -> np.ndarray:
+def write_jpeg(path: Path, width: int, height: int) -> Path:
     image = np.full((height, width, 3), 200, dtype=np.uint8)
     ok, encoded = cv2.imencode(".jpg", image)
-    assert ok
-    path.write_bytes(encoded.tobytes())
-    return image
-
-
-def write_mask(path: Path, width: int, height: int, boxes: list[tuple[int, int, int, int]]) -> Path:
-    mask = np.zeros((height, width), dtype=np.uint8)
-    for x, y, w, h in boxes:
-        mask[y:y + h, x:x + w] = 255
-    ok, encoded = cv2.imencode(".png", mask)
     assert ok
     path.write_bytes(encoded.tobytes())
     return path
 
 
-class SuspectedRegionTests(unittest.TestCase):
+class RequestEncodingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.runner = load_runner_module()
 
-    def test_region_expands_with_minimum_side_and_stays_inside(self):
-        mask = np.zeros((480, 640), dtype=np.uint8)
-        mask[200:260, 100:180] = 255
-        regions = self.runner._suspected_regions(mask, 640, 480)
-        self.assertEqual(len(regions), 1)
-        x0, y0, x1, y1 = regions[0]
-        # 80x60 外扩 1.5 倍不足 256 最短边，应补齐到 256 见方并夹在图内。
-        self.assertGreaterEqual(x1 - x0, self.runner.REGION_MIN_SIDE - 2)
-        self.assertGreaterEqual(y1 - y0, self.runner.REGION_MIN_SIDE - 2)
-        self.assertTrue(x0 <= 140 < x1)
-        self.assertTrue(y0 <= 230 < y1)
-        self.assertGreaterEqual(x0, 0)
-        self.assertGreaterEqual(y0, 0)
-        self.assertLessEqual(x1, 640)
-        self.assertLessEqual(y1, 480)
+    def test_small_image_goes_lossless_png(self):
+        image = np.full((480, 640, 3), 120, dtype=np.uint8)
+        data_url = self.runner._request_data_url(image)
+        self.assertTrue(data_url.startswith("data:image/png;base64,"))
+        decoded = cv2.imdecode(np.frombuffer(base64.b64decode(data_url.split(",", 1)[1]), dtype=np.uint8),
+                               cv2.IMREAD_COLOR)
+        self.assertEqual((decoded.shape[1], decoded.shape[0]), (640, 480))
 
-    def test_nearby_components_merge_into_one_region(self):
-        mask = np.zeros((600, 800), dtype=np.uint8)
-        mask[100:140, 100:140] = 255
-        mask[110:150, 180:220] = 255
-        regions = self.runner._suspected_regions(mask, 800, 600)
-        self.assertEqual(len(regions), 1)
-
-    def test_region_count_capped_without_losing_candidates(self):
-        boxes = [(60, 60, 20, 20), (700, 60, 20, 20), (1340, 60, 20, 20),
-                 (60, 700, 20, 20), (700, 700, 20, 20), (1340, 700, 20, 20)]
-        mask = np.zeros((900, 1600), dtype=np.uint8)
-        for x, y, w, h in boxes:
-            mask[y:y + h, x:x + w] = 255
-        regions = self.runner._suspected_regions(mask, 1600, 900)
-        self.assertLessEqual(len(regions), self.runner.REGION_MAX_COUNT)
-        for x, y, _, _ in boxes:
-            covered = any(x0 <= x + 10 <= x1 and y0 <= y + 10 <= y1
-                          for x0, y0, x1, y1 in regions)
-            self.assertTrue(covered, f"候选区域 ({x},{y}) 没有被任何裁块覆盖")
-
-    def test_empty_mask_yields_no_regions(self):
-        mask = np.zeros((480, 640), dtype=np.uint8)
-        self.assertEqual(self.runner._suspected_regions(mask, 640, 480), [])
+    def test_oversize_png_falls_back_to_jpeg(self):
+        image = np.random.default_rng(7).integers(0, 256, (1080, 1920, 3), dtype=np.uint8)
+        with patch.object(self.runner, "REQUEST_MAX_BYTES", 1024):
+            data_url = self.runner._request_data_url(image)
+        # 噪声图 PNG 必然超限：应回退 JPEG，且降采样后不超过兜底边长。
+        self.assertTrue(data_url.startswith("data:image/jpeg;base64,"))
+        decoded = cv2.imdecode(np.frombuffer(base64.b64decode(data_url.split(",", 1)[1]), dtype=np.uint8),
+                               cv2.IMREAD_COLOR)
+        self.assertLessEqual(max(decoded.shape[:2]), self.runner.FALLBACK_MAX_SIDE)
 
 
-class ProcessRecheckTests(unittest.TestCase):
+class ProcessWholeImageTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.runner = load_runner_module()
@@ -103,67 +71,43 @@ class ProcessRecheckTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.output_dir = Path(self.temp.name) / "outputs"
-        self.frame_path = Path(self.temp.name) / "frame.jpg"
-        write_jpeg(self.frame_path, 640, 480)
+        self.frame_path = write_jpeg(Path(self.temp.name) / "frame.jpg", 640, 480)
 
     @staticmethod
     def _fake_model(detections, calls):
-        def fake(image, url, api_key, model, cropped=False):
-            calls.append({"size": (image.shape[1], image.shape[0]), "cropped": cropped})
+        def fake(image, url, api_key, model):
+            calls.append((image.shape[1], image.shape[0]))
             return {"detections": detections}
         return fake
 
-    def test_cropped_recheck_maps_polygons_back_to_full_frame(self):
-        mask_path = write_mask(Path(self.temp.name) / "frame__suspected.png", 640, 480,
-                               [(100, 200, 80, 60)])
-        calls: list[dict] = []
-        # 多边形几乎铺满裁块：映射回全帧后必须仍然落在裁块范围内。
+    def test_whole_image_sent_regardless_of_mask_entry(self):
+        # manifest 的 mask 字段当前不参与送检：带不带掩膜都应整图送检。
+        calls: list[tuple[int, int]] = []
         detections = [{"label": "puddle", "confidence": 0.8,
                        "polygon": [[0.0, 0.0], [0.99, 0.0], [0.99, 0.99], [0.0, 0.99]]}]
         with patch.object(self.runner, "_call_model", self._fake_model(detections, calls)):
             record = self.runner._process(
-                {"path": self.frame_path, "mask": mask_path},
+                {"path": self.frame_path, "mask": Path(self.temp.name) / "missing.png"},
                 self.output_dir, "https://example.invalid", "key", "glm-test")
-
-        self.assertEqual(record["recheck_mode"], "cropped")
-        self.assertEqual(len(record["regions"]), 1)
-        x0, y0, x1, y1 = record["regions"][0]
-        self.assertEqual(calls[0]["cropped"], True)
-        self.assertEqual(calls[0]["size"], (x1 - x0, y1 - y0))
+        self.assertEqual(calls, [(640, 480)])
+        self.assertEqual(record["request_encoding"], "png-lossless")
         self.assertEqual(record["instance_count"], 1)
         self.assertGreater(record["suspected_pixels"], 0)
-        # 全帧掩膜里的疑似像素必须全部位于送检裁块内部。
-        suspect = cv2.imdecode(
-            np.frombuffer((self.output_dir / record["suspected_mask"]).read_bytes(), dtype=np.uint8),
-            cv2.IMREAD_GRAYSCALE)
-        ys, xs = np.nonzero(suspect)
-        self.assertTrue(np.all(xs >= x0) and np.all(xs < x1))
-        self.assertTrue(np.all(ys >= y0) and np.all(ys < y1))
+        self.assertNotIn("regions", record)
 
-    def test_missing_mask_falls_back_to_whole_frame(self):
-        calls: list[dict] = []
-        with patch.object(self.runner, "_call_model", self._fake_model([], calls)):
-            record = self.runner._process(
-                {"path": self.frame_path, "mask": None},
-                self.output_dir, "https://example.invalid", "key", "glm-test")
-        self.assertEqual(record["recheck_mode"], "full")
-        self.assertEqual(record["regions"], [[0, 0, 640, 480]])
-        self.assertEqual(calls[0]["cropped"], False)
-        self.assertEqual(calls[0]["size"], (640, 480))
-        self.assertEqual(record["instance_count"], 0)
+    def test_retry_then_runtime_error_when_model_never_returns_json(self):
+        attempts: list[int] = []
 
-    def test_all_regions_failing_raises_for_queue_retry(self):
-        mask_path = write_mask(Path(self.temp.name) / "frame__suspected.png", 640, 480,
-                               [(100, 200, 80, 60)])
-
-        def failing(image, url, api_key, model, cropped=False):
+        def failing(image, url, api_key, model):
+            attempts.append(1)
             raise ValueError("模型没有返回可读取的分割结果文本。")
 
         with patch.object(self.runner, "_call_model", failing):
-            with self.assertRaises(ValueError):
+            with self.assertRaises(RuntimeError):
                 self.runner._process(
-                    {"path": self.frame_path, "mask": mask_path},
+                    {"path": self.frame_path, "mask": None},
                     self.output_dir, "https://example.invalid", "key", "glm-test")
+        self.assertEqual(len(attempts), 2)
 
 
 class ManifestEntryTests(unittest.TestCase):
