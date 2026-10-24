@@ -414,10 +414,20 @@ function segmentWidth(kind: 'done' | 'failed' | 'running'): string {
   return `${(counts[kind] / counts.total) * 100}%`
 }
 
+function resultImageFor(item: PhotoAnalysisJobItem): PhotoAnalysisResultImage | null {
+  const images = job.value?.results?.images ?? []
+  return images.find(image => image.name === item.name) ?? null
+}
+
+function isSuspected(item: PhotoAnalysisJobItem): boolean {
+  const image = resultImageFor(item)
+  return Boolean(image && (image.suspected_pixels ?? 0) > 0)
+}
+
 function itemStateText(item: PhotoAnalysisJobItem): string {
   if (item.state === 'pending') return '排队'
   if (item.state === 'running') return item.attempts > 0 ? `重试 ${item.attempts}` : '识别中'
-  if (item.state === 'done') return '完成'
+  if (item.state === 'done') return isSuspected(item) ? '疑似积水' : '完成'
   if (item.state === 'failed') return '失败'
   return '取消'
 }
@@ -693,7 +703,7 @@ function onDocumentPointerdown(event: PointerEvent) {
           </div>
           <small v-if="etaText" class="analysis-queue-eta">{{ etaText }}</small>
           <ul v-if="queueItems.length" class="analysis-queue-grid">
-            <li v-for="item in queueItems" :key="item.frame_id" :class="`is-${item.state}`" :title="item.error ?? item.name">
+            <li v-for="item in queueItems" :key="item.frame_id" :class="[`is-${item.state}`, { 'is-suspected': item.state === 'done' && isSuspected(item) }]" :title="item.error ?? item.name">
               <button v-if="item.state === 'done'" type="button" class="analysis-queue-thumb" :aria-label="`查看 ${item.name} 的识别结果`" @click="openQueueItemPreview(item)">
                 <img v-if="queueThumbUrl(item)" :src="queueThumbUrl(item)" :alt="item.name" loading="lazy" />
                 <span v-else class="analysis-queue-blank" aria-hidden="true">已识别</span>
@@ -746,6 +756,8 @@ function onDocumentPointerdown(event: PointerEvent) {
 .analysis-queue-blank { display: grid; place-items: center; width: 100%; aspect-ratio: 4 / 3; color: var(--ui-muted); font-size: 10px; background: #eef2f6; }
 .analysis-queue-state { position: absolute; left: 0; bottom: 0; padding: 2px 6px; border-radius: 0 4px 0 0; background: rgb(23 36 49 / .72); color: #fff; font-size: 10px; line-height: 1.5; white-space: nowrap; }
 .analysis-queue-grid .is-done .analysis-queue-state { background: rgb(31 125 74 / .9); }
+.analysis-queue-grid .is-suspected .analysis-queue-thumb { border-color: #e3b3b3 !important; }
+.analysis-queue-grid .is-suspected .analysis-queue-state { background: #d0342c; }
 .analysis-queue-grid .is-failed .analysis-queue-thumb { border-color: #e3b3b3 !important; }
 .analysis-queue-grid .is-failed .analysis-queue-state { background: rgb(180 50 50 / .92); }
 .analysis-queue-grid .is-running .analysis-queue-thumb { border-color: #a8ccef !important; }
