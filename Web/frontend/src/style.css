@@ -134,6 +134,7 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .saved-task-entry-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .saved-task-entry-title strong { overflow: hidden; color: #173b5c; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .saved-task-entry-title b { flex: none; color: #526273; font-size: 10px; }
+.saved-task-entry-title b.is-analysis { padding: 1px 6px; border-radius: 999px; background: #e7f1fb; color: #155fa8; }
 .saved-task-row.is-current .saved-task-entry-title b { color: #1265a7; }
 .saved-task-entry > small { color: var(--ui-muted); font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
 .module-nav-icon .svg-icon { width: 18px; height: 18px; }

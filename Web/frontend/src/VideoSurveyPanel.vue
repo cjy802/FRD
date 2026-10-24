@@ -10,7 +10,8 @@ import {
 } from './videoSurvey'
 import type { VideoCaptureTarget, VideoSurvey, VideoTelemetryPoint } from './videoSurvey'
 import type { PhotoAnalysisJob, PhotoAnalysisModelOption, TaskVideoFrame } from './photoAnalysis'
-import { appendPhotoAnalysisFrames, closePhotoAnalysisJob, fetchPhotoAnalysisHealth, fetchPhotoAnalysisJob, submitPhotoAnalysisJob } from './photoAnalysis'
+import { appendPhotoAnalysisFrames, closePhotoAnalysisJob, fetchPhotoAnalysisHealth, submitPhotoAnalysisJob } from './photoAnalysis'
+import { PIPELINE_STAGES, onPipelineEvent, pipelineState, startChain } from './analysisPipeline'
 import { saveMissionTaskFrame } from './missionTasks'
 import { ExtractionCancelled, extractAdaptiveFramesClient } from './adaptiveFrames'
 import type { ClientAdaptiveProgress, ClientSelectedFrame } from './adaptiveFrames'
@@ -82,19 +83,11 @@ const extractionCancel = ref(false)
 // —— 截帧即入队：抽帧阶段每选出一张就上传并入队识别 ——
 const queueModels = ref<PhotoAnalysisModelOption[]>([])
 const queueHealthLoaded = ref(false)
-const queueJobId = ref('')
-// 固定两级流水线，不再让用户选模型：YOLO 全量初筛 → GLM 终审，
-// GLM 只复查 YOLO 检出的疑似帧，两遍都检出才算“双模型确认”。
-// ABCDWaveNet 初筛已实测否决：该域上全量误报，过滤完全失效（2026-10-24）。
-const PIPELINE_STAGES: Array<{ id: string; short: string; noun: string }> = [
-  { id: 'yolo-champion', short: 'YOLO 初筛', noun: 'YOLO' },
-  { id: 'remote-glm-puddle', short: 'GLM 终审', noun: 'GLM' },
-]
-const queueStages = ref< Array<{ id: string; short: string; noun: string }>>([])
-const queueStageIndex = ref(0)
-const queueCounts = ref({ enqueued: 0, done: 0, failed: 0 })
+// 固定两级流水线（YOLO 全量初筛 → GLM 终审，双模型确认；ABCD 初筛已实测否决）。
+// 推进与轮询在 analysisPipeline 全局单例里做（页面级生命周期、快照 taskId）：
+// 本面板只负责启动与状态展示，切任务/切模块不断链；页面关闭后切回任务自动续跑。
+const queueStages = ref<Array<{ id: string; short: string; noun: string }>>([])
 const queueSkipped = ref(0)
-let queuePollTimer: number | null = null
 
 async function ensureQueueModels() {
   if (queueHealthLoaded.value) return
@@ -107,78 +100,34 @@ async function ensureQueueModels() {
 
 const canQueueAnalyze = computed(() => Boolean(canSelectAdaptiveFrames.value && localVideo.value && queueStages.value.length))
 const queueStatusLabel = computed(() => {
-  if (!queueJobId.value) return ''
-  const counts = queueCounts.value
-  const parts = [`已入队 ${counts.enqueued}`, `已识别 ${counts.done}`]
-  if (counts.failed) parts.push(`失败 ${counts.failed}`)
+  if (!pipelineState.running || pipelineState.taskId !== props.taskId) return ''
+  const parts = [`已入队 ${pipelineState.total}`, `已识别 ${pipelineState.done}`]
+  if (pipelineState.failed) parts.push(`失败 ${pipelineState.failed}`)
   if (queueSkipped.value) parts.push(`上传跳过 ${queueSkipped.value}`)
-  const stage = queueStages.value[queueStageIndex.value]
-  const prefix = queueStageIndex.value > 0 && stage ? `${stage.short} · ` : ''
+  const stage = queueStages.value[pipelineState.stageIndex]
+  const prefix = pipelineState.stageIndex > 0 && stage ? `${stage.short} · ` : ''
   return `${prefix}${parts.join(' · ')}`
 })
 
-function stopQueuePolling() {
-  if (queuePollTimer !== null) {
-    window.clearTimeout(queuePollTimer)
-    queuePollTimer = null
-  }
-}
-
-function startQueuePolling(jobId: string) {
-  stopQueuePolling()
-  queuePollTimer = window.setTimeout(async () => {
-    try {
-      const job = await fetchPhotoAnalysisJob(jobId)
-      queueCounts.value = { ...queueCounts.value, done: job.counts?.done ?? 0, failed: job.counts?.failed ?? 0 }
-      if (job.state === 'pending' || job.state === 'running') startQueuePolling(jobId)
-      else {
-        queuePollTimer = null
-        if (job.state === 'done') void onQueueJobDone(jobId, job)
-      }
-    } catch {
-      queuePollTimer = null
+// 链在全局单例里结束，面板通过事件把结论落到本地状态条；taskId 不匹配（用户已切走）
+// 时静默忽略，切回任务的恢复由 App.vue 的续跑检查负责。
+let offPipelineEvents: (() => void) | null = null
+function bindPipelineEvents() {
+  offPipelineEvents?.()
+  offPipelineEvents = onPipelineEvent(event => {
+    if (event.taskId !== props.taskId) return
+    if (event.type === 'chain-finished') {
+      const images = event.job.results?.images ?? []
+      const confirmed = images.filter(image => (image.suspected_pixels ?? 0) > 0).length
+      const singleOnly = Math.max(0, (event.job.counts?.done ?? images.length) - confirmed)
+      const confirmWord = queueStages.value.length >= 2 ? '双模型确认' : '模型确认'
+      status.value = event.early
+        ? 'YOLO 初筛完成：未检出疑似积水帧，流水线提前结束。'
+        : `识别流水线完成：${confirmWord}疑似积水 ${confirmed} 帧${singleOnly ? `（另有 ${singleOnly} 帧仅 YOLO 检出，未确认）` : ''}；确认帧已生成地图积水目标，含经纬度与所在道路位置。`
+    } else if (event.type === 'chain-stopped') {
+      status.value = `识别流水线中断：${event.reason}。切回本任务会自动续跑。`
     }
-  }, 2000)
-}
-
-async function onQueueJobDone(jobId: string, job: PhotoAnalysisJob) {
-  const nextIndex = queueStageIndex.value + 1
-  if (nextIndex < queueStages.value.length) {
-    await startNextStage(jobId, job, nextIndex)
-    return
-  }
-  const images = job.results?.images ?? []
-  const confirmed = images.filter(image => (image.suspected_pixels ?? 0) > 0).length
-  const singleOnly = Math.max(0, (job.counts?.done ?? images.length) - confirmed)
-  const confirmWord = queueStages.value.length === 2 ? '双模型确认' : '模型确认'
-  status.value = `识别流水线完成：${confirmWord}疑似积水 ${confirmed} 帧${singleOnly ? `（另有 ${singleOnly} 帧仅 YOLO 检出，未确认）` : ''}；确认帧已生成地图积水目标，含经纬度与所在道路位置。`
-}
-
-async function startNextStage(prevJobId: string, job: PhotoAnalysisJob, nextIndex: number) {
-  if (!props.taskId) return
-  const stage = queueStages.value[nextIndex]
-  const prevStage = queueStages.value[nextIndex - 1]
-  if (!stage || !prevStage) return
-  const suspectedNames = new Set((job.results?.images ?? [])
-    .filter(image => (image.suspected_pixels ?? 0) > 0).map(image => image.name))
-  const frameIds = (job.items ?? []).filter(item => suspectedNames.has(item.name)).map(item => item.frame_id)
-  if (!frameIds.length) {
-    status.value = `${prevStage.short}完成：未检出疑似积水帧，流水线提前结束。`
-    return
-  }
-  try {
-    status.value = `${prevStage.short}完成：检出 ${frameIds.length} 张疑似积水帧，正在提交${stage.short}…`
-    const submitted = await submitPhotoAnalysisJob({
-      taskId: props.taskId, frameIds, modelId: stage.id, recheckOfJobId: prevJobId,
-    })
-    queueStageIndex.value = nextIndex
-    queueJobId.value = submitted.job_id
-    queueCounts.value = { enqueued: frameIds.length, done: 0, failed: 0 }
-    emit('job-started', submitted.job_id)
-    startQueuePolling(submitted.job_id)
-  } catch (cause) {
-    status.value = `${prevStage.short}完成，但 ${stage.noun}提交失败：${cause instanceof Error ? cause.message : '未知错误'}。疑似帧仍保留在任务关键帧。`
-  }
+  })
 }
 
 const reviewVideoSrc = computed(() => {
@@ -527,28 +476,28 @@ async function selectAdaptiveFramesWithAnalysis() {
     error.value = '没有可用的识别模型，请检查后端配置。'
     return
   }
+  // 快照启动时的任务 id：后续上传与流水线推进都用它，切任务不会串到新任务名下。
+  const chainTaskId = props.taskId
   videoElement.value?.pause()
   selectingFrames.value = true
   extractingLocal.value = true
   extractionCancel.value = false
   error.value = ''
-  queueJobId.value = ''
-  queueStageIndex.value = 0
   queueSkipped.value = 0
-  queueCounts.value = { enqueued: 0, done: 0, failed: 0 }
   let uploadChain: Promise<void> = Promise.resolve()
   let jobId = ''
-  let savedCount = 0
+  let enqueuedCount = 0
   try {
     status.value = '正在创建识别队列…'
     const submitted = await submitPhotoAnalysisJob({
-      taskId: props.taskId, frameIds: [], modelId: queueStages.value[0].id, streaming: true,
+      taskId: chainTaskId, frameIds: [], modelId: queueStages.value[0].id, streaming: true,
     })
     jobId = submitted.job_id
-    queueJobId.value = jobId
     emit('job-started', jobId)
     emit('open-queue')
-    startQueuePolling(jobId)
+    // 推进（YOLO done → 提交 GLM 复检）与轮询都在全局单例里，切任务/切模块不断链；
+    // stagesCount 传当前可用的级数：GLM 未配置时止步于 YOLO，不对着不可用模型提交。
+    startChain(chainTaskId, jobId, 0, queueStages.value.length)
     status.value = '正在本地扫描视频画面；选出的帧会立即上传并排队识别，无需等全部截帧结束…'
     await extractAdaptiveFramesClient(
       localVideo.value.file,
@@ -568,8 +517,13 @@ async function selectAdaptiveFramesWithAnalysis() {
       frame => {
         // 串行上传链：不阻塞扫描循环，也不会同时发起大量上传。
         uploadChain = uploadChain.then(async () => {
+          // 抽帧中途切了任务：立即停止保存，避免帧落进新任务；已入队的照常识别。
+          if (props.taskId !== chainTaskId) {
+            extractionCancel.value = true
+            return
+          }
           try {
-            const saved = await saveMissionTaskFrame(props.taskId!, {
+            const saved = await saveMissionTaskFrame(chainTaskId, {
               file: frame.file,
               time_seconds: frame.time_seconds,
               latitude: frame.latitude,
@@ -581,10 +535,9 @@ async function selectAdaptiveFramesWithAnalysis() {
               turn_angle_deg: frame.turn_angle_deg,
               sharpness_ratio_percent: frame.sharpness_ratio_percent,
             })
-            savedCount += 1
             emit('frame-saved', { ...saved, file: frame.file })
             await appendPhotoAnalysisFrames(jobId, [saved.frame_id])
-            queueCounts.value = { ...queueCounts.value, enqueued: queueCounts.value.enqueued + 1 }
+            enqueuedCount += 1
           } catch {
             // 单帧上传/入队失败只跳过计数，不中断抽帧。
             queueSkipped.value += 1
@@ -608,16 +561,15 @@ async function selectAdaptiveFramesWithAnalysis() {
       try {
         await closePhotoAnalysisJob(jobId)
       } catch {
-        // 队列可能已自动关闭；继续用轮询拿最终状态。
+        // 队列可能已自动关闭；继续用全局链轮询拿最终状态。
       }
     }
     selectingFrames.value = false
     extractingLocal.value = false
     extractionProgress.value = null
-    const counts = queueCounts.value
     if (jobId && !error.value) {
-      const base = `截帧完成：入队 ${counts.enqueued} 张${queueSkipped.value ? ` · 上传跳过 ${queueSkipped.value} 张` : ''}。`
-      status.value = `${base}识别仍在后台进行（${queueStatusLabel.value || '统计中'}），进度见“任务视频 / 分析”模块；所有截图帧都保存在任务关键帧，不会自动删除。`
+      const base = `截帧完成：入队 ${enqueuedCount} 张${queueSkipped.value ? ` · 上传跳过 ${queueSkipped.value} 张` : ''}。`
+      status.value = `${base}识别在后台进行（${queueStatusLabel.value || '统计中'}），可切换任务或模块，进度见“任务视频 / 分析”模块与任务列表徽章；所有截图帧都保存在任务关键帧，不会自动删除。`
     }
   }
 }
@@ -679,17 +631,22 @@ onMounted(() => {
   resetSurveyState()
   // 预取识别模型列表，让“自动截帧并排队识别”按钮能直接启用。
   void ensureQueueModels().catch(() => {})
+  bindPipelineEvents()
   document.addEventListener('keydown', onLibraryKeydown, true)
   window.addEventListener('resize', updateMapRect)
 })
 onUnmounted(() => {
+  offPipelineEvents?.()
+  offPipelineEvents = null
   document.removeEventListener('keydown', onLibraryKeydown, true)
   window.removeEventListener('resize', updateMapRect)
-  stopQueuePolling()
   if (previewUrlObject) URL.revokeObjectURL(previewUrlObject)
   if (localVideo.value) URL.revokeObjectURL(localVideo.value.url)
 })
-watch(() => props.taskId, () => resetSurveyState())
+watch(() => props.taskId, () => {
+  resetSurveyState()
+  queueSkipped.value = 0
+})
 </script>
 
 <template>
@@ -789,7 +746,7 @@ watch(() => props.taskId, () => resetSurveyState())
             {{ adaptiveButtonLabel }}
           </button>
           <button class="adaptive-selector-action is-primary" type="button" :disabled="!canQueueAnalyze" @click="selectAdaptiveFramesWithAnalysis">
-            {{ extractingLocal && queueJobId ? '截帧并识别中…' : '自动截帧并排队识别' }}
+            {{ extractingLocal ? '截帧并识别中…' : '自动截帧并排队识别' }}
           </button>
           <button v-if="extractingLocal" type="button" class="adaptive-selector-cancel" @click="extractionCancel = true">取消截帧</button>
         </div>

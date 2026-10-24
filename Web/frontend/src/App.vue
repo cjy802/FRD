@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import WeatherPanels from './WeatherPanels.vue'
 import RouteWeatherPanel from './RouteWeatherPanel.vue'
 import EarthMap from './EarthMap.vue'
@@ -17,7 +17,8 @@ import { createFlightTimeline, sampleFlight, type FlightSample } from './flightP
 import { MissionTaskError, createMissionTask, deleteAllMissionTaskFrames, deleteMissionTask, deleteMissionTaskFrame, fetchMissionTask, fetchMissionTaskFrames, saveMissionTaskFrame,
   listMissionTasks, updateMissionTask, type MissionTask, type MissionTaskSummary, type StoredMissionFrame } from './missionTasks'
 import type { PhotoAnalysisJob, PhotoAnalysisResultImage, TaskVideoFrame, WaterAlertThresholds } from './photoAnalysis'
-import { fetchPhotoAnalysisJob, loadWaterAlertThresholds, saveWaterAlertThresholds } from './photoAnalysis'
+import { fetchActivePhotoAnalysisJob, fetchPhotoAnalysisJob, loadWaterAlertThresholds, saveWaterAlertThresholds } from './photoAnalysis'
+import { onPipelineEvent, pipelineQueuedTaskIds, resumeTaskPipeline, STAGE_LABELS } from './analysisPipeline'
 import { fetchLocationAddress, placeToPoint, type PlaceResult } from './placeSearch'
 
 type Point = { latitude: number; longitude: number }
@@ -734,6 +735,47 @@ async function clearAnalysisTargets() {
   await persistTask({ analysis_targets: [] as unknown as Record<string, unknown>[] })
 }
 
+// —— 识别流水线全局编排接线：链在 analysisPipeline 单例里推进，页面级生命周期 ——
+const offPipelineEvents = onPipelineEvent(event => {
+  if (event.type === 'job-submitted') {
+    activeAnalysisJobId.value = event.jobId
+  } else if (event.type === 'job-update') {
+    // 只吸收当前任务的 job：切走后落盘会把确认点写进别的任务；
+    // 切回时面板 attachJob 会 emit 终态补一次吸收。
+    if (activeTask.value?.task_id === event.taskId) void absorbAnalysisResults(event.job)
+  } else {
+    // 链结束/中断：立即刷一次徽章，不等下一个轮询周期。
+    void pollAnalysisBadge()
+  }
+})
+
+// —— 任务列表识别进度徽章：后端单槽，全局只有一个活跃 job，5s 轮询足够 ——
+const analysisBadge = ref<{ taskId: string; text: string } | null>(null)
+let analysisBadgeTimer: number | null = null
+async function pollAnalysisBadge(): Promise<void> {
+  try {
+    const { active } = await fetchActivePhotoAnalysisJob()
+    if (active?.task_id) {
+      const stage = STAGE_LABELS[active.model_id ?? ''] ?? '识别中'
+      const counts = active.counts
+      analysisBadge.value = { taskId: active.task_id, text: counts ? `${stage} ${counts.done}/${counts.total}` : stage }
+    } else {
+      analysisBadge.value = null
+    }
+  } catch {
+    analysisBadge.value = null
+  }
+}
+function scheduleAnalysisBadgePoll(): void {
+  if (analysisBadgeTimer !== null) window.clearTimeout(analysisBadgeTimer)
+  analysisBadgeTimer = window.setTimeout(() => { void pollAnalysisBadge().finally(scheduleAnalysisBadgePoll) }, 5000)
+}
+onMounted(() => { void pollAnalysisBadge().finally(scheduleAnalysisBadgePoll) })
+onUnmounted(() => {
+  offPipelineEvents()
+  if (analysisBadgeTimer !== null) window.clearTimeout(analysisBadgeTimer)
+})
+
 function onAnalysisJobStarted(jobId: string) {
   activeAnalysisJobId.value = jobId
 }
@@ -878,6 +920,11 @@ function applyMissionTask(task: MissionTask) {
   for (const target of analysisMapTargets.value) absorbedTargetKeys.add(target.id)
   activeAnalysisJobId.value = task.analysis_job_ids?.length ? task.analysis_job_ids[task.analysis_job_ids.length - 1] : ''
   analysisQueueOpen.value = false
+  // 切回任务自动续跑：流水线若在页面关闭/刷新期间断链（初筛 done 但 GLM 未提交）
+  // 则补交终审；仍在跑则由全局单例接管轮询；单槽被其他任务占用时自动排队。
+  if (task.task_id && (task.analysis_job_ids?.length ?? 0) > 0) {
+    void resumeTaskPipeline(task.task_id, task.analysis_job_ids ?? [])
+  }
   const route = task.route
   const savedAnchors = planningMode.value === 'area' && Array.isArray(savedCoverage?.point_anchors)
     ? savedCoverage.point_anchors : route.anchors
@@ -3035,7 +3082,7 @@ onBeforeUnmount(() => {
               <li v-for="task in savedTasks" :key="task.task_id">
                 <div class="saved-task-row" :class="{ 'is-current': activeTask?.task_id === task.task_id }">
                   <div class="saved-task-entry" :class="{ 'is-locked': taskBusy || !!deletingTaskId }" role="button" tabindex="0" :aria-disabled="taskBusy || !!deletingTaskId ? 'true' : undefined" @click="openSavedTask(task.task_id)" @keydown.enter.self.prevent="openSavedTask(task.task_id)" @keydown.space.self.prevent="openSavedTask(task.task_id)">
-                    <span class="saved-task-entry-title"><strong>{{ task.name || task.route_summary }}</strong><b>{{ activeTask?.task_id === task.task_id ? '当前' : taskStatusText(task.status) }}</b></span>
+                    <span class="saved-task-entry-title"><strong>{{ task.name || task.route_summary }}</strong><b>{{ activeTask?.task_id === task.task_id ? '当前' : taskStatusText(task.status) }}</b><b v-if="analysisBadge?.taskId === task.task_id" class="is-analysis">识别中 · {{ analysisBadge.text }}</b><b v-else-if="pipelineQueuedTaskIds.includes(task.task_id)" class="is-analysis">识别续跑排队中</b></span>
                     <small>{{ task.route_summary }}</small>
                     <small>{{ taskDateText(task.created_at) }} · {{ task.distance_km === null ? '距离待算' : `${task.distance_km.toFixed(2)} km` }}</small>
                     <small v-if="task.max_wind_m_s !== null || task.max_rain_6h_mm !== null">天气：{{ task.max_wind_m_s === null ? '风缺测' : `最大风 ${task.max_wind_m_s.toFixed(1)} m/s` }} · {{ task.max_rain_6h_mm === null ? '雨缺测' : `六小时雨 ${task.max_rain_6h_mm.toFixed(1)} mm` }}</small>

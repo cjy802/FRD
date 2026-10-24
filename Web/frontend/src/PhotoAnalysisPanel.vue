@@ -14,6 +14,7 @@ import {
 } from './photoAnalysis'
 import type { ActivePhotoAnalysisJob, PhotoAnalysisHealth, PhotoAnalysisJob, PhotoAnalysisJobItem, PhotoAnalysisResultImage, WaterAlertThresholds } from './photoAnalysis'
 import type { TaskVideoFrame } from './photoAnalysis'
+import { STAGE_LABELS } from './analysisPipeline'
 
 const props = withDefaults(defineProps<{ taskId: string | null; frames: TaskVideoFrame[]; thresholds: WaterAlertThresholds; activeJobId?: string | null; queueOpen?: boolean }>(), { activeJobId: null, queueOpen: false })
 const emit = defineEmits<{ 'remove-frame': [index: number]; 'remove-all-frames': []; 'frames-add': [frames: TaskVideoFrame[]]; 'job-started': [jobId: string]; 'analysis-update': [job: PhotoAnalysisJob]; 'thresholds-change': [thresholds: WaterAlertThresholds]; 'open-queue': []; 'close-queue': [] }>()
@@ -122,10 +123,6 @@ function restoreHiddenNoWaterImages() {
 }
 // 复检 job（带 recheck_of_job_id）：输入帧均已被 YOLO 检出，这里再检出即“双模型确认”。
 const isRecheckJob = computed(() => Boolean(job.value?.context?.recheck_of_job_id))
-const STAGE_LABELS: Record<string, string> = {
-  'yolo-champion': 'YOLO 初筛',
-  'remote-glm-puddle': 'GLM 终审',
-}
 const stageLabel = computed(() => STAGE_LABELS[job.value?.model_id ?? ''] ?? '复检')
 const confirmWord = '双模型确认'
 const recheckConfirmedCount = computed(() => (job.value?.results?.images ?? [])
