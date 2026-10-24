@@ -171,10 +171,19 @@ const adaptiveButtonLabel = computed(() => {
 const currentTimeLabel = computed(() => formatVideoTime(currentTime.value))
 const previewImportBlockedReason = computed(() => {
   if (!props.taskId) return '请先创建当前任务'
-  if (!previewGroup.value?.srt) return '此组没有 SRT，无法导入'
   return ''
 })
-const canImportPreview = computed(() => Boolean(props.taskId && previewGroup.value?.srt && !loading.value))
+const canImportPreview = computed(() => Boolean(props.taskId && previewGroup.value && !loading.value))
+// 无 SRT 导入采用两步确认：第一次点击只亮出提示条，确认后才真正导入。
+const noSrtImportArmed = ref(false)
+watch(previewGroup, () => { noSrtImportArmed.value = false })
+
+function placeholderSrtFor(videoName: string): File {
+  // 后端要求 SRT 非空；没有真实字幕时合成一个不含 GPS 的占位 SRT，
+  // 走既有的 has_gps=false 链路（地图无轨迹、关键帧不能带 GPS 位置）。
+  const content = `1\n00:00:00,000 --> 00:00:01,000\n[no-srt] ${videoName} 导入时未提供 SRT 字幕\n\n`
+  return new File([content], `${videoName}.no-srt.srt`, { type: 'text/plain' })
+}
 const canCapturePreview = computed(() => Boolean(previewGroup.value && survey.value && previewVideo.value?.videoWidth
   && props.frameCount < 100 && !capturingPreview.value))
 
@@ -207,19 +216,21 @@ function updatePosition(time = videoElement.value?.currentTime ?? currentTime.va
   emit('position-change', currentPosition.value)
 }
 
-async function importVideo(srt: File, localFile: File) {
+async function importVideo(srt: File, localFile: File, withoutSrt = false) {
   if (!props.taskId || loading.value) return
   loading.value = true
   error.value = ''
-  status.value = '正在读取 SRT 轨迹…'
+  status.value = withoutSrt ? '正在导入视频（无 SRT）…' : '正在读取 SRT 轨迹…'
   try {
     const result = await createVideoSurveySrt(srt, localFile.name, props.taskId)
     if (localVideo.value) URL.revokeObjectURL(localVideo.value.url)
     localVideo.value = { file: localFile, url: URL.createObjectURL(localFile) }
     publishSurvey(result)
-    status.value = result.has_gps
-      ? `已导入 SRT 轨迹（本任务之前的视频已自动替换清理）；视频保留在本机，预览与截帧直接使用本地文件，不会上传。`
-      : 'SRT 已导入，但没有识别到 GPS 坐标。请确认使用的是与此视频对应、含 GPS 的视频字幕文件。'
+    status.value = withoutSrt
+      ? '视频已导入（未提供 SRT）：地图上不会显示飞行路径，关键帧也不会带 GPS 位置。'
+      : result.has_gps
+        ? `已导入 SRT 轨迹（本任务之前的视频已自动替换清理）；视频保留在本机，预览与截帧直接使用本地文件，不会上传。`
+        : 'SRT 已导入，但没有识别到 GPS 坐标。请确认使用的是与此视频对应、含 GPS 的视频字幕文件。'
     if (videoElement.value) videoElement.value.currentTime = 0
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : 'SRT 导入失败。'
@@ -302,8 +313,13 @@ function closeLibrary() {
 
 async function importPreviewGroup() {
   const group = previewGroup.value
-  if (!group?.srt || !props.taskId || loading.value) return
-  await importVideo(group.srt, group.video)
+  if (!group || !props.taskId || loading.value) return
+  if (!group.srt && !noSrtImportArmed.value) {
+    noSrtImportArmed.value = true
+    return
+  }
+  noSrtImportArmed.value = false
+  await importVideo(group.srt ?? placeholderSrtFor(group.video.name), group.video, !group.srt)
   if (!error.value) closeLibrary()
 }
 
@@ -864,8 +880,13 @@ watch(() => props.taskId, () => {
                 :title="!survey ? '先点击「导入到当前任务」，截帧才能带上 SRT 位置' : props.frameCount >= FRAME_LIMIT ? '关键帧已达上限' : '把当前画面按 SRT 位置存为任务关键帧'"
                 @click="capturePreviewFrame"
               >{{ capturingPreview ? '截取中…' : '截取当前画面' }}</button>
-              <button type="button" class="video-library-import" :disabled="!canImportPreview" @click="importPreviewGroup">
-                {{ loading ? '导入中…' : previewImportBlockedReason || '导入到当前任务' }}
+              <template v-if="!previewGroup.srt && noSrtImportArmed">
+                <span class="video-library-import-warning">没有 SRT：地图不会显示飞行路径，关键帧不带 GPS。确定导入吗？</span>
+                <button type="button" class="video-library-import-cancel" :disabled="loading" @click="noSrtImportArmed = false">取消</button>
+                <button type="button" class="video-library-import is-armed" :disabled="loading" @click="importPreviewGroup">{{ loading ? '导入中…' : '确认导入' }}</button>
+              </template>
+              <button v-else type="button" class="video-library-import" :disabled="!canImportPreview" @click="importPreviewGroup">
+                {{ loading ? '导入中…' : previewImportBlockedReason || (previewGroup.srt ? '导入到当前任务' : '导入到当前任务（无 SRT）') }}
               </button>
             </div>
           </div>
@@ -984,4 +1005,8 @@ watch(() => props.taskId, () => {
 .video-library-import { min-height: 34px; padding: 6px 16px; border: 1px solid var(--ui-accent); border-radius: 7px; background: var(--ui-accent); color: #fff; font-size: 12px; cursor: pointer; }
 .video-library-import:hover:not(:disabled) { background: var(--ui-accent-hover); }
 .video-library-import:disabled { opacity: .55; cursor: not-allowed; }
+.video-library-import.is-armed { border-color: #c98a8a; background: #fff; color: #963d3d; }
+.video-library-import.is-armed:hover:not(:disabled) { background: #fff0f0; }
+.video-library-import-cancel { min-height: 34px; padding: 6px 12px; border: 1px solid #d7dfe8; border-radius: 7px; background: #fff; color: #526273; font-size: 12px; cursor: pointer; }
+.video-library-import-warning { max-width: 230px; color: #963d3d; font-size: 11px; line-height: 1.45; text-align: right; }
 </style>
