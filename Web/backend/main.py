@@ -85,7 +85,7 @@ class RouteRequest(BaseModel):
     end: Point
     road_source: Literal["local", "online"] = "local"
     altitude_m: float = Field(default=100, ge=0, le=1000, allow_inf_nan=False)
-    speed_kmh: float = Field(default=45, gt=0, le=200)
+    speed_kmh: float = Field(default=10, gt=0, le=200)
     clearance_m: float = Field(default=2.0, ge=0, le=20)
 
 
@@ -99,7 +99,7 @@ class MissionRouteRequest(BaseModel):
     anchors: list[MissionAnchor] = Field(min_length=2, max_length=MAX_MISSION_ANCHORS)
     road_source: Literal["local", "online"] = "local"
     altitude_m: float = Field(default=100, ge=0, le=1000, allow_inf_nan=False)
-    speed_kmh: float = Field(default=45, gt=0, le=200, allow_inf_nan=False)
+    speed_kmh: float = Field(default=10, gt=0, le=200, allow_inf_nan=False)
     clearance_m: float = Field(default=2.0, ge=0, le=20, allow_inf_nan=False)
 
     @model_validator(mode="after")
@@ -126,7 +126,7 @@ class AreaCoverageRequest(BaseModel):
     end: Point | None = None
     endpoint_snap_m: float = Field(default=100, ge=1, le=500, allow_inf_nan=False)
     altitude_m: float = Field(default=100, ge=0, le=1000, allow_inf_nan=False)
-    speed_kmh: float = Field(default=45, gt=0, le=200, allow_inf_nan=False)
+    speed_kmh: float = Field(default=10, gt=0, le=200, allow_inf_nan=False)
 
     @field_validator("road_classes")
     @classmethod
@@ -164,7 +164,7 @@ class WeatherLimits(BaseModel):
 class RouteWeatherRequest(BaseModel):
     coordinates: list[tuple[float, float]] = Field(min_length=2, max_length=10000)
     departure_time_utc: str
-    speed_kmh: float = Field(default=45, gt=0, le=200, allow_inf_nan=False)
+    speed_kmh: float = Field(default=10, gt=0, le=200, allow_inf_nan=False)
     altitude_m: float = Field(default=100, ge=0, le=1000, allow_inf_nan=False)
     profile: WeatherLimits | None = None
 

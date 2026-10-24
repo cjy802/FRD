@@ -72,7 +72,7 @@ const form = reactive({
   start: { latitude: 31.67920, longitude: 119.95150 },
   end: { latitude: 31.68040, longitude: 119.94950 },
   altitude_m: 100,
-  speed_kmh: 45,
+  speed_kmh: 10,
   clearance_m: 2,
 })
 type PlanningMode = 'anchors' | 'area'
@@ -412,9 +412,9 @@ const videoCaptureTargets = ref<VideoCaptureTarget[]>([])
 function setVideoTelemetryTrack(track: number[][]) { videoTelemetryTrack.value = track }
 function setVideoTelemetryPosition(position: VideoTelemetryPoint | null) { videoTelemetryPosition.value = position }
 function setVideoCaptureTargets(targets: VideoCaptureTarget[]) { videoCaptureTargets.value = targets }
-// 地图和现场端只呈现终审确认点；旧任务里已落盘的 candidate 一并过滤，
-// 不再显示（清除按钮仍可一次性清掉整份标记）。
-const mapAnalysisTargets = computed(() => analysisMapTargets.value.filter(target => target.analysis_kind !== 'candidate'))
+// 地图只呈现终审确认点。旧版页面写入的标记没有 analysis_kind 字段，
+// 一律不再上图；重跑一遍分析（或点“清除积水标记”）后存储里就只剩确认点。
+const mapAnalysisTargets = computed(() => analysisMapTargets.value.filter(target => target.analysis_kind === 'confirmed'))
 const mapCaptureTargets = computed(() => showAnalysisTargets.value
   ? [...videoCaptureTargets.value, ...mapAnalysisTargets.value]
   : [...videoCaptureTargets.value])
