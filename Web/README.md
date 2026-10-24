@@ -26,6 +26,27 @@ npm run dev
 `VITE_API_TARGET=http://127.0.0.1:端口` 后重启前端；终端中设置的同名环境变量优先。
 开发服务器和 `npm run preview` 使用相同的代理目标。
 
+## 登录与角色
+
+系统要求登录后使用，两个固定账号（在 `backend/.env` 配置，模板见
+`backend/.env.example`）：**管理员**（`ADMIN_USERNAME/ADMIN_PASSWORD`）进入主控
+工作台；**使用者**（`FIELD_USERNAME/FIELD_PASSWORD`）进入现场处理端
+（积水处置）。未配置密码时后端首次启动自动生成随机密码并打印在控制台，
+同时保存在 `backend/user_data/auth_credentials.json`。会话使用签名 Cookie
+（HttpOnly + SameSite=Lax，7 天有效）。
+
+积水处理流程：主控端照片分析（YOLO 初筛 + GLM 复检）完成后，结果进入
+“人工复核”区——管理员逐张查看叠图、勾选确认真实积水的照片，点
+“确认并下发到现场端”后这些点位才会出现在现场处理端（含地图位置）；
+未下发的任务在现场端显示空态。
+
+## 生产访问（同源，无跨域）
+
+`cd frontend && npm run build` 之后，后端自动托管 `frontend/dist`：
+浏览器访问 `http://127.0.0.1:8011/` 即主控工作台、`/field` 为现场处理端、
+`/login` 为登录页，全部走同一个源，后端不再提供 CORS 跨域许可。
+开发态仍可用 5173 + 代理。
+
 百度地图 JSAPI Three 的 AK 在 `frontend/.env.local` 配置，空白模板见
 `frontend/.env.example`。依赖和静态资源复制已配置；配置或修改 AK 后重启前端，
 访问 `http://127.0.0.1:5173/baidu-preview.html`。
