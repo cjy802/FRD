@@ -125,7 +125,7 @@ class DjiKmzTests(unittest.TestCase):
                             self.assertEqual(point.findtext("wpml:gimbalPitchAngle", namespaces=namespace), "-35")
                         else:
                             self.assertEqual(heading.findtext("wpml:waypointHeadingMode", namespaces=namespace), "followWayline")
-                            self.assertEqual(point.findtext("wpml:gimbalPitchAngle", namespaces=namespace), "0")
+                            self.assertEqual(point.findtext("wpml:gimbalPitchAngle", namespaces=namespace), "-90")
 
     def test_rejects_too_many_distinct_camera_settings(self):
         coordinates = [[119.95 + index * 0.00005, 31.67] for index in range(502)]
@@ -141,7 +141,7 @@ class DjiKmzTests(unittest.TestCase):
         namespace = {"wpml": "http://www.dji.com/wpmz/1.0.2", "kml": "http://www.opengis.net/kml/2.2"}
         placemarks = waylines.findall(".//kml:Placemark", namespace)
         self.assertLess(len(placemarks), len(coordinates))
-        self.assertTrue(all(point.findtext("wpml:gimbalPitchAngle", namespaces=namespace) == "0" for point in placemarks))
+        self.assertTrue(all(point.findtext("wpml:gimbalPitchAngle", namespaces=namespace) == "-90" for point in placemarks))
 
     def test_pitch_only_second_waypoint_keeps_course_heading_in_both_files(self):
         coordinates = [[119.952, 31.67], [119.951, 31.67], [119.95, 31.67]]
@@ -156,7 +156,7 @@ class DjiKmzTests(unittest.TestCase):
                     for name in ("wpmz/template.kml", "wpmz/waylines.wpml"):
                         points = ElementTree.fromstring(archive.read(name)).findall(".//kml:Placemark", namespace)
                         self.assertEqual(len(points), 3)
-                        self.assertEqual([point.findtext("wpml:gimbalPitchAngle", namespaces=namespace) for point in points], ["0", "-53.8", "0"])
+                        self.assertEqual([point.findtext("wpml:gimbalPitchAngle", namespaces=namespace) for point in points], ["-90", "-53.8", "-90"])
                         for point in points:
                             heading = point.find("wpml:waypointHeadingParam", namespace)
                             self.assertEqual(heading.findtext("wpml:waypointHeadingMode", namespaces=namespace), "followWayline")
@@ -297,6 +297,31 @@ class DjiKmzTests(unittest.TestCase):
             for name in ("wpmz/template.kml", "wpmz/waylines.wpml"):
                 with self.subTest(name=name):
                     self.assertEqual(ElementTree.fromstring(archive.read(name)).findall(".//wpml:actionGroup", namespace), [])
+
+    def test_default_gimbal_pitch_looks_straight_down(self):
+        payload = build_dji_kmz([[119.95, 31.67], [119.951, 31.672], [119.952, 31.672]], 80, 36, "fly")
+        namespace = {"wpml": "http://www.dji.com/wpmz/1.0.2", "kml": "http://www.opengis.net/kml/2.2"}
+        with ZipFile(BytesIO(payload)) as archive:
+            template = ElementTree.fromstring(archive.read("wpmz/template.kml"))
+            waylines = ElementTree.fromstring(archive.read("wpmz/waylines.wpml"))
+        self.assertEqual(template.findtext(".//wpml:gimbalPitchMode", namespaces=namespace), "usePointSetting")
+        for document in (template, waylines):
+            pitches = [point.findtext("wpml:gimbalPitchAngle", namespaces=namespace) for point in document.findall(".//kml:Placemark", namespace)]
+            self.assertEqual(pitches, ["-90", "-90", "-90"])
+
+    def test_explicit_horizontal_pitch_is_preserved(self):
+        payload = build_dji_kmz(
+            [[119.95, 31.67], [119.951, 31.672], [119.952, 31.672]],
+            80,
+            36,
+            "fly",
+            [{"gimbal_pitch_angle": 0}, {}, {"gimbal_pitch_angle": -30}],
+        )
+        namespace = {"wpml": "http://www.dji.com/wpmz/1.0.2", "kml": "http://www.opengis.net/kml/2.2"}
+        with ZipFile(BytesIO(payload)) as archive:
+            waylines = ElementTree.fromstring(archive.read("wpmz/waylines.wpml"))
+        pitches = [point.findtext("wpml:gimbalPitchAngle", namespaces=namespace) for point in waylines.findall(".//kml:Placemark", namespace)]
+        self.assertEqual(pitches, ["0", "-90", "-30"])
 
 
 if __name__ == "__main__":

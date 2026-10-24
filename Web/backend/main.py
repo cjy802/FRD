@@ -179,7 +179,7 @@ class KmzWaypointSetting(BaseModel):
     altitude_m: float | None = Field(default=None, gt=0, le=1500, allow_inf_nan=False)
     heading_mode: Literal["followWayline", "manually", "fixed", "smoothTransition", "towardPOI"] = "followWayline"
     heading_angle: float = Field(default=0, allow_inf_nan=False)
-    gimbal_pitch_angle: float = Field(default=0, ge=-90, le=45, allow_inf_nan=False)
+    gimbal_pitch_angle: float = Field(default=-90, ge=-90, le=45, allow_inf_nan=False)
     export_anchor: bool = False
     poi: tuple[float, float, float] | None = None
 

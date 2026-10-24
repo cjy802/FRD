@@ -39,6 +39,9 @@ WAYPOINT_TURN_MODE = "coordinateTurn"
 TURN_DAMPING_MAX_M = 0.5
 TURN_DAMPING_FLOOR_M = 0.1
 
+# 巡检默认垂直向下拍摄；未显式设置俯仰的航点按此值导出。
+DEFAULT_GIMBAL_PITCH_ANGLE = -90.0
+
 # Road geometry contains many short OSM/OSRM segments. DJI renders every
 # waypoint marker and altitude label, so exporting every vertex makes even a
 # valid route unreadable. These values keep meaningful turns while removing
@@ -249,7 +252,7 @@ def _template_waypoint(index: int, longitude: float, latitude: float, altitude_m
     setting = setting or {}
     raw_altitude = setting.get("altitude_m")
     point_altitude = altitude_m if raw_altitude is None else float(raw_altitude)
-    gimbal_pitch = float(setting.get("gimbal_pitch_angle", 0))
+    gimbal_pitch = float(setting.get("gimbal_pitch_angle", DEFAULT_GIMBAL_PITCH_ANGLE))
     settings = f"""  <wpml:useGlobalHeight>0</wpml:useGlobalHeight>
   <wpml:useGlobalSpeed>0</wpml:useGlobalSpeed>
 {_heading_param(setting)}
@@ -275,7 +278,7 @@ def _wayline_waypoint(index: int, longitude: float, latitude: float, altitude_m:
     setting = setting or {}
     raw_altitude = setting.get("altitude_m")
     point_altitude = altitude_m if raw_altitude is None else float(raw_altitude)
-    gimbal_pitch = float(setting.get("gimbal_pitch_angle", 0))
+    gimbal_pitch = float(setting.get("gimbal_pitch_angle", DEFAULT_GIMBAL_PITCH_ANGLE))
     body = f"""<Placemark>
   <Point><coordinates>{_number(longitude, 7)},{_number(latitude, 7)}</coordinates></Point>
   <wpml:index>{index}</wpml:index>
@@ -373,7 +376,7 @@ def _normalise_waypoint_settings(settings, count: int) -> list[dict[str, object]
         altitude = item.get("altitude_m")
         if altitude is not None and (not isfinite(float(altitude)) or not 0 < float(altitude) <= 1500):
             raise KmzExportError("航点高度必须在 0–1500 米。")
-        pitch = item.get("gimbal_pitch_angle", 0)
+        pitch = item.get("gimbal_pitch_angle", DEFAULT_GIMBAL_PITCH_ANGLE)
         if not isfinite(float(pitch)) or not -90 <= float(pitch) <= 45:
             raise KmzExportError("摄像头俯仰角必须在 -90–45 度。")
         angle = item.get("heading_angle", 0)
@@ -395,7 +398,7 @@ def _has_custom_setting(setting: dict[str, object], altitude_m: float) -> bool:
         setting.get("altitude_m") is not None and float(setting["altitude_m"]) != altitude_m
         or setting.get("heading_mode") not in (None, "followWayline")
         or float(setting.get("heading_angle", 0)) != 0
-        or float(setting.get("gimbal_pitch_angle", 0)) != 0
+        or float(setting.get("gimbal_pitch_angle", DEFAULT_GIMBAL_PITCH_ANGLE)) != DEFAULT_GIMBAL_PITCH_ANGLE
     )
 
 
@@ -407,7 +410,7 @@ def _setting_key(setting: dict[str, object], altitude_m: float) -> tuple[object,
         altitude_m if setting.get("altitude_m") is None else setting["altitude_m"],
         heading_mode,
         setting.get("heading_angle", 0) if heading_mode != "followWayline" else None,
-        setting.get("gimbal_pitch_angle", 0),
+        setting.get("gimbal_pitch_angle", DEFAULT_GIMBAL_PITCH_ANGLE),
         tuple(poi) if heading_mode == "towardPOI" and isinstance(poi, (list, tuple)) else None,
     )
 
