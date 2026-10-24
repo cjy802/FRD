@@ -123,7 +123,9 @@ class PhotoAnalysisManager:
             configured_yolo = os.environ.get("WATER_ANALYSIS_YOLO_MODEL", "").strip()
             self.yolo_model_path = Path(configured_yolo) if configured_yolo else None
         else:
-            self.yolo_model_path = _configured_path("WATER_ANALYSIS_YOLO_MODEL", DEFAULT_YOLO_WEIGHTS)
+            # .env 同样要能配置模型路径（_configured_path 只认系统环境变量）。
+            self.yolo_model_path = Path(_configured_value(
+                "WATER_ANALYSIS_YOLO_MODEL", str(DEFAULT_YOLO_WEIGHTS)))
         self.yolo_runner_path = yolo_runner_path if yolo_runner_path is not None else YOLO_RUNNER
         self.remote_runner_path = REMOTE_RUNNER
         self.frame_resolver: FrameResolver | None = None
