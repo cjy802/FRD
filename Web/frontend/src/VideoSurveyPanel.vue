@@ -83,12 +83,11 @@ const extractionCancel = ref(false)
 const queueModels = ref<PhotoAnalysisModelOption[]>([])
 const queueHealthLoaded = ref(false)
 const queueJobId = ref('')
-// 固定三级流水线，不再让用户选模型：ABCD 本地初筛 → YOLO 复查 → GLM 终审，
-// 每级只把上一级检出的疑似帧交给下一级；末级仍检出的才算“确认”。
-// 某级模型不可用时自动跳过该级（例如 GLM 未配置则止步于 YOLO 复查）。
+// 固定两级流水线，不再让用户选模型：YOLO 全量初筛 → GLM 终审，
+// GLM 只复查 YOLO 检出的疑似帧，两遍都检出才算“双模型确认”。
+// ABCDWaveNet 初筛已实测否决：该域上全量误报，过滤完全失效（2026-10-24）。
 const PIPELINE_STAGES: Array<{ id: string; short: string; noun: string }> = [
-  { id: 'abcd-local', short: 'ABCD 初筛', noun: 'ABCD' },
-  { id: 'yolo-champion', short: 'YOLO 复查', noun: 'YOLO' },
+  { id: 'yolo-champion', short: 'YOLO 初筛', noun: 'YOLO' },
   { id: 'remote-glm-puddle', short: 'GLM 终审', noun: 'GLM' },
 ]
 const queueStages = ref< Array<{ id: string; short: string; noun: string }>>([])
@@ -151,8 +150,8 @@ async function onQueueJobDone(jobId: string, job: PhotoAnalysisJob) {
   const images = job.results?.images ?? []
   const confirmed = images.filter(image => (image.suspected_pixels ?? 0) > 0).length
   const singleOnly = Math.max(0, (job.counts?.done ?? images.length) - confirmed)
-  const confirmWord = queueStages.value.length >= 3 ? '三模型确认' : queueStages.value.length === 2 ? '双模型确认' : '模型确认'
-  status.value = `识别流水线完成：${confirmWord}疑似积水 ${confirmed} 帧${singleOnly ? `（另有 ${singleOnly} 帧仅前序模型检出，未确认）` : ''}；确认帧已生成地图积水目标，含经纬度与所在道路位置。`
+  const confirmWord = queueStages.value.length === 2 ? '双模型确认' : '模型确认'
+  status.value = `识别流水线完成：${confirmWord}疑似积水 ${confirmed} 帧${singleOnly ? `（另有 ${singleOnly} 帧仅 YOLO 检出，未确认）` : ''}；确认帧已生成地图积水目标，含经纬度与所在道路位置。`
 }
 
 async function startNextStage(prevJobId: string, job: PhotoAnalysisJob, nextIndex: number) {
@@ -782,7 +781,7 @@ watch(() => props.taskId, () => resetSurveyState())
           <label>最低清晰度 · 近期中位数 %<input v-model.number="minimumSharpnessPercent" type="number" min="0" max="100" step="5" :disabled="selectingFrames || !blurFilterEnabled" /></label>
         </div>
         <div class="adaptive-selector-fields adaptive-queue-row">
-          <small class="adaptive-pipeline-note">识别流水线（自动逐级复检，无需选模型）：ABCD 初筛 → YOLO 复查 → GLM 终审，每级只复查上一级检出的疑似帧。</small>
+          <small class="adaptive-pipeline-note">识别流水线（自动复检，无需选模型）：YOLO 全量初筛 → GLM 终审，GLM 只复查 YOLO 检出的疑似帧，两遍都检出才确认。</small>
           <small v-if="queueHealthLoaded && !queueStages.length">识别服务未就绪，只能先截帧。</small>
         </div>
         <div class="adaptive-selector-actions-row">

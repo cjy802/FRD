@@ -17,7 +17,7 @@ import { createFlightTimeline, sampleFlight, type FlightSample } from './flightP
 import { MissionTaskError, createMissionTask, deleteAllMissionTaskFrames, deleteMissionTask, deleteMissionTaskFrame, fetchMissionTask, fetchMissionTaskFrames, saveMissionTaskFrame,
   listMissionTasks, updateMissionTask, type MissionTask, type MissionTaskSummary, type StoredMissionFrame } from './missionTasks'
 import type { PhotoAnalysisJob, PhotoAnalysisResultImage, TaskVideoFrame, WaterAlertThresholds } from './photoAnalysis'
-import { assessWaterAlert, loadWaterAlertThresholds, saveWaterAlertThresholds } from './photoAnalysis'
+import { loadWaterAlertThresholds, saveWaterAlertThresholds } from './photoAnalysis'
 import { fetchLocationAddress, placeToPoint, type PlaceResult } from './placeSearch'
 
 type Point = { latitude: number; longitude: number }
@@ -412,8 +412,11 @@ const videoCaptureTargets = ref<VideoCaptureTarget[]>([])
 function setVideoTelemetryTrack(track: number[][]) { videoTelemetryTrack.value = track }
 function setVideoTelemetryPosition(position: VideoTelemetryPoint | null) { videoTelemetryPosition.value = position }
 function setVideoCaptureTargets(targets: VideoCaptureTarget[]) { videoCaptureTargets.value = targets }
+// 地图和现场端只呈现终审确认点；旧任务里已落盘的 candidate 一并过滤，
+// 不再显示（清除按钮仍可一次性清掉整份标记）。
+const mapAnalysisTargets = computed(() => analysisMapTargets.value.filter(target => target.analysis_kind !== 'candidate'))
 const mapCaptureTargets = computed(() => showAnalysisTargets.value
-  ? [...videoCaptureTargets.value, ...analysisMapTargets.value]
+  ? [...videoCaptureTargets.value, ...mapAnalysisTargets.value]
   : [...videoCaptureTargets.value])
 
 async function openCreateTaskDialog() {
@@ -613,30 +616,25 @@ function analysisTargetsFromJob(job: PhotoAnalysisJob): VideoCaptureTarget[] {
 }
 
 function buildTargets(pairs: { image: PhotoAnalysisResultImage; meta: AnalysisFrameMeta }[], job: PhotoAnalysisJob): VideoCaptureTarget[] {
-  // 复检 job 的输入帧都是前序模型检出帧：这里再检出即多模型确认，
-  // 不再套面积阈值——用户口径是“每一级都检出才算疑似积水”。
-  // 三级流水线下 GLM 终审 = 三模型确认；YOLO 复查（GLM 不可用时的末级）= 双模型确认。
+  // 复检 job 的输入帧都是 YOLO 检出帧：GLM 再检出即“双模型确认”。
   const isRecheck = Boolean(job.context?.recheck_of_job_id)
-  const confirmWord = job.model_id === 'remote-glm-puddle' ? '三模型确认' : '双模型确认'
+  // 只有终审确认的点才进地图和现场端；首级初筛结果只留在照片分析面板里，
+  // 不再生成候选标记，避免“复检未检出”的帧堆在地图上。
+  if (!isRecheck) return []
+  const confirmWord = '双模型确认'
   return pairs
-    .filter(({ image }) => isRecheck
-      ? (image.suspected_pixels ?? 0) > 0
-      : assessWaterAlert(image, waterAlertThresholds.value).level !== 'none')
+    .filter(({ image }) => (image.suspected_pixels ?? 0) > 0)
     .sort((first, second) => (second.image.estimated_area_m2 ?? 0) - (first.image.estimated_area_m2 ?? 0))
     .slice(0, 5)
     .map(({ image, meta }, index): VideoCaptureTarget => {
-      const assessment = assessWaterAlert(image, waterAlertThresholds.value)
       const positionText = describeRoutePosition(meta.latitude, meta.longitude)
-      const areaText = assessment.areaText ?? `占比 ${(image.suspected_fraction * 100).toFixed(1)}%`
-      const now = new Date()
-      const dateStamp = `${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+      const areaText = `占比 ${(image.suspected_fraction * 100).toFixed(1)}%`
       return {
         id: `analysis-${job.job_id}-${image.name}`,
-        label: isRecheck
-          ? `疑似积水（${confirmWord}）${index + 1}${positionText ? ` · ${positionText}` : ''} · ${meta.latitude.toFixed(5)}, ${meta.longitude.toFixed(5)} · ${areaText}`
-          : `积水候选 ${dateStamp} ${index + 1} · ${areaText}`,
+        label: `疑似积水（${confirmWord}）${index + 1}${positionText ? ` · ${positionText}` : ''} · ${meta.latitude.toFixed(5)}, ${meta.longitude.toFixed(5)} · ${areaText}`,
         created_at: new Date().toISOString(),
-        analysis_kind: isRecheck ? 'confirmed' : 'candidate',
+        analysis_kind: 'confirmed',
+        badge: '✓',
         time_seconds: meta.time_seconds ?? 0,
         latitude: meta.latitude,
         longitude: meta.longitude,
@@ -3161,7 +3159,7 @@ onBeforeUnmount(() => {
           <VideoSurveyPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frame-count="taskFrames.length" @track-change="setVideoTelemetryTrack" @position-change="setVideoTelemetryPosition" @targets-change="setVideoCaptureTargets" @frame-capture="addTaskFrame" @frame-saved="onTaskFrameSaved" @survey-change="onTaskSurveyChange" @job-started="onAnalysisJobStarted" @open-queue="analysisQueueOpen = true" />
           <p class="form-scope-note">关键帧会保存在任务文件夹中。模型只分析勾选的帧，SRT 位置会随结果一同记录。</p>
           <PhotoAnalysisPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frames="taskFrames" :thresholds="waterAlertThresholds" :active-job-id="activeAnalysisJobId" :queue-open="analysisQueueOpen" @remove-frame="removeTaskFrame" @remove-all-frames="removeAllTaskFrames" @frames-add="addManualTaskFrames" @job-started="onAnalysisJobStarted" @analysis-update="absorbAnalysisResults" @thresholds-change="updateWaterAlertThresholds" @open-queue="analysisQueueOpen = true" @close-queue="analysisQueueOpen = false" />
-          <div class="analysis-target-tools"><label class="route-export-record"><input v-model="showAnalysisTargets" type="checkbox" />显示积水候选标记（{{ analysisMapTargets.length }} 个，跟随任务保存）</label><button type="button" class="weather-refresh" :disabled="!analysisMapTargets.length" @click="clearAnalysisTargets">清除积水标记</button></div>
+          <div class="analysis-target-tools"><label class="route-export-record"><input v-model="showAnalysisTargets" type="checkbox" />显示积水确认点（{{ mapAnalysisTargets.length }} 个，跟随任务保存）</label><button type="button" class="weather-refresh" :disabled="!analysisMapTargets.length" @click="clearAnalysisTargets">清除积水标记</button></div>
           </div>
           </div>
             <fluent-button v-if="activeModule === 'route'" class="primary-button" appearance="primary" type="button" :disabled="!weatherCoordinates || loading || checkingPoint || locatingPoint !== null" @click="selectModule('status')"><span class="svg-icon icon-cloud-rain" aria-hidden="true"></span><span>继续查看天气</span></fluent-button>

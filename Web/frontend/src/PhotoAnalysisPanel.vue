@@ -120,17 +120,14 @@ function hideAllNoWaterImages() {
 function restoreHiddenNoWaterImages() {
   hiddenNoWaterNames.value = []
 }
-// 复检 job（带 recheck_of_job_id）：输入帧均已被前序模型检出，这里再检出即确认。
-// 三级流水线下中间级（如 YOLO 复查）也是复检 job，措辞按当前 job 的模型取。
+// 复检 job（带 recheck_of_job_id）：输入帧均已被 YOLO 检出，这里再检出即“双模型确认”。
 const isRecheckJob = computed(() => Boolean(job.value?.context?.recheck_of_job_id))
 const STAGE_LABELS: Record<string, string> = {
-  'abcd-local': 'ABCD 初筛',
-  'yolo-champion': 'YOLO 复查',
+  'yolo-champion': 'YOLO 初筛',
   'remote-glm-puddle': 'GLM 终审',
 }
 const stageLabel = computed(() => STAGE_LABELS[job.value?.model_id ?? ''] ?? '复检')
-// GLM 终审是流水线末级，此前已过 ABCD+YOLO 两级 → 三模型确认；其余复检按双模型表述。
-const confirmWord = computed(() => job.value?.model_id === 'remote-glm-puddle' ? '三模型确认' : '双模型确认')
+const confirmWord = '双模型确认'
 const recheckConfirmedCount = computed(() => (job.value?.results?.images ?? [])
   .filter(image => (image.suspected_pixels ?? 0) > 0).length)
 const alertSummary = computed(() => {
