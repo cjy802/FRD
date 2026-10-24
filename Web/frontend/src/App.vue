@@ -2960,7 +2960,7 @@ onBeforeUnmount(() => {
   <div class="shell">
     <header class="topbar">
       <div class="brand"><span class="brand-mark" aria-hidden="true"><span class="svg-icon icon-route"></span></span><div class="brand-copy"><strong>低空飞行决策工作台</strong><small>航线规划与天气评估</small></div></div>
-      <div class="top-actions"><span class="prototype-tag"><span class="svg-icon icon-route" aria-hidden="true"></span>道路参考路线</span><span class="connection">原型阶段</span></div>
+      <div class="top-actions"><a class="field-client-entry" href="/field"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>现场处理端</a><span class="prototype-tag"><span class="svg-icon icon-route" aria-hidden="true"></span>道路参考路线</span><span class="connection">原型阶段</span></div>
     </header>
 
     <nav class="workspace-tabs" aria-label="工作区面板">
