@@ -422,26 +422,18 @@ class QueuePhotoAnalysisTests(unittest.TestCase):
         # 已完成帧的结果来自重放的 results.jsonl，不重复识别。
         self.assertEqual(job["items"][0]["attempts"], 0)
 
-    def test_queue_discards_clean_frames_when_requested(self):
+    def test_queue_keeps_all_frames_even_with_legacy_discard_flag(self):
         clean = self._add_frame(payload=b"CLEAN-data")
         problem = self._add_frame(payload=TINY_PNG)
-        self.manager.frame_cleaner = lambda task_id, frame_id: self.store.remove_frame(task_id, frame_id)
+        # 截图帧只增不删：旧的 discard_clean_frames 标志必须被忽略。
         job_id = self.manager.submit_frames(self.task["task_id"], [clean, problem],
                                             context={"discard_clean_frames": True})
         job = self._wait_state(job_id)
         self.assertEqual(job["state"], "done", job.get("error"))
         self.assertEqual(job["counts"]["done"], 2)
-        remaining = [item["frame_id"] for item in self.store.frames(self.task["task_id"])]
-        self.assertNotIn(clean, remaining)   # 无疑似积水的帧自动删除
+        remaining = {item["frame_id"] for item in self.store.frames(self.task["task_id"])}
+        self.assertIn(clean, remaining)      # 无疑似积水的帧也保留
         self.assertIn(problem, remaining)    # 有疑似积水的帧保留
-        # 不开标志时帧全部保留。
-        clean_two = self._add_frame(payload=b"CLEAN-data")
-        problem_two = self._add_frame(payload=TINY_PNG)
-        job_id_two = self.manager.submit_frames(self.task["task_id"], [clean_two, problem_two])
-        self._wait_state(job_id_two)
-        remaining_two = {item["frame_id"] for item in self.store.frames(self.task["task_id"])}
-        self.assertIn(clean_two, remaining_two)
-        self.assertIn(problem_two, remaining_two)
 
     def test_queue_second_submit_rejected_while_busy(self):
         self._add_frame(payload=b"SLOW-image-data")

@@ -150,7 +150,7 @@ function updateMapRect() {
   mapRect.value = { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
 }
 
-// 保险上限与后端 TaskStore.MAX_FRAMES_PER_TASK 保持一致；实际存量由“干净帧自动删除”维持。
+// 保险上限与后端 TaskStore.MAX_FRAMES_PER_TASK 保持一致；截图只增不删，满额后需手动移除旧帧。
 const FRAME_LIMIT = 300
 
 const canCaptureFrame = computed(() => Boolean(survey.value && currentPosition.value && videoElement.value?.videoWidth
@@ -484,8 +484,6 @@ async function selectAdaptiveFramesWithAnalysis() {
     status.value = '正在创建识别队列…'
     const submitted = await submitPhotoAnalysisJob({
       taskId: props.taskId, frameIds: [], modelId: queueModel.value, streaming: true,
-      // 排查模式：识别后所有帧都保留，不自动清理“干净帧”。
-      discardCleanFrames: false,
     })
     jobId = submitted.job_id
     queueJobId.value = jobId
@@ -560,7 +558,7 @@ async function selectAdaptiveFramesWithAnalysis() {
     const counts = queueCounts.value
     if (jobId && !error.value) {
       const base = `截帧完成：入队 ${counts.enqueued} 张${queueSkipped.value ? ` · 上传跳过 ${queueSkipped.value} 张` : ''}。`
-      status.value = `${base}识别仍在后台进行（${queueStatusLabel.value || '统计中'}），进度见“任务视频 / 分析”模块；当前为排查模式，所有已识别帧都保留在任务关键帧，不自动清理。`
+      status.value = `${base}识别仍在后台进行（${queueStatusLabel.value || '统计中'}），进度见“任务视频 / 分析”模块；所有截图帧都保存在任务关键帧，不会自动删除。`
     }
   }
 }
@@ -740,7 +738,7 @@ watch(() => props.taskId, () => resetSurveyState())
           {{ queueStatusLabel }}
           <button type="button" class="adaptive-queue-jump" @click="emit('open-queue')">查看识别队列</button>
         </p>
-        <small class="adaptive-selector-note">系统用画面变化估算相邻覆盖，用 SRT 轨迹变化识别转弯；匹配不确定时会保留画面以降低漏区风险。有本地视频时自动截帧在浏览器里直接处理，不上传完整视频；重叠值是筛选目标，不代表地面覆盖的测绘级保证。“自动截帧并排队识别”会边截边传：每选出一张立即入队识别，结果逐张返回，失败帧会自动重试且不拖累整批；<strong>识别后没有疑似积水的帧会自动删除，任务里只保留有问题的帧</strong>。</small>
+        <small class="adaptive-selector-note">系统用画面变化估算相邻覆盖，用 SRT 轨迹变化识别转弯；匹配不确定时会保留画面以降低漏区风险。有本地视频时自动截帧在浏览器里直接处理，不上传完整视频；重叠值是筛选目标，不代表地面覆盖的测绘级保证。“自动截帧并排队识别”会边截边传：每选出一张立即入队识别，结果逐张返回，失败帧会自动重试且不拖累整批；<strong>所有截图帧都会保存到任务关键帧（本机任务目录），识别后不会自动删除，需手动移除</strong>。</small>
       </section>
 
       <ul v-if="survey.targets.length" class="video-survey-target-list">

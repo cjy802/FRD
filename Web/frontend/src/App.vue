@@ -682,7 +682,7 @@ async function removeTaskFrame(index: number) {
     if (activeTask.value && frame.frame_id) await deleteMissionTaskFrame(activeTask.value.task_id, frame.frame_id)
     taskFrames.value = taskFrames.value.filter((_, frameIndex) => frameIndex !== index)
   } catch (cause) {
-    // 识别流程会清理“干净帧”，列表里的旧记录可能已被后端删除；404 时直接本地移除。
+    // 帧只增不删；404 仅在列表里是旧记录（如任务已重建）时出现，直接本地移除。
     if (cause instanceof MissionTaskError && cause.status === 404) {
       taskFrames.value = taskFrames.value.filter((_, frameIndex) => frameIndex !== index)
       return

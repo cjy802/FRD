@@ -125,7 +125,6 @@ class PhotoAnalysisManager:
         self.yolo_runner_path = yolo_runner_path if yolo_runner_path is not None else YOLO_RUNNER
         self.remote_runner_path = REMOTE_RUNNER
         self.frame_resolver: FrameResolver | None = None
-        self.frame_cleaner: Callable[[str, str], None] | None = None
         self._lock = threading.Lock()
         self._jobs: dict[str, dict[str, Any]] = {}
         self._job_dirs: dict[str, Path] = {}
@@ -720,12 +719,9 @@ class PhotoAnalysisManager:
             runtime["procs"].discard(proc)
         records = self._read_new_jsonl(job_id)
         retries: list[tuple[int, str]] = []
-        discard_clean = False
-        clean_frames: list[tuple[str, str]] = []
         archived: list[tuple[str | None, str]] = []
         with self._lock:
             job = self._jobs[job_id]
-            discard_clean = bool(job["context"].get("discard_clean_frames"))
             for index in indices:
                 item = job["items"][index]
                 record = records.get(item["name"])
@@ -737,9 +733,6 @@ class PhotoAnalysisManager:
                     archived.append((item.get("_source"), item["name"]))
                     runtime["success_count"] += 1
                     runtime["consec_failures"] = 0
-                    # 干净帧（未检出疑似积水）按需自动删除，任务里只保留有问题的帧。
-                    if discard_clean and int(enriched.get("suspected_pixels") or 0) == 0:
-                        clean_frames.append((job["task_id"], item["frame_id"]))
                     continue
                 if record is not None and record.get("error"):
                     detail = str(record["error"])[:600]
@@ -771,21 +764,13 @@ class PhotoAnalysisManager:
         self._persist(job_id)
         inputs_dir = self._job_dirs[job_id] / "inputs"
         for source, name in archived:
-            # 任务侧帧可能随后被“干净帧清理”删除；先把原图归档进任务目录，
-            # 保证识别队列的缩略图/原图预览始终可用。
+            # 识别队列的缩略图/原图预览要始终可用，先把任务侧原图归档进任务目录。
             if not source:
                 continue
             try:
                 inputs_dir.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(source, inputs_dir / name)
             except OSError:
-                pass
-        for task_id, frame_id in clean_frames:
-            if self.frame_cleaner is None:
-                break
-            try:
-                self.frame_cleaner(task_id, frame_id)
-            except Exception:  # noqa: BLE001 - 删除失败仅保留该帧，不影响队列
                 pass
         for index, delay in retries:
             time.sleep(delay)

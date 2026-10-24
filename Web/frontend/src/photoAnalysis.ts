@@ -165,7 +165,6 @@ export type PhotoAnalysisJobSubmitOptions = {
   note?: string
   cameraFovDeg?: number
   streaming?: boolean
-  discardCleanFrames?: boolean
 }
 
 export async function submitPhotoAnalysisJob(
@@ -182,7 +181,6 @@ export async function submitPhotoAnalysisJob(
       note: options.note ?? '',
       ...(options.cameraFovDeg !== undefined ? { camera_fov_deg: options.cameraFovDeg } : {}),
       streaming: options.streaming ?? false,
-      discard_clean_frames: options.discardCleanFrames ?? false,
     }),
   })
 }
