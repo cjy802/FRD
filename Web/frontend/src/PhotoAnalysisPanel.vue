@@ -95,7 +95,8 @@ const imageAssessments = computed(() => (job.value?.results?.images ?? [])
   }))
 const visibleImageAssessments = computed(() => imageAssessments.value
   .filter(({ image }) => !hiddenNoWaterNames.value.includes(image.name)))
-const noWaterCount = computed(() => imageAssessments.value.filter(({ image }) => !hasSuspectedWater(image)).length)
+const visibleNoWaterCount = computed(() => visibleImageAssessments.value
+  .filter(({ image }) => !hasSuspectedWater(image)).length)
 const hiddenNoWaterCount = computed(() => hiddenNoWaterNames.value.length)
 
 watch(() => job.value?.job_id, () => {
@@ -596,77 +597,17 @@ function onDocumentPointerdown(event: PointerEvent) {
       <p v-if="healthError" class="photo-feedback is-error" role="alert">{{ healthError }}</p>
       <p v-else-if="health && !health.available" class="photo-feedback is-error" role="alert">{{ health.message }}</p>
 
-      <div class="photo-toolbar">
-        <small>只分析勾选的任务关键帧。关键帧可从任务视频截取，也可直接选择本机照片；没有拍摄高度的帧不换算积水面积。</small>
-        <button type="button" aria-label="刷新照片分析状态" @click="refreshHealth">刷新</button>
-      </div>
-
-      <div class="photo-form">
-        <span id="photo-analysis-model-label" class="photo-model-label">分割模型</span>
-        <div ref="modelPicker" class="photo-model-picker" @focusout="onModelPickerFocusout">
-          <button id="photo-analysis-model" ref="modelTrigger" type="button" role="combobox" class="photo-model-select" :disabled="busy || !health?.available" :aria-labelledby="'photo-analysis-model-label'" aria-haspopup="listbox" aria-controls="photo-analysis-model-options" :aria-expanded="modelMenuOpen" @click="toggleModelMenu" @keydown="onModelTriggerKeydown">
-            <span class="photo-model-value">{{ selectedModelOption?.label ?? '选择分割模型' }}</span><span class="photo-model-chevron" :class="{ 'is-open': modelMenuOpen }" aria-hidden="true"></span>
-          </button>
-          <div v-if="modelMenuOpen" id="photo-analysis-model-options" class="photo-model-options" role="listbox" aria-labelledby="photo-analysis-model-label">
-          <button v-for="(model, index) in health?.models ?? []" :key="model.id" :ref="element => setModelOptionRef(element, index)" type="button" role="option" class="photo-model-option" :class="{ 'is-selected': model.id === selectedModel }" :disabled="!model.available" :aria-selected="model.id === selectedModel" @click="chooseModel(model.id)" @keydown="onModelOptionKeydown($event, index)">
-              <span>{{ model.label }}</span><span v-if="model.id === selectedModel" class="photo-model-check" aria-hidden="true">✓</span><span v-else-if="!model.available" class="photo-model-unavailable">未就绪</span>
-            </button>
-          </div>
-        </div>
-        <small v-if="selectedModelOption" class="photo-model-description">{{ selectedModelOption.description }}</small>
-        <p v-if="isRemoteModel" class="photo-feedback">所选任务关键帧会发送到 BigModel 接口处理；API Key 只保存在本机后端。返回多边形会在本机生成掩膜。</p>
-        <details class="weather-threshold-config photo-threshold-config" aria-label="积水警报阈值配置">
-          <summary class="weather-threshold-config-heading"><strong>设置积水警报阈值</strong><small>结合拍摄高度换算面积，达标才警报</small></summary>
-          <div class="weather-threshold-group">
-            <div class="weather-threshold-item"><strong>警报面积阈值 · m²</strong><label>最大单块水面达到该面积触发警报<input v-model.number="localThresholds.minAlertAreaM2" type="number" min="0.5" max="100000" step="0.5" :disabled="busy" /></label><small>总面积达标但只是破碎小水坑时仅提示“注意”</small></div>
-            <div class="weather-threshold-item"><strong>相机水平视场角 · °</strong><label>按拍摄机型校准（Air 3 约 75）<input v-model.number="localThresholds.cameraFovDeg" type="number" min="30" max="120" step="1" :disabled="busy" /></label><small>面积 = 疑似像素 × GSD²，GSD 由该帧高度与视场角换算</small></div>
-          </div>
-          <small class="weather-threshold-note">面积是“平坦地面 + 近垂直俯拍”假设下的估算；SRT 高度相对起飞点，斜拍帧（云台俯角不足）精度低、只降级为“注意”。面积不代表水深或淹没范围，仍需现场核查。</small>
-        </details>
-        <div class="photo-frame-heading">
-          <label>任务关键帧（{{ selectedFrames.length }} / {{ frames.length }}）</label>
-          <input ref="photoInput" class="photo-file-native" type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" multiple :disabled="busy || !taskId" @change="onPhotosPicked" />
-          <button type="button" class="photo-file-trigger" :disabled="busy || !taskId" @click="choosePhotos">选择文件</button>
-          <button v-if="frames.length" type="button" class="photo-file-trigger frame-delete-all" :class="{ 'is-armed': removeAllArmed }" :disabled="busy || !taskId" @click="armOrRemoveAllFrames">{{ removeAllArmed ? `确认清空 ${frames.length} 张` : '全部移除' }}</button>
-        </div>
-        <p v-if="!taskId" class="photo-file-selection">先在“选定航线”中创建当前任务。</p>
-        <p v-else-if="!frames.length" class="photo-file-selection">{{ selectedFileSummary }}</p>
-        <ul v-else class="photo-frame-list">
-          <li v-for="(frame, index) in frames" :key="`${frame.name}-${index}`" :class="{ 'is-excluded': excludedFrames.includes(index) }">
-            <label><input type="checkbox" :checked="!excludedFrames.includes(index)" :disabled="busy" @change="setFrameIncluded(index, $event)" />
-              <span><strong>{{ frame.name }}</strong><small>{{ Math.floor(frame.time_seconds / 60).toString().padStart(2, '0') }}:{{ Math.floor(frame.time_seconds % 60).toString().padStart(2, '0') }}<template v-if="frame.latitude !== null && frame.longitude !== null"> · {{ frame.latitude.toFixed(6) }}, {{ frame.longitude.toFixed(6) }}</template><template v-else> · 无 GPS</template><template v-if="frame.altitude_m !== null"> · {{ frame.altitude_m.toFixed(0) }} m</template></small><small>{{ frame.selection_reason ?? '手动截取' }}<template v-if="frame.estimated_overlap_percent !== null && frame.estimated_overlap_percent !== undefined"> · 上一选帧重叠约 {{ frame.estimated_overlap_percent }}%</template><template v-if="frame.sharpness_ratio_percent !== null && frame.sharpness_ratio_percent !== undefined"> · 清晰度比值 {{ frame.sharpness_ratio_percent }}%</template></small></span>
-            </label>
-            <button type="button" :disabled="busy" :aria-label="`从任务分析队列移除 ${frame.name}`" @click="removeFrame(index)">移除</button>
-          </li>
-        </ul>
-        <small v-if="taskId" class="photo-file-hint">选择文件支持多选 JPG、PNG、WebP；手动照片没有 GPS 和高度，分析时不换算面积、不触发积水警报。</small>
-        <div class="photo-context">
-          <input v-model="siteName" type="text" maxlength="60" autocomplete="off" placeholder="站点/地点（可选）" :disabled="busy" />
-          <input v-model="note" type="text" maxlength="120" autocomplete="off" placeholder="备注（可选）" :disabled="busy" />
-        </div>
-        <button type="button" class="photo-submit" :disabled="!canSubmit" @click="submit">
-          {{ busy ? '分析中…' : '开始分析' }}
-        </button>
-      </div>
-
-      <p v-if="error" class="photo-feedback is-error" role="alert">{{ error }}</p>
-      <p v-else-if="status" class="photo-feedback" role="status">{{ status }}</p>
-
-      <div v-if="job && job.mode === 'frames'" class="analysis-queue-inline">
-        <small>{{ queueSummaryText || '识别队列已就绪' }}</small>
-        <span>
-          <button v-if="canCancelJob" type="button" @click="cancelAnalysis">取消分析</button>
-          <button type="button" @click="emit('open-queue')">打开识别队列</button>
-        </span>
-      </div>
-
       <div v-if="job?.results" class="photo-results">
         <div class="photo-results-header">
           <div class="photo-view-toggle" role="group" aria-label="叠图显示方式">
             <button type="button" :class="{ 'is-active': viewMode === 'overlay' }" @click="viewMode = 'overlay'">叠图</button>
             <button type="button" :class="{ 'is-active': viewMode === 'original' }" @click="viewMode = 'original'">原图</button>
           </div>
-          <small>{{ modelSummary }}</small>
+          <div class="photo-results-actions">
+            <small>{{ modelSummary }}</small>
+            <button v-if="visibleNoWaterCount" type="button" class="photo-result-action" @click="hideAllNoWaterImages">移除无积水图（{{ visibleNoWaterCount }}）</button>
+            <button v-if="hiddenNoWaterCount" type="button" class="photo-result-action" @click="restoreHiddenNoWaterImages">恢复已移除（{{ hiddenNoWaterCount }}）</button>
+          </div>
         </div>
         <p :class="['photo-alert-summary', { 'is-elevated': !isRecheckJob && alertSummary.elevated > 0 }]" role="status">
           <template v-if="isRecheckJob">复检完成：双模型确认疑似积水 {{ recheckConfirmedCount }} 帧 · 复检未检出 {{ (job?.results?.images ?? []).length - recheckConfirmedCount }} 帧</template>
@@ -675,12 +616,15 @@ function onDocumentPointerdown(event: PointerEvent) {
             : '未触发积水警报' }}（阈值 {{ thresholds.minAlertAreaM2 }} m² · 视场角 {{ thresholds.cameraFovDeg }}°）</template>
         </p>
         <ul class="photo-grid">
-          <li v-for="{ image, assessment }, index in imageAssessments" :key="image.name">
+          <li v-for="{ image, assessment }, index in visibleImageAssessments" :key="image.name">
             <button type="button" class="photo-thumbnail" :aria-label="`放大查看 ${image.name}`" @click="openPreview(image, index)">
               <img :src="viewMode === 'overlay' ? fileUrl(image.overlay) : inputUrl(image)" :alt="`${viewMode === 'overlay' ? '疑似积水叠图' : '原始照片'} ${image.name}`" loading="lazy" />
             </button>
             <div class="photo-meta">
-              <strong :title="image.name">{{ image.name }}</strong>
+              <div class="photo-meta-heading">
+                <strong :title="image.name">{{ image.name }}</strong>
+                <button v-if="!hasSuspectedWater(image)" type="button" class="photo-result-remove" @click.stop="hideNoWaterImage(image)">移除</button>
+              </div>
               <span v-if="isRecheckJob && (image.suspected_pixels ?? 0) > 0" class="photo-alert-badge is-recheck">双模型确认</span>
               <span v-else-if="isRecheckJob" class="photo-alert-badge is-none">复检未检出</span>
               <span v-else :class="['photo-alert-badge', `is-${assessment.level}`]">{{ assessment.label }}</span>
@@ -861,6 +805,8 @@ function onDocumentPointerdown(event: PointerEvent) {
 .photo-feedback.is-error { background: #fef2f2; color: #a4262c; }
 .photo-results-header { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 8px; }
 .photo-results-header small { color: var(--ui-muted); overflow-wrap: anywhere; text-align: right; }
+.photo-results-actions { display: flex; min-width: 0; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: wrap; }
+.photo-result-action { min-height: 26px !important; padding: 3px 8px !important; font-size: 10px !important; }
 .photo-view-toggle { display: inline-flex; gap: 0; }
 .photo-view-toggle button { border-radius: 0; }
 .photo-view-toggle button:first-child { border-radius: 6px 0 0 6px; }
@@ -872,7 +818,10 @@ function onDocumentPointerdown(event: PointerEvent) {
 .photo-thumbnail:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 2px; }
 .photo-grid img { display: block; width: 100%; height: auto; border-radius: 5px; }
 .photo-meta { margin-top: 5px; }
+.photo-meta-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; }
 .photo-meta strong { display: block; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.photo-result-remove { min-height: 24px !important; flex: 0 0 auto; padding: 2px 7px !important; border-color: #e2b8b8 !important; color: #a4262c !important; font-size: 10px !important; }
+.photo-result-remove:hover:not(:disabled) { border-color: #a4262c !important; background: #fff5f5 !important; }
 .photo-meta small { display: block; margin-top: 2px; color: var(--ui-muted); }
 .photo-warning { margin: 10px 0 0; padding: 6px 8px; border-radius: 6px; background: #fff7ed; color: #9a5b13; line-height: 1.4; }
 .photo-threshold-config { margin: 0 0 10px; }
