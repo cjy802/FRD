@@ -1,4 +1,8 @@
-"""Ask a vision model for normalized puddle polygons and rasterize them locally."""
+"""Ask a vision model for normalized puddle polygons and rasterize them locally.
+
+复检（manifest 条目带 ``mask``）时，按第一遍 YOLO 的疑似掩膜取连通域 bbox、
+外扩裁块后送检，多边形坐标映射回全帧再栅格化；无掩膜的条目整帧送检。
+"""
 
 from __future__ import annotations
 
@@ -84,7 +88,7 @@ def _write_png(path: Path, image: np.ndarray) -> None:
     path.write_bytes(encoded.tobytes())
 
 
-def _call_model(image: np.ndarray, url: str, api_key: str, model: str) -> dict:
+def _call_model(image: np.ndarray, url: str, api_key: str, model: str, cropped: bool = False) -> dict:
     height, width = image.shape[:2]
     max_side = 1536
     scale = min(1.0, max_side / max(width, height))
@@ -93,8 +97,9 @@ def _call_model(image: np.ndarray, url: str, api_key: str, model: str) -> dict:
     if not ok:
         raise ValueError("无法压缩当前视频截图。")
     image_url = "data:image/jpeg;base64," + base64.b64encode(encoded.tobytes()).decode("ascii")
+    scope = "这是无人机道路照片中一个疑似区域的局部裁剪。" if cropped else "这是一张无人机道路照片。"
     prompt = (
-        "分析这张无人机道路照片，只识别画面里可见的积水/水坑区域。不要把阴影、车身、反光、"
+        f"{scope}只识别画面里可见的积水/水坑区域。不要把阴影、车身、反光、"
         "湿润但没有积水的路面或天空识别成水坑。请只返回 JSON，不要 Markdown 或解释，格式为："
         '{"detections":[{"label":"puddle","confidence":0.0,"polygon":[[0.1,0.2],[0.3,0.2],[0.3,0.4]]}]}。'
         "polygon 使用相对原图宽高归一化到 0–1 的边界点，原点在左上角；只在能确定水坑边界时输出，"
@@ -137,40 +142,123 @@ def _call_model(image: np.ndarray, url: str, api_key: str, model: str) -> dict:
     return _json_content(answer)
 
 
-def _process(path: Path, output_dir: Path, url: str, api_key: str, model: str) -> dict:
+# --- 裁块送检策略 -----------------------------------------------------------
+REGION_EXPAND = 1.5        # 疑似区域外扩倍数：保留周边路面给模型做上下文
+REGION_MIN_SIDE = 256      # 裁块最短边下限：太小补齐，避免模型失去参照物
+REGION_MIN_AREA = 64       # 小于该像素面积的连通域按噪声忽略
+REGION_MAX_COUNT = 4       # 每帧最多送检裁块数，多余区域就近合并，控住调用成本
+
+
+def _expand_region(x: int, y: int, w: int, h: int, width: int, height: int) -> list[int]:
+    center_x, center_y = x + w / 2, y + h / 2
+    half_w = max(w * REGION_EXPAND / 2, REGION_MIN_SIDE / 2)
+    half_h = max(h * REGION_EXPAND / 2, REGION_MIN_SIDE / 2)
+    x0 = max(int(center_x - half_w), 0)
+    y0 = max(int(center_y - half_h), 0)
+    x1 = min(int(center_x + half_w) + 1, width)
+    y1 = min(int(center_y + half_h) + 1, height)
+    return [x0, y0, x1, y1]
+
+
+def _region_gap(a: list[int], b: list[int]) -> int:
+    gap_x = max(b[0] - a[2], a[0] - b[2], 0)
+    gap_y = max(b[1] - a[3], a[1] - b[3], 0)
+    return gap_x + gap_y
+
+
+def _merge_regions(boxes: list[list[int]], max_count: int) -> list[list[int]]:
+    """重叠区域先合并；数量仍超限时不断合并相距最近的两块，保证不丢候选。"""
+    boxes = [list(box) for box in boxes]
+    while len(boxes) > 1 and (len(boxes) > max_count
+                              or any(_region_gap(boxes[i], boxes[j]) == 0
+                                     for i in range(len(boxes))
+                                     for j in range(i + 1, len(boxes)))):
+        best_pair, best_gap = None, None
+        for i in range(len(boxes)):
+            for j in range(i + 1, len(boxes)):
+                gap = _region_gap(boxes[i], boxes[j])
+                if best_gap is None or gap < best_gap:
+                    best_pair, best_gap = (i, j), gap
+        i, j = best_pair
+        boxes[i] = [min(boxes[i][0], boxes[j][0]), min(boxes[i][1], boxes[j][1]),
+                    max(boxes[i][2], boxes[j][2]), max(boxes[i][3], boxes[j][3])]
+        boxes.pop(j)
+    return boxes
+
+
+def _suspected_regions(mask: np.ndarray, width: int, height: int) -> list[list[int]]:
+    """从第一遍 YOLO 的疑似掩膜取连通域 bbox，外扩成送检裁块。"""
+    if mask.shape[:2] != (height, width):
+        mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
+    count, _, stats, _ = cv2.connectedComponentsWithStats((mask > 127).astype(np.uint8), connectivity=8)
+    boxes = []
+    for index in range(1, count):
+        x, y, w, h, area = (int(value) for value in stats[index])
+        if area < REGION_MIN_AREA:
+            continue
+        boxes.append(_expand_region(x, y, w, h, width, height))
+    if not boxes:
+        return []
+    return _merge_regions(boxes, REGION_MAX_COUNT)
+
+
+def _read_mask(path: Path | None) -> np.ndarray | None:
+    if path is None:
+        return None
+    try:
+        payload = path.read_bytes()
+    except OSError:
+        return None
+    return cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+
+
+def _process(entry: dict, output_dir: Path, url: str, api_key: str, model: str) -> dict:
+    path = entry["path"]
     image = _read_image(path)
     height, width = image.shape[:2]
-    try:
-        result = _call_model(image, url, api_key, model)
-    except ValueError as first_error:
-        # Vision chat models can occasionally ignore the JSON-only instruction.
-        # Retry once so one malformed response does not discard an otherwise valid batch.
-        try:
-            result = _call_model(image, url, api_key, model)
-        except ValueError as retry_error:
-            raise RuntimeError(f"模型两次均未返回有效 JSON：{retry_error}") from first_error
+    mask_source = _read_mask(entry.get("mask"))
+    regions = _suspected_regions(mask_source, width, height) if mask_source is not None else []
+    cropped = bool(regions)
+    if not regions:
+        regions = [[0, 0, width, height]]
     mask = np.zeros((height, width), dtype=np.uint8)
     confidence = np.zeros((height, width), dtype=np.uint8)
     valid = []
-    for item in result["detections"][:30]:
-        if not isinstance(item, dict):
-            continue
-        label = str(item.get("label", "puddle")).strip().lower()
-        if label not in {"puddle", "water", "flood", "积水", "水坑"}:
-            continue
+    region_errors: list[str] = []
+    for x0, y0, x1, y1 in regions:
+        crop = image[y0:y1, x0:x1]
         try:
-            score = min(max(float(item.get("confidence", 0.5)), 0), 1)
-        except (TypeError, ValueError):
-            score = 0.5
-        polygon = _polygon_points(item.get("polygon"), width, height)
-        if polygon is None:
-            continue
-        cv2.fillPoly(mask, [polygon], 255)
-        instance_mask = np.zeros_like(mask)
-        cv2.fillPoly(instance_mask, [polygon], 255)
-        confidence[instance_mask > 0] = np.maximum(confidence[instance_mask > 0], round(score * 255))
-        valid.append({"label": "puddle", "confidence": round(score, 4)})
-
+            result = _call_model(crop, url, api_key, model, cropped)
+        except ValueError as first_error:
+            # Vision chat models can occasionally ignore the JSON-only instruction.
+            # Retry once so one malformed response does not discard an otherwise valid batch.
+            try:
+                result = _call_model(crop, url, api_key, model, cropped)
+            except ValueError as retry_error:
+                region_errors.append(f"裁块({x0},{y0},{x1},{y1})两次均未返回有效 JSON：{retry_error}")
+                continue
+        for item in result["detections"][:30]:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("label", "puddle")).strip().lower()
+            if label not in {"puddle", "water", "flood", "积水", "水坑"}:
+                continue
+            try:
+                score = min(max(float(item.get("confidence", 0.5)), 0), 1)
+            except (TypeError, ValueError):
+                score = 0.5
+            polygon_local = _polygon_points(item.get("polygon"), x1 - x0, y1 - y0)
+            if polygon_local is None:
+                continue
+            polygon = polygon_local + np.asarray([x0, y0], dtype=np.int32)
+            cv2.fillPoly(mask, [polygon], 255)
+            instance_mask = np.zeros_like(mask)
+            cv2.fillPoly(instance_mask, [polygon], 255)
+            confidence[instance_mask > 0] = np.maximum(confidence[instance_mask > 0], round(score * 255))
+            valid.append({"label": "puddle", "confidence": round(score, 4), "region": [x0, y0, x1, y1]})
+    if len(region_errors) == len(regions):
+        # 所有裁块都失败才按失败帧处理，交给队列重试；部分失败仍产出结果。
+        raise ValueError("；".join(region_errors))
     overlay = image.copy()
     tint = np.zeros_like(image)
     tint[:, :] = (255, 120, 40)
@@ -195,6 +283,8 @@ def _process(path: Path, output_dir: Path, url: str, api_key: str, model: str) -
         "width": width,
         "height": height,
         "model_input_size": max(width, height),
+        "recheck_mode": "cropped" if cropped else "full",
+        "regions": regions,
         "suspected_pixels": pixels,
         "suspected_fraction": pixels / (width * height),
         "suspected_patch_count": max(components - 1, 0),
@@ -204,18 +294,30 @@ def _process(path: Path, output_dir: Path, url: str, api_key: str, model: str) -
         "overlay": overlay_name,
         "suspected_mask": mask_name,
         "confidence_map": confidence_name,
+        **({"region_errors": region_errors} if region_errors else {}),
     }
 
 
-def _collect_images(args: argparse.Namespace) -> list[Path]:
+def _collect_images(args: argparse.Namespace) -> list[dict]:
+    """manifest 条目兼容两种形态：路径字符串，或 {path, mask} 对象（复检裁块）。"""
+
+    def _entry(raw: object) -> dict:
+        if isinstance(raw, str):
+            return {"path": Path(raw), "mask": None}
+        if isinstance(raw, dict) and isinstance(raw.get("path"), str):
+            mask = raw.get("mask")
+            return {"path": Path(raw["path"]),
+                    "mask": Path(mask) if isinstance(mask, str) and mask else None}
+        raise ValueError("manifest 条目必须是路径字符串或 {path, mask} 对象。")
+
     suffixes = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
     if args.manifest is not None:
         entries = json.loads(args.manifest.read_text(encoding="utf-8"))
-        if not isinstance(entries, list) or any(not isinstance(entry, str) for entry in entries):
-            raise ValueError("manifest 必须是图片路径字符串数组。")
-        return [Path(entry) for entry in entries]
-    return sorted(path for path in args.input_dir.iterdir()
-                  if path.is_file() and path.suffix.lower() in suffixes)
+        if not isinstance(entries, list):
+            raise ValueError("manifest 必须是 JSON 数组。")
+        return [_entry(entry) for entry in entries]
+    return [{"path": path, "mask": None} for path in sorted(
+        path for path in args.input_dir.iterdir() if path.is_file() and path.suffix.lower() in suffixes)]
 
 
 def main() -> int:
@@ -243,28 +345,32 @@ def main() -> int:
         return 2
     started = time.monotonic()
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    images = []
+    entries = []
     # 逐张追加 results.jsonl：调用方按帧读取进度，单帧失败只写错误行，不中断整批。
     with (args.output_dir / "results.jsonl").open("a", encoding="utf-8") as jsonl:
-        for image_path in image_paths:
+        for entry in image_paths:
             try:
-                record = _process(image_path, args.output_dir, url, api_key, model)
+                record = _process(entry, args.output_dir, url, api_key, model)
             except Exception as error:  # noqa: BLE001 - 单帧失败不拖累队列里其余帧
                 detail = str(error).replace(api_key, "[已隐藏 API Key]") if api_key else str(error)
-                record = {"name": image_path.name, "error": detail[:600]}
+                record = {"name": entry["path"].name, "error": detail[:600]}
             jsonl.write(json.dumps(record, ensure_ascii=False) + "\n")
             jsonl.flush()
             if "error" not in record:
-                images.append(record)
+                entries.append(record)
     model_digest = hashlib.sha256(model.encode("utf-8")).hexdigest()
     payload = {
         "model": {"default_model": model, "display_name": model, "engine": "remote-vision-polygon-mask",
                   "task": "puddle candidate segmentation", "water_class": 1,
                   "input_size": 1536, "normalize": "remote vision request; normalized polygons rasterized locally",
+                  "region_policy": {"expand": REGION_EXPAND, "min_side": REGION_MIN_SIDE,
+                                    "max_regions_per_frame": REGION_MAX_COUNT,
+                                    "min_component_area": REGION_MIN_AREA},
                   "confidence_threshold": None, "model_sha256": model_digest},
-        "images": images,
+        "images": entries,
         "elapsed_seconds": round(time.monotonic() - started, 2),
-        "interpretation": "GLM 返回的多边形已在本机栅格化为候选掩膜；多边形精度受语言视觉模型限制，所有区域都需要人工核对，不代表积水深度或面积。",
+        "interpretation": "GLM 返回的多边形已在本机栅格化为候选掩膜；带疑似掩膜的帧按外扩裁块送检，其余整帧送检。"
+                          "多边形精度受语言视觉模型限制，所有区域都需要人工核对，不代表积水深度或面积。",
     }
     (args.output_dir / "results.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(payload, ensure_ascii=False))

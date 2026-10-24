@@ -492,5 +492,148 @@ class QueuePhotoAnalysisTests(unittest.TestCase):
         self._wait_state(job_id, timeout=30)
 
 
+# 复检 stub：原样转存收到的 manifest，供测试断言 mask 路径是否跟着帧一起下发。
+REMOTE_STUB_RUNNER = r'''
+import base64, json, sys
+from pathlib import Path
+
+arguments = dict(zip(sys.argv[1::2], sys.argv[2::2]))
+output_dir = Path(arguments["--output-dir"])
+output_dir.mkdir(parents=True, exist_ok=True)
+entries = json.loads(Path(arguments["--manifest"]).read_text(encoding="utf-8"))
+(output_dir / "manifest-copy.json").write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8")
+png = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8QAAwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+with (output_dir / "results.jsonl").open("a", encoding="utf-8") as jsonl:
+    for entry in entries:
+        raw = entry if isinstance(entry, str) else entry.get("path", "")
+        path = Path(raw)
+        stem = path.stem
+        (output_dir / f"{stem}__overlay.png").write_bytes(png)
+        (output_dir / f"{stem}__suspected.png").write_bytes(png)
+        (output_dir / f"{stem}__confidence.png").write_bytes(png)
+        record = {"name": path.name, "sha256": "0" * 64, "width": 1, "height": 1,
+                  "model_input_size": 256, "suspected_pixels": 1, "suspected_fraction": 1.0,
+                  "suspected_patch_count": 1, "mean_confidence_on_suspected": 0.9,
+                  "overlay": f"{stem}__overlay.png", "suspected_mask": f"{stem}__suspected.png",
+                  "confidence_map": f"{stem}__confidence.png"}
+        jsonl.write(json.dumps(record, ensure_ascii=False) + "\n")
+        jsonl.flush()
+payload = {"model": {"default_model": "stub-remote", "engine": "stub", "task": "ponding", "water_class": 1,
+                     "input_size": 1536, "model_sha256": "0" * 64},
+           "images": [], "elapsed_seconds": 0.01, "interpretation": "stub-remote"}
+(output_dir / "results.json").write_text(json.dumps(payload), encoding="utf-8")
+print(json.dumps(payload))
+'''
+
+
+class RemoteRecheckManifestTests(unittest.TestCase):
+    """复检 job：manifest 必须把第一遍 YOLO 的疑似掩膜路径带给 GLM runner。"""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        base = Path(self.temp.name)
+        self.base = base
+        self.manager = _make_stub_manager(base, REMOTE_STUB_RUNNER)
+        self.manager.yolo_python_path = Path(sys.executable)
+        self.manager.remote_runner_path = self.manager.runner_path
+        self.manager.frame_resolver = self._resolve_frame
+        # 屏蔽本机真实 .env，让 remote 模型判定只取决于 stub 配置。
+        config_patch = patch.object(photo_analysis_module, "_configured_value",
+                                    lambda name, default="": "stub-remote-config")
+        config_patch.start()
+        self.addCleanup(config_patch.stop)
+        self.manager_patch = patch.object(main, "photo_analysis", self.manager)
+        self.manager_patch.start()
+        self.addCleanup(self.manager_patch.stop)
+        self.store = TaskStore(storage_dir=base / "tasks")
+        self.tasks_patch = patch.object(main, "tasks", self.store)
+        self.tasks_patch.start()
+        self.addCleanup(self.tasks_patch.stop)
+        self.client = TestClient(main.app, base_url="http://127.0.0.1:5173", client=("127.0.0.1", 50001))
+        self.headers = {"Origin": "http://127.0.0.1:5173"}
+        self.task = self.store.create({"anchors": []}, "2026-10-23T08:00:00+08:00")
+
+    def _resolve_frame(self, task_id: str, frame_id: str) -> dict:
+        frame = next((item for item in self.store.frames(task_id) if item.get("frame_id") == frame_id), None)
+        if frame is None:
+            raise KeyError(frame_id)
+        return {"name": frame["file_name"],
+                "path": self.store.frame_directory(task_id) / frame["file_name"],
+                "meta": {}}
+
+    def _add_frame(self) -> str:
+        frame = self.store.add_frame(self.task["task_id"], "frame.jpg", TINY_PNG, {
+            "time_seconds": 1.0, "latitude": 31.6, "longitude": 119.9,
+            "altitude_m": 60.0, "gimbal_pitch_deg": -90.0,
+        })
+        return frame["frame_id"]
+
+    def _wait_done(self, job_id, timeout=25):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            job = self.manager.job(job_id)
+            if job["state"] in ("done", "error", "cancelled"):
+                return job
+            time.sleep(0.05)
+        self.fail("job did not finish in time")
+
+    def _stored_manifest(self, job_id):
+        manifest_copy = next((self.base / "tasks").glob(
+            f"*/media/photo-analysis/{job_id}/outputs/manifest-copy.json"))
+        return json.loads(manifest_copy.read_text(encoding="utf-8"))
+
+    def _seed_first_pass_outputs(self, frame_file_name):
+        outputs = (self.base / "tasks" / self.task["task_id"] / "media" / "photo-analysis"
+                   / "20260101000000-firstpass" / "outputs")
+        outputs.mkdir(parents=True, exist_ok=True)
+        mask_name = frame_file_name.rsplit(".", 1)[0] + "__suspected.png"
+        (outputs / mask_name).write_bytes(TINY_PNG)
+        (outputs / "results.json").write_text(json.dumps(
+            {"images": [{"name": frame_file_name, "suspected_mask": mask_name}]}), encoding="utf-8")
+        return outputs / mask_name
+
+    def test_recheck_manifest_carries_yolo_mask(self):
+        frame_id = self._add_frame()
+        frame = self.store.frames(self.task["task_id"])[0]
+        mask_path = self._seed_first_pass_outputs(frame["file_name"])
+        submit = self.client.post("/api/photo-analysis/jobs", headers=self.headers, json={
+            "task_id": self.task["task_id"], "frame_ids": [frame_id],
+            "model_id": "remote-glm-puddle", "recheck_of_job_id": "20260101000000-firstpass"})
+        self.assertEqual(submit.status_code, 202, submit.text)
+        job = self._wait_done(submit.json()["job_id"])
+        self.assertEqual(job["state"], "done", job.get("error"))
+        manifest = self._stored_manifest(job["job_id"])
+        self.assertEqual(len(manifest), 1)
+        self.assertEqual(Path(manifest[0]["path"]).name, frame["file_name"])
+        self.assertEqual(Path(manifest[0]["mask"]), mask_path)
+
+    def test_remote_manifest_without_recheck_omits_mask(self):
+        frame_id = self._add_frame()
+        submit = self.client.post("/api/photo-analysis/jobs", headers=self.headers, json={
+            "task_id": self.task["task_id"], "frame_ids": [frame_id],
+            "model_id": "remote-glm-puddle"})
+        self.assertEqual(submit.status_code, 202, submit.text)
+        job = self._wait_done(submit.json()["job_id"])
+        self.assertEqual(job["state"], "done", job.get("error"))
+        manifest = self._stored_manifest(job["job_id"])
+        self.assertEqual(manifest, [{"path": manifest[0]["path"]}])
+        self.assertEqual(Path(manifest[0]["path"]).name,
+                         self.store.frames(self.task["task_id"])[0]["file_name"])
+
+    def test_recheck_with_missing_first_pass_falls_back_to_whole_frame(self):
+        frame_id = self._add_frame()
+        submit = self.client.post("/api/photo-analysis/jobs", headers=self.headers, json={
+            "task_id": self.task["task_id"], "frame_ids": [frame_id],
+            "model_id": "remote-glm-puddle", "recheck_of_job_id": "20990101000000-gone"})
+        self.assertEqual(submit.status_code, 202, submit.text)
+        job = self._wait_done(submit.json()["job_id"])
+        self.assertEqual(job["state"], "done", job.get("error"))
+        manifest = self._stored_manifest(job["job_id"])
+        self.assertEqual(sorted(manifest[0].keys()), ["path"])
+
+
 if __name__ == "__main__":
     unittest.main()

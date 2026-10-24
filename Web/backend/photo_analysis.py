@@ -62,7 +62,8 @@ QUEUE_CIRCUIT_FAILURES = 8      # 连续失败且零成功 → 判定系统性�
 QUEUE_IDLE_AUTOCLOSE_SECONDS = 600
 QUEUE_WORKERS = {REMOTE_MODEL_ID: 4, YOLO_MODEL_ID: 1, ONNX_MODEL_ID: 1}
 QUEUE_BATCH_TIMEOUT_BASE = {REMOTE_MODEL_ID: 90, YOLO_MODEL_ID: 60, ONNX_MODEL_ID: 60}
-QUEUE_BATCH_TIMEOUT_PER_IMAGE = {REMOTE_MODEL_ID: 150, YOLO_MODEL_ID: 20, ONNX_MODEL_ID: 30}
+# 复检按疑似区域裁块送检，一帧最多 4 次串行模型调用，单帧预算相应放宽。
+QUEUE_BATCH_TIMEOUT_PER_IMAGE = {REMOTE_MODEL_ID: 240, YOLO_MODEL_ID: 20, ONNX_MODEL_ID: 30}
 FALLBACK_INTERPRETATION = "识别结果为候选线索，需人工核对；像素占比不是面积，也不代表水深或水位结论。"
 
 FrameResolver = Callable[[str, str], dict[str, Any]]
@@ -126,7 +127,8 @@ class PhotoAnalysisManager:
         self.yolo_runner_path = yolo_runner_path if yolo_runner_path is not None else YOLO_RUNNER
         self.remote_runner_path = REMOTE_RUNNER
         self.frame_resolver: FrameResolver | None = None
-        self._lock = threading.Lock()
+        # 可重入：finalize 需要在持锁状态下落盘，保证 done 状态与 job.json 同时可见。
+        self._lock = threading.RLock()
         self._jobs: dict[str, dict[str, Any]] = {}
         self._job_dirs: dict[str, Path] = {}
         self._runtime: dict[str, dict[str, Any]] = {}
@@ -394,6 +396,50 @@ class PhotoAnalysisManager:
         return ([str(self.python_path), "-B", str(self.runner_path),
                  "--model-dir", str(self.model_dir),
                  "--manifest", str(manifest), "--output-dir", str(output_dir)], None)
+
+    def _recheck_mask_index(self, job: dict[str, Any]) -> dict[str, Path]:
+        """复检 job：把第一遍 YOLO 结果里每帧疑似掩膜的路径按帧文件名映射出来。
+
+        掩膜缺失（旧任务、文件被清理或 YOLO job 不存在）时返回空映射，
+        GLM runner 对没有 mask 的条目自动回退整帧送检。
+        """
+        context = job.get("context") or {}
+        recheck_of = str(context.get("recheck_of_job_id") or "")
+        if job.get("model_id") != REMOTE_MODEL_ID or not recheck_of:
+            return {}
+        results_path = (self.tasks_root / str(job.get("task_id") or "") / "media" / "photo-analysis"
+                        / recheck_of / "outputs" / "results.json")
+        try:
+            data = json.loads(results_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        outputs_dir = results_path.parent
+        masks: dict[str, Path] = {}
+        for image in data.get("images") or []:
+            if not isinstance(image, dict):
+                continue
+            name = image.get("name")
+            mask_name = image.get("suspected_mask")
+            if not isinstance(name, str) or not isinstance(mask_name, str) or not mask_name:
+                continue
+            candidate = outputs_dir / mask_name
+            if candidate.is_file():
+                masks[name] = candidate
+        return masks
+
+    def _manifest_entries(self, job: dict[str, Any], indices: list[int], frames_dir: Path) -> list[Any]:
+        if job["model_id"] != REMOTE_MODEL_ID:
+            return [str(frames_dir / job["items"][index]["file_name"]) for index in indices]
+        masks = self._recheck_mask_index(job)
+        entries: list[dict[str, str]] = []
+        for index in indices:
+            file_name = job["items"][index]["file_name"]
+            entry: dict[str, str] = {"path": str(frames_dir / file_name)}
+            mask_path = masks.get(file_name)
+            if mask_path is not None:
+                entry["mask"] = str(mask_path)
+            entries.append(entry)
+        return entries
 
     def _resolve_frames(self, task_id: str, frame_ids: list[str]) -> list[dict[str, Any]]:
         if self.frame_resolver is None:
@@ -693,14 +739,13 @@ class PhotoAnalysisManager:
             fov_deg = self._context_fov(job["context"])
             for index in indices:
                 job["items"][index]["state"] = "running"
-            frame_names = [job["items"][index]["file_name"] for index in indices]
             runtime["batch_seq"] += 1
             batch_number = runtime["batch_seq"]
         batches_dir = job_dir / "batches"
         batches_dir.mkdir(parents=True, exist_ok=True)
         manifest = batches_dir / f"batch-{batch_number:04d}.json"
         frames_dir = job_dir.parents[2] / "frames"
-        manifest.write_text(json.dumps([str(frames_dir / name) for name in frame_names], ensure_ascii=False),
+        manifest.write_text(json.dumps(self._manifest_entries(job, indices, frames_dir), ensure_ascii=False),
                             encoding="utf-8")
         command, environment = self._queue_command(model_id, manifest, output_dir)
         timeout = QUEUE_BATCH_TIMEOUT_BASE[model_id] + QUEUE_BATCH_TIMEOUT_PER_IMAGE[model_id] * len(indices)
@@ -846,7 +891,8 @@ class PhotoAnalysisManager:
                 "interpretation": runtime.get("interpretation") or FALLBACK_INTERPRETATION,
             }
             self._runtime.pop(job_id, None)
-        self._persist(job_id)
+            # 落盘也在锁内：否则 done 已可见而磁盘仍是 running，重启恢复会读到中间态。
+            self._persist(job_id)
 
     # ------------------------------------------------------------------
     # persistence / recovery
