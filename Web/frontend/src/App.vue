@@ -14,7 +14,7 @@ import type { RouteAssessment, WeatherLimits } from './weatherTypes'
 import { weatherOnlyChecks } from './weatherPresentation'
 import type { RoadPreview as Preview } from './routeTypes'
 import { createFlightTimeline, sampleFlight, type FlightSample } from './flightPlayback'
-import { MissionTaskError, createMissionTask, deleteMissionTask, deleteMissionTaskFrame, fetchMissionTask, fetchMissionTaskFrames, saveMissionTaskFrame,
+import { MissionTaskError, createMissionTask, deleteAllMissionTaskFrames, deleteMissionTask, deleteMissionTaskFrame, fetchMissionTask, fetchMissionTaskFrames, saveMissionTaskFrame,
   listMissionTasks, updateMissionTask, type MissionTask, type MissionTaskSummary, type StoredMissionFrame } from './missionTasks'
 import type { PhotoAnalysisJob, PhotoAnalysisResultImage, TaskVideoFrame, WaterAlertThresholds } from './photoAnalysis'
 import { assessWaterAlert, loadWaterAlertThresholds, saveWaterAlertThresholds } from './photoAnalysis'
@@ -755,6 +755,24 @@ async function removeTaskFrame(index: number) {
       return
     }
     taskError.value = cause instanceof Error ? cause.message : '移除任务关键帧失败。'
+  }
+}
+
+async function removeAllTaskFrames() {
+  if (!activeTask.value || !taskFrames.value.length) return
+  taskBusy.value = true
+  taskError.value = ''
+  try {
+    await deleteAllMissionTaskFrames(activeTask.value.task_id)
+    taskFrames.value = []
+  } catch (cause) {
+    if (cause instanceof MissionTaskError && cause.status === 404) {
+      taskFrames.value = []
+      return
+    }
+    taskError.value = cause instanceof Error ? cause.message : '清空任务关键帧失败。'
+  } finally {
+    taskBusy.value = false
   }
 }
 
@@ -3129,7 +3147,7 @@ onBeforeUnmount(() => {
           <p class="form-scope-note">当前任务导入视频与对应 SRT。拖动时间线核对无人机位置，只截取需要分析的关键帧。</p>
           <VideoSurveyPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frame-count="taskFrames.length" @track-change="setVideoTelemetryTrack" @position-change="setVideoTelemetryPosition" @targets-change="setVideoCaptureTargets" @frame-capture="addTaskFrame" @frame-saved="onTaskFrameSaved" @survey-change="onTaskSurveyChange" @job-started="onAnalysisJobStarted" @open-queue="analysisQueueOpen = true" />
           <p class="form-scope-note">关键帧会保存在任务文件夹中。模型只分析勾选的帧，SRT 位置会随结果一同记录。</p>
-          <PhotoAnalysisPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frames="taskFrames" :thresholds="waterAlertThresholds" :active-job-id="activeAnalysisJobId" :queue-open="analysisQueueOpen" @remove-frame="removeTaskFrame" @frames-add="addManualTaskFrames" @job-started="onAnalysisJobStarted" @analysis-update="absorbAnalysisResults" @thresholds-change="updateWaterAlertThresholds" @open-queue="analysisQueueOpen = true" @close-queue="analysisQueueOpen = false" />
+          <PhotoAnalysisPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frames="taskFrames" :thresholds="waterAlertThresholds" :active-job-id="activeAnalysisJobId" :queue-open="analysisQueueOpen" @remove-frame="removeTaskFrame" @remove-all-frames="removeAllTaskFrames" @frames-add="addManualTaskFrames" @job-started="onAnalysisJobStarted" @analysis-update="absorbAnalysisResults" @thresholds-change="updateWaterAlertThresholds" @open-queue="analysisQueueOpen = true" @close-queue="analysisQueueOpen = false" />
           <div class="analysis-target-tools"><label class="route-export-record"><input v-model="showAnalysisTargets" type="checkbox" />显示积水候选标记（{{ analysisMapTargets.length }} 个，跟随任务保存）</label><button type="button" class="weather-refresh" :disabled="!analysisMapTargets.length" @click="clearAnalysisTargets">清除积水标记</button></div>
           </div>
           </div>

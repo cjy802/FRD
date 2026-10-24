@@ -255,6 +255,23 @@ class QueuePhotoAnalysisTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+    def test_remove_all_frames_clears_files_index_and_api(self):
+        task_id = self.task["task_id"]
+        for index in range(3):
+            self.store.add_frame(task_id, f"frame-{index}.jpg", TINY_PNG, {
+                "time_seconds": float(index), "latitude": 31.6, "longitude": 119.9,
+            })
+        directory = self.store.frame_directory(task_id)
+        self.assertEqual(len(self.store.frames(task_id)), 3)
+        self.assertEqual(len(list(directory.glob("*.jpg"))), 3)
+
+        response = self.client.delete(f"/api/tasks/{task_id}/frames", headers=self.headers)
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(self.store.frames(task_id), [])
+        self.assertEqual(list(directory.glob("*.jpg")), [])
+        listing = self.client.get(f"/api/tasks/{task_id}/frames", headers=self.headers)
+        self.assertEqual(listing.json()["frames"], [])
+
     def test_queue_submit_completes_with_enrichment(self):
         first = self._add_frame()
         second = self._add_frame()

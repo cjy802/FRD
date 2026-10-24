@@ -181,6 +181,17 @@ class TaskStore:
         os.replace(temporary, index_path)
         return updated
 
+    def remove_all_frames(self, task_id: str) -> None:
+        directory = self.frame_directory(task_id)
+        index_path = directory / "frames.json"
+        for frame in self.frames(task_id):
+            file_name = frame.get("file_name")
+            if file_name:
+                (directory / file_name).unlink(missing_ok=True)
+        temporary = index_path.with_suffix(".tmp")
+        temporary.write_text("[]\n", encoding="utf-8")
+        os.replace(temporary, index_path)
+
     def frames(self, task_id: str) -> list[dict[str, Any]]:
         index_path = self.frame_directory(task_id) / "frames.json"
         return json.loads(index_path.read_text(encoding="utf-8")) if index_path.is_file() else []

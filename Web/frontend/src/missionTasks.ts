@@ -121,6 +121,15 @@ export async function deleteMissionTaskFrame(taskId: string, frameId: string): P
   }
 }
 
+export async function deleteAllMissionTaskFrames(taskId: string): Promise<void> {
+  const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/frames`, { method: 'DELETE' })
+  if (!response.ok) {
+    const payload: unknown = await response.json().catch(() => null)
+    const detail = payload && typeof payload === 'object' && 'detail' in payload ? payload.detail : null
+    throw new MissionTaskError(typeof detail === 'string' ? detail : '无法清空任务关键帧。', response.status)
+  }
+}
+
 export async function fetchMissionTaskFrameFile(taskId: string, frameId: string): Promise<Blob> {
   const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/frames/${encodeURIComponent(frameId)}`)
   if (!response.ok) throw new MissionTaskError('无法读取当前任务的关键帧文件。', response.status)

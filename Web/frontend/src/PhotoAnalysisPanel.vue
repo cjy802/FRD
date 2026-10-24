@@ -16,7 +16,18 @@ import type { ActivePhotoAnalysisJob, PhotoAnalysisHealth, PhotoAnalysisJob, Pho
 import type { TaskVideoFrame } from './photoAnalysis'
 
 const props = withDefaults(defineProps<{ taskId: string | null; frames: TaskVideoFrame[]; thresholds: WaterAlertThresholds; activeJobId?: string | null; queueOpen?: boolean }>(), { activeJobId: null, queueOpen: false })
-const emit = defineEmits<{ 'remove-frame': [index: number]; 'frames-add': [frames: TaskVideoFrame[]]; 'job-started': [jobId: string]; 'analysis-update': [job: PhotoAnalysisJob]; 'thresholds-change': [thresholds: WaterAlertThresholds]; 'open-queue': []; 'close-queue': [] }>()
+const emit = defineEmits<{ 'remove-frame': [index: number]; 'remove-all-frames': []; 'frames-add': [frames: TaskVideoFrame[]]; 'job-started': [jobId: string]; 'analysis-update': [job: PhotoAnalysisJob]; 'thresholds-change': [thresholds: WaterAlertThresholds]; 'open-queue': []; 'close-queue': [] }>()
+
+const removeAllArmed = ref(false)
+watch(() => props.frames.length, (count) => { if (!count) removeAllArmed.value = false })
+function armOrRemoveAllFrames() {
+  if (!removeAllArmed.value) {
+    removeAllArmed.value = true
+    return
+  }
+  removeAllArmed.value = false
+  emit('remove-all-frames')
+}
 
 const health = ref<PhotoAnalysisHealth | null>(null)
 const healthError = ref('')
@@ -570,6 +581,7 @@ function onDocumentPointerdown(event: PointerEvent) {
           <label>任务关键帧（{{ selectedFrames.length }} / {{ frames.length }}）</label>
           <input ref="photoInput" class="photo-file-native" type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" multiple :disabled="busy || !taskId" @change="onPhotosPicked" />
           <button type="button" class="photo-file-trigger" :disabled="busy || !taskId" @click="choosePhotos">选择文件</button>
+          <button v-if="frames.length" type="button" class="photo-file-trigger frame-delete-all" :class="{ 'is-armed': removeAllArmed }" :disabled="busy || !taskId" @click="armOrRemoveAllFrames">{{ removeAllArmed ? `确认清空 ${frames.length} 张` : '全部移除' }}</button>
         </div>
         <p v-if="!taskId" class="photo-file-selection">先在“选定航线”中创建当前任务。</p>
         <p v-else-if="!frames.length" class="photo-file-selection">{{ selectedFileSummary }}</p>

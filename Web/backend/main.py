@@ -373,6 +373,16 @@ def delete_task_frame(request: Request, task_id: str, frame_id: str):
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@app.delete("/api/tasks/{task_id}/frames", status_code=status.HTTP_204_NO_CONTENT)
+def delete_all_task_frames(request: Request, task_id: str):
+    require_local_request(request, mutation=True, label="任务关键帧")
+    try:
+        tasks.remove_all_frames(task_id)
+    except TaskError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @app.post("/api/tasks/{task_id}/adaptive-frames")
 async def select_task_video_frames(request: Request, task_id: str, payload: AdaptiveFrameSelectionRequest):
     require_local_request(request, mutation=True, label="任务视频自适应切帧")

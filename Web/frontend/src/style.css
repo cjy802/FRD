@@ -98,6 +98,7 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .task-list-heading button:hover:not(:disabled) { border-color: var(--ui-accent); color: var(--ui-accent); background: #eff6ff; }
 .task-list-heading button:disabled { opacity: .5; cursor: default; }
 .task-list-heading .task-delete-all.is-armed, .task-list-heading .task-delete-all.is-armed:hover:not(:disabled) { border-color: #c98a8a; color: #963d3d; background: #fff7f7; }
+.photo-file-trigger.frame-delete-all.is-armed, .photo-file-trigger.frame-delete-all.is-armed:hover:not(:disabled) { border-color: #c98a8a; color: #963d3d; background: #fff7f7; }
 .task-list-feedback { margin: 10px 12px; padding: 10px; border-radius: 6px; background: #f3f6f9; color: var(--ui-muted); font-size: 12px; }
 .task-list-feedback.is-error { background: #fef2f2; color: #a4262c; }
 .task-create-dialog { width: min(440px, 96vw); }
