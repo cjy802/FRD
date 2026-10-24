@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import CustomSelect from './CustomSelect.vue'
+import FieldMapSheet, { type FieldMapPoint } from './FieldMapSheet.vue'
 import { fetchMissionTask, listMissionTasks, type MissionTask, type MissionTaskSummary } from './missionTasks'
 import { fetchPhotoAnalysisJob, photoAnalysisFileUrl, type PhotoAnalysisJob, type PhotoAnalysisResultImage } from './photoAnalysis'
 
@@ -196,11 +197,37 @@ const taskOptions = computed(() => summaries.value.map(item => ({
   label: `${item.name || item.route_summary} · ${formatDate(item.updated_at)}`,
 })))
 
-function navigationUrl(alert: FieldAlert): string | null {
+function hasCoordinates(alert: FieldAlert): boolean {
+  return Number.isFinite(Number(alert.target.latitude)) && Number.isFinite(Number(alert.target.longitude))
+}
+
+const mapTargetId = ref<string | null>(null)
+const mapPoints = computed<FieldMapPoint[]>(() => visibleAlerts.value.flatMap((alert, index) => {
   const latitude = Number(alert.target.latitude)
   const longitude = Number(alert.target.longitude)
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null
-  return `https://uri.amap.com/marker?position=${longitude},${latitude}&name=${encodeURIComponent(alert.locationLabel)}`
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return []
+  return [{
+    id: alert.id,
+    badge: String(index + 1).padStart(2, '0'),
+    label: alert.locationLabel,
+    detail: `${alert.coordinates} · ${alert.areaLabel}`,
+    latitude,
+    longitude,
+  }]
+}))
+
+function openMap(alert: FieldAlert) {
+  mapTargetId.value = alert.id
+}
+
+function onMapSelect(id: string) {
+  mapTargetId.value = id
+}
+
+function completeFromMap(id: string) {
+  const alert = visibleAlerts.value.find(item => item.id === id)
+  if (alert) markCompleted(alert)
+  mapTargetId.value = null
 }
 
 function markCompleted(alert: FieldAlert) {
@@ -344,7 +371,7 @@ onBeforeUnmount(() => {
 
           <div class="field-location-block">
             <div class="field-location-row"><span class="field-pin" aria-hidden="true">⌖</span><div><strong>位置</strong><span>{{ alert.coordinates }}</span></div></div>
-            <a v-if="navigationUrl(alert)" class="field-nav-link" :href="navigationUrl(alert) || undefined" target="_blank" rel="noopener noreferrer">打开导航 <span aria-hidden="true">↗</span></a>
+            <button v-if="hasCoordinates(alert)" type="button" class="field-nav-link" :aria-label="`在地图中查看 ${alert.locationLabel}`" @click="openMap(alert)">打开地图</button>
           </div>
 
           <button type="button" class="field-photo-stage" @click="openLightbox(alert)" :aria-label="`查看 ${alert.locationLabel} 的现场照片`">
@@ -374,6 +401,8 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </Teleport>
+
+    <FieldMapSheet v-if="mapTargetId" :points="mapPoints" :selected-id="mapTargetId" @close="mapTargetId = null" @select="onMapSelect" @complete="completeFromMap" />
   </div>
 </template>
 
