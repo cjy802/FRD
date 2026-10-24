@@ -398,7 +398,28 @@ async function attachJob(jobId: string) {
   }
 }
 
-watch(() => props.activeJobId, jobId => { if (jobId) void attachJob(jobId) }, { immediate: true })
+watch(() => props.activeJobId, jobId => {
+  // Switching missions must stop polling the previous mission before the new
+  // job is attached; otherwise an old timer can overwrite the new job state.
+  stopPolling()
+  pollSignature = ''
+  if (!jobId) {
+    job.value = null
+    busy.value = false
+    return
+  }
+  if (job.value?.job_id !== jobId) job.value = null
+  void attachJob(jobId)
+}, { immediate: true })
+
+watch(() => props.taskId, (taskId, previousTaskId) => {
+  if (taskId === previousTaskId) return
+  stopPolling()
+  pollSignature = ''
+  job.value = null
+  busy.value = false
+  if (props.activeJobId) void attachJob(props.activeJobId)
+})
 
 async function cancelAnalysis() {
   if (!job.value || job.value.state !== 'running' || !busy.value) return
@@ -621,6 +642,13 @@ function onDocumentPointerdown(event: PointerEvent) {
             ? `积水警报 ${alertSummary.elevated} 帧 · 注意 ${alertSummary.attention} 帧`
             : '未触发积水警报' }}（阈值 {{ thresholds.minAlertAreaM2 }} m² · 视场角 {{ thresholds.cameraFovDeg }}°）</template>
         </p>
+        <div v-if="job && job.mode === 'frames'" class="analysis-queue-inline">
+          <small>{{ queueSummaryText || '识别队列已恢复' }}</small>
+          <span>
+            <button v-if="canCancelJob" type="button" @click="cancelAnalysis">取消分析</button>
+            <button type="button" @click="emit('open-queue')">查看识别队列</button>
+          </span>
+        </div>
         <ul class="photo-grid">
           <li v-for="{ image, assessment }, index in visibleImageAssessments" :key="image.name">
             <button type="button" class="photo-thumbnail" :aria-label="`放大查看 ${image.name}`" @click="openPreview(image, index)">

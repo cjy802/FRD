@@ -17,7 +17,7 @@ import { createFlightTimeline, sampleFlight, type FlightSample } from './flightP
 import { MissionTaskError, createMissionTask, deleteAllMissionTaskFrames, deleteMissionTask, deleteMissionTaskFrame, fetchMissionTask, fetchMissionTaskFrames, saveMissionTaskFrame,
   listMissionTasks, updateMissionTask, type MissionTask, type MissionTaskSummary, type StoredMissionFrame } from './missionTasks'
 import type { PhotoAnalysisJob, PhotoAnalysisResultImage, TaskVideoFrame, WaterAlertThresholds } from './photoAnalysis'
-import { loadWaterAlertThresholds, saveWaterAlertThresholds } from './photoAnalysis'
+import { fetchPhotoAnalysisJob, loadWaterAlertThresholds, saveWaterAlertThresholds } from './photoAnalysis'
 import { fetchLocationAddress, placeToPoint, type PlaceResult } from './placeSearch'
 
 type Point = { latitude: number; longitude: number }
@@ -51,6 +51,7 @@ function selectModule(module: ModuleKey) {
     // 模块 4 不做逐点编辑：退出 node 模式，避免整条路线渲染成编号节点。
     mapEditMode.value = 'route'
     selectedWaypointIndex.value = null
+    void openActiveTaskAnalysisQueue()
   }
   if (module === 'route' || module === 'photos') {
     workspacePanel.value = 'settings'
@@ -595,6 +596,22 @@ const activeAnalysisJobId = ref('')
 const analysisQueueOpen = ref(false)
 const absorbedTargetKeys = new Set<string>()
 
+async function openActiveTaskAnalysisQueue() {
+  const taskId = activeTask.value?.task_id
+  const jobId = activeAnalysisJobId.value
+  if (!taskId || !jobId) {
+    analysisQueueOpen.value = false
+    return
+  }
+  try {
+    const job = await fetchPhotoAnalysisJob(jobId)
+    if (activeTask.value?.task_id !== taskId || activeAnalysisJobId.value !== jobId) return
+    analysisQueueOpen.value = job.state === 'pending' || job.state === 'running'
+  } catch {
+    if (activeTask.value?.task_id === taskId && activeAnalysisJobId.value === jobId) analysisQueueOpen.value = false
+  }
+}
+
 type AnalysisFrameMeta = { time_seconds?: number | null; latitude: number; longitude: number; altitude_m?: number | null; gimbal_pitch_deg?: number | null }
 
 function analysisTargetsFromJob(job: PhotoAnalysisJob): VideoCaptureTarget[] {
@@ -860,6 +877,7 @@ function applyMissionTask(task: MissionTask) {
   analysisMapTargets.value = (task.analysis_targets ?? []) as unknown as VideoCaptureTarget[]
   for (const target of analysisMapTargets.value) absorbedTargetKeys.add(target.id)
   activeAnalysisJobId.value = task.analysis_job_ids?.length ? task.analysis_job_ids[task.analysis_job_ids.length - 1] : ''
+  analysisQueueOpen.value = false
   const route = task.route
   const savedAnchors = planningMode.value === 'area' && Array.isArray(savedCoverage?.point_anchors)
     ? savedCoverage.point_anchors : route.anchors

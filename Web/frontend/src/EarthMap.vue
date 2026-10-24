@@ -199,7 +199,10 @@ function renderOverlay() {
   const captureTargets = (props.captureTargets ?? []).flatMap((target, index) => {
     const pixel = scene!.project([target.longitude, target.latitude, props.viewMode === '2d' ? 2 : (target.altitude_m ?? 2)])
     const label = target.label || `近拍点 ${index + 1}`
-    const marker = label.match(/候选\s*(\d+)/)?.[1] ?? (label.replace(/[^0-9]/g, '').slice(0, 2) || '拍')
+    // 确认点带 badge（✓）；旧数据没有 badge 时从 label 推断。注意“积水候选 10-24 N”
+    // 这类标签里的数字是日期，正则会抓错，所以含“确认”的一律按确认点处理。
+    const marker = target.badge
+      ?? (label.includes('确认') ? '✓' : (label.match(/候选\s*(\d+)/)?.[1] ?? label.replace(/[^0-9]/g, '').slice(0, 2)) || '拍')
     return pixel ? [{ ...pixel, id: target.id, label, marker, time_seconds: target.time_seconds }] : []
   })
   const riskByIndex = new Map((props.weatherRiskPoints ?? []).map(point => [point.index, point]))

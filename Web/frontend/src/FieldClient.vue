@@ -8,6 +8,7 @@ import { fetchPhotoAnalysisJob, photoAnalysisFileUrl, type PhotoAnalysisJob, typ
 type TargetRecord = {
   id?: string
   label?: string
+  analysis_kind?: string
   latitude?: number | null
   longitude?: number | null
   altitude_m?: number | null
@@ -115,17 +116,20 @@ function makeAlert(job: PhotoAnalysisJob, image: PhotoAnalysisResultImage, targe
 
 function buildAlerts(taskValue: MissionTask, taskJobs: PhotoAnalysisJob[]): FieldAlert[] {
   const targetRecords = (taskValue.analysis_targets || []) as TargetRecord[]
-  const hasSavedTargets = targetRecords.length > 0
+  // 与主控端同口径：只认终审确认点。旧版页面写入的标记没有 analysis_kind
+  // 字段，视同未确认——这种任务走下面的复检 job 推导，同样只出最终结果。
+  const confirmedRecords = targetRecords.filter(item => typeof item.id === 'string' && item.analysis_kind === 'confirmed')
+  const hasSavedTargets = confirmedRecords.length > 0
   const fallbackJobs = hasSavedTargets
     ? taskJobs
     : (() => {
-        // 没有目标快照的旧任务优先使用最新的复检任务；复检任务代表主控端
-        // 已经用第二遍模型确认过的结果，现场端不再展示前几轮的全部候选帧。
+        // 没有确认点快照的任务优先使用最新的复检任务；复检任务代表主控端
+        // 已经用最后一遍模型确认过的结果，现场端不再展示前几轮的全部候选帧。
         const recheckJobs = taskJobs.filter(job => Boolean(job.context?.recheck_of_job_id))
         const candidates = recheckJobs.length ? recheckJobs : taskJobs
         return candidates.slice().sort((first, second) => first.created_at.localeCompare(second.created_at)).slice(-1)
       })()
-  const byId = new Map(targetRecords.filter(item => typeof item.id === 'string').map(item => [item.id as string, item]))
+  const byId = new Map(confirmedRecords.map(item => [item.id as string, item]))
   const output: FieldAlert[] = []
   const seen = new Set<string>()
   for (const job of fallbackJobs) {
