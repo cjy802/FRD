@@ -32,6 +32,13 @@ DRONE_PROFILES = {
 # 弯曲交叉的乱线。
 WAYPOINT_TURN_MODE = "coordinateTurn"
 
+# 规范要求 waypointTurnDampingDist ∈ (0, 航段长度]，且相邻两点截距之和小于
+# 段长（coordinateTurn 模式必填）。写 0 是非法值：DJI Fly 编辑器只画航点
+# 标记不受影响，开始飞行后按截距计算转弯弧会进入退化几何，在 RC 2 上
+# 表现为应用卡死退出。取相邻段长的 1/3，并夹在安全区间内。
+TURN_DAMPING_MAX_M = 0.5
+TURN_DAMPING_FLOOR_M = 0.1
+
 # Road geometry contains many short OSM/OSRM segments. DJI renders every
 # waypoint marker and altitude label, so exporting every vertex makes even a
 # valid route unreadable. These values keep meaningful turns while removing
@@ -194,7 +201,51 @@ def _heading_param(setting: dict[str, object] | None = None) -> str:
   </wpml:waypointHeadingParam>""".format(mode=mode, angle=_number(angle), poi_text=poi_text)
 
 
-def _template_waypoint(index: int, longitude: float, latitude: float, altitude_m: float, speed_m_s: float, setting: dict[str, object] | None = None) -> str:
+def _turn_damping_distances(coordinates: list[tuple[float, float]]) -> list[float]:
+    """每个航点的合法转弯截距：恒为正，且任意相邻两点截距之和小于段长。"""
+    dampings: list[float] = []
+    for index in range(len(coordinates)):
+        adjacent: list[float] = []
+        if index > 0:
+            adjacent.append(_distance_m(coordinates[index - 1], coordinates[index]))
+        if index < len(coordinates) - 1:
+            adjacent.append(_distance_m(coordinates[index], coordinates[index + 1]))
+        dampings.append(max(TURN_DAMPING_FLOOR_M, min(TURN_DAMPING_MAX_M, min(adjacent) / 3)))
+    return dampings
+
+
+def _record_action_group(group_id: int, waypoint_index: int, func: str) -> str:
+    params = ["      <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>"]
+    if func == "startRecord":
+        params.append("      <wpml:fileSuffix>route</wpml:fileSuffix>")
+    return f"""  <wpml:actionGroup>
+    <wpml:actionGroupId>{group_id}</wpml:actionGroupId>
+    <wpml:actionGroupStartIndex>{waypoint_index}</wpml:actionGroupStartIndex>
+    <wpml:actionGroupEndIndex>{waypoint_index}</wpml:actionGroupEndIndex>
+    <wpml:actionGroupMode>sequence</wpml:actionGroupMode>
+    <wpml:actionTrigger>
+      <wpml:actionTriggerType>reachPoint</wpml:actionTriggerType>
+    </wpml:actionTrigger>
+    <wpml:action>
+      <wpml:actionId>0</wpml:actionId>
+      <wpml:actionActuatorFunc>{func}</wpml:actionActuatorFunc>
+      <wpml:actionActuatorFuncParam>
+{chr(10).join(params)}
+      </wpml:actionActuatorFuncParam>
+    </wpml:action>
+  </wpml:actionGroup>"""
+
+
+def _record_actions(index: int, count: int) -> str:
+    """auto_record 开启时：首航点到点开始录像，末航点到点停止录像。"""
+    if index == 0:
+        return _record_action_group(0, index, "startRecord")
+    if index == count - 1:
+        return _record_action_group(1, index, "stopRecord")
+    return ""
+
+
+def _template_waypoint(index: int, longitude: float, latitude: float, altitude_m: float, speed_m_s: float, setting: dict[str, object] | None = None, action_group: str = "") -> str:
     setting = setting or {}
     raw_altitude = setting.get("altitude_m")
     point_altitude = altitude_m if raw_altitude is None else float(raw_altitude)
@@ -207,24 +258,25 @@ def _template_waypoint(index: int, longitude: float, latitude: float, altitude_m
   <wpml:waypointSpeed>{_number(speed_m_s)}</wpml:waypointSpeed>
   <wpml:waypointTurnParam>
     <wpml:waypointTurnMode>{WAYPOINT_TURN_MODE}</wpml:waypointTurnMode>
-    <wpml:waypointTurnDampingDist>0</wpml:waypointTurnDampingDist>
+    <wpml:waypointTurnDampingDist>{_number(float(setting.get("turn_damping_dist", TURN_DAMPING_MAX_M)))}</wpml:waypointTurnDampingDist>
   </wpml:waypointTurnParam>
   <wpml:gimbalPitchAngle>{_number(gimbal_pitch)}</wpml:gimbalPitchAngle>"""
+    body = f"{settings}\n{action_group}" if action_group else settings
     return f"""<Placemark>
   <Point><coordinates>{_number(longitude, 7)},{_number(latitude, 7)}</coordinates></Point>
   <wpml:index>{index}</wpml:index>
   <wpml:ellipsoidHeight>{_number(point_altitude)}</wpml:ellipsoidHeight>
   <wpml:height>{_number(point_altitude)}</wpml:height>
-{settings}
+{body}
 </Placemark>"""
 
 
-def _wayline_waypoint(index: int, longitude: float, latitude: float, altitude_m: float, speed_m_s: float, setting: dict[str, object] | None = None) -> str:
+def _wayline_waypoint(index: int, longitude: float, latitude: float, altitude_m: float, speed_m_s: float, setting: dict[str, object] | None = None, action_group: str = "") -> str:
     setting = setting or {}
     raw_altitude = setting.get("altitude_m")
     point_altitude = altitude_m if raw_altitude is None else float(raw_altitude)
     gimbal_pitch = float(setting.get("gimbal_pitch_angle", 0))
-    return f"""<Placemark>
+    body = f"""<Placemark>
   <Point><coordinates>{_number(longitude, 7)},{_number(latitude, 7)}</coordinates></Point>
   <wpml:index>{index}</wpml:index>
   <wpml:executeHeight>{_number(point_altitude)}</wpml:executeHeight>
@@ -232,16 +284,21 @@ def _wayline_waypoint(index: int, longitude: float, latitude: float, altitude_m:
 {_heading_param(setting)}
   <wpml:waypointTurnParam>
     <wpml:waypointTurnMode>{WAYPOINT_TURN_MODE}</wpml:waypointTurnMode>
-    <wpml:waypointTurnDampingDist>0</wpml:waypointTurnDampingDist>
+    <wpml:waypointTurnDampingDist>{_number(float(setting.get("turn_damping_dist", TURN_DAMPING_MAX_M)))}</wpml:waypointTurnDampingDist>
   </wpml:waypointTurnParam>
   <wpml:gimbalPitchAngle>{_number(gimbal_pitch)}</wpml:gimbalPitchAngle>
-  <wpml:useStraightLine>1</wpml:useStraightLine>
-</Placemark>"""
+  <wpml:useStraightLine>1</wpml:useStraightLine>"""
+    if action_group:
+        body = f"{body}\n{action_group}"
+    return f"{body}\n</Placemark>"
 
 
-def _template_kml(coordinates: list[tuple[float, float]], altitude_m: float, speed_m_s: float, rth_height_m: float, timestamp_ms: int, drone: dict[str, object], waypoint_settings: list[dict[str, object]] | None = None) -> str:
+def _template_kml(coordinates: list[tuple[float, float]], altitude_m: float, speed_m_s: float, rth_height_m: float, timestamp_ms: int, drone: dict[str, object], waypoint_settings: list[dict[str, object]] | None = None, auto_record: bool = False) -> str:
     waypoint_settings = waypoint_settings or [{} for _ in coordinates]
-    placemarks = "\n".join(_template_waypoint(i, lon, lat, altitude_m, speed_m_s, waypoint_settings[i]) for i, (lon, lat) in enumerate(coordinates))
+    placemarks = "\n".join(
+        _template_waypoint(i, lon, lat, altitude_m, speed_m_s, waypoint_settings[i], _record_actions(i, len(coordinates)) if auto_record else "")
+        for i, (lon, lat) in enumerate(coordinates)
+    )
     global_heading = _heading_param().replace("waypointHeadingParam", "globalWaypointHeadingParam", 2) if drone["fly"] else "      <wpml:globalWaypointHeadingParam><wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode></wpml:globalWaypointHeadingParam>"
     gimbal_mode = "usePointSetting"
     return f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -272,9 +329,12 @@ def _template_kml(coordinates: list[tuple[float, float]], altitude_m: float, spe
 """
 
 
-def _waylines_wpml(coordinates: list[tuple[float, float]], altitude_m: float, speed_m_s: float, rth_height_m: float, drone: dict[str, object], waypoint_settings: list[dict[str, object]] | None = None) -> str:
+def _waylines_wpml(coordinates: list[tuple[float, float]], altitude_m: float, speed_m_s: float, rth_height_m: float, drone: dict[str, object], waypoint_settings: list[dict[str, object]] | None = None, auto_record: bool = False) -> str:
     waypoint_settings = waypoint_settings or [{} for _ in coordinates]
-    placemarks = "\n".join(_wayline_waypoint(i, lon, lat, altitude_m, speed_m_s, waypoint_settings[i]) for i, (lon, lat) in enumerate(coordinates))
+    placemarks = "\n".join(
+        _wayline_waypoint(i, lon, lat, altitude_m, speed_m_s, waypoint_settings[i], _record_actions(i, len(coordinates)) if auto_record else "")
+        for i, (lon, lat) in enumerate(coordinates)
+    )
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="{drone['namespace']}">
   <Document>
@@ -374,7 +434,7 @@ def _course_heading(coordinates: list[tuple[float, float]], index: int) -> float
     return ((bearing + 180) % 360) - 180
 
 
-def build_dji_kmz(coordinates, altitude_m: float, speed_kmh: float, drone_model: Literal["fly", "m30", "m3e"] = "fly", waypoint_settings=None, *, merge_report: list[tuple[int, int]] | None = None) -> bytes:
+def build_dji_kmz(coordinates, altitude_m: float, speed_kmh: float, drone_model: Literal["fly", "m30", "m3e"] = "fly", waypoint_settings=None, *, merge_report: list[tuple[int, int]] | None = None, auto_record: bool = False) -> bytes:
     if not isinstance(coordinates, list) or len(coordinates) < 2 or len(coordinates) > 65535:
         raise KmzExportError("DJI 航点草稿至少需要 2 个、最多 65535 个路线点。")
     if not isfinite(altitude_m) or not 0 < altitude_m <= 1500:
@@ -419,12 +479,14 @@ def build_dji_kmz(coordinates, altitude_m: float, speed_kmh: float, drone_model:
             # DJI follows the course in this mode. Avoid a misleading 0-degree
             # target in viewers that also interpolate waypointHeadingAngle.
             settings[index] = {**setting, "heading_angle": _course_heading(cleaned, index)}
+    for setting, damping in zip(settings, _turn_damping_distances(cleaned)):
+        setting["turn_damping_dist"] = damping
     speed_m_s = speed_kmh / 3.6
     rth_height_m = max(20.0, altitude_m)
     drone = DRONE_PROFILES[drone_model]
     timestamp_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     output = BytesIO()
     with ZipFile(output, "w", ZIP_DEFLATED) as archive:
-        archive.writestr("wpmz/template.kml", _template_kml(cleaned, altitude_m, speed_m_s, rth_height_m, timestamp_ms, drone, settings))
-        archive.writestr("wpmz/waylines.wpml", _waylines_wpml(cleaned, altitude_m, speed_m_s, rth_height_m, drone, settings))
+        archive.writestr("wpmz/template.kml", _template_kml(cleaned, altitude_m, speed_m_s, rth_height_m, timestamp_ms, drone, settings, auto_record))
+        archive.writestr("wpmz/waylines.wpml", _waylines_wpml(cleaned, altitude_m, speed_m_s, rth_height_m, drone, settings, auto_record))
     return output.getvalue()

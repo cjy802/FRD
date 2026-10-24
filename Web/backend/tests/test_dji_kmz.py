@@ -242,6 +242,62 @@ class DjiKmzTests(unittest.TestCase):
         with self.assertRaises(KmzExportError):
             build_dji_kmz([[0, 0], [1, 1]], 80, 3.5)
 
+    def test_turn_damping_dist_is_positive_and_never_exceeds_segment(self):
+        import math
+
+        coordinates = [[119.95, 31.67], [119.9502, 31.67], [119.9509, 31.67], [119.9511, 31.6702]]
+        payload = build_dji_kmz(coordinates, 80, 36, "fly")
+        namespace = {"wpml": "http://www.dji.com/wpmz/1.0.2", "kml": "http://www.opengis.net/kml/2.2"}
+        with ZipFile(BytesIO(payload)) as archive:
+            for name in ("wpmz/template.kml", "wpmz/waylines.wpml"):
+                with self.subTest(name=name):
+                    placemarks = ElementTree.fromstring(archive.read(name)).findall(".//kml:Placemark", namespace)
+                    dampings = []
+                    positions = []
+                    for point in placemarks:
+                        dampings.append(float(point.findtext("wpml:waypointTurnParam/wpml:waypointTurnDampingDist", namespaces=namespace)))
+                        lon, lat = (float(value) for value in point.findtext("kml:Point/kml:coordinates", namespaces=namespace).split(",")[:2])
+                        positions.append((lon, lat))
+                    self.assertTrue(all(damping > 0 for damping in dampings))
+                    for index in range(len(positions) - 1):
+                        lon1, lat1 = positions[index]
+                        lon2, lat2 = positions[index + 1]
+                        segment = math.hypot((lon2 - lon1) * 111320 * math.cos(math.radians((lat1 + lat2) / 2)), (lat2 - lat1) * 111320)
+                        self.assertLess(dampings[index] + dampings[index + 1], segment)
+
+    def test_auto_record_writes_start_and_stop_action_groups(self):
+        payload = build_dji_kmz([[119.95, 31.67], [119.951, 31.672], [119.952, 31.672]], 80, 36, "fly", auto_record=True)
+        namespace = {"wpml": "http://www.dji.com/wpmz/1.0.2", "kml": "http://www.opengis.net/kml/2.2"}
+        with ZipFile(BytesIO(payload)) as archive:
+            for name in ("wpmz/template.kml", "wpmz/waylines.wpml"):
+                with self.subTest(name=name):
+                    document = ElementTree.fromstring(archive.read(name))
+                    groups = document.findall(".//wpml:actionGroup", namespace)
+                    self.assertEqual(len(groups), 2)
+                    first, last = groups
+                    self.assertEqual(first.findtext("wpml:actionGroupId", namespaces=namespace), "0")
+                    self.assertEqual(first.findtext("wpml:actionGroupStartIndex", namespaces=namespace), "0")
+                    self.assertEqual(first.findtext("wpml:actionGroupEndIndex", namespaces=namespace), "0")
+                    self.assertEqual(first.findtext("wpml:actionTrigger/wpml:actionTriggerType", namespaces=namespace), "reachPoint")
+                    self.assertEqual(first.findtext("wpml:action/wpml:actionActuatorFunc", namespaces=namespace), "startRecord")
+                    self.assertEqual(first.findtext("wpml:action/wpml:actionActuatorFuncParam/wpml:payloadPositionIndex", namespaces=namespace), "0")
+                    self.assertEqual(last.findtext("wpml:actionGroupId", namespaces=namespace), "1")
+                    self.assertEqual(last.findtext("wpml:actionGroupStartIndex", namespaces=namespace), "2")
+                    self.assertEqual(last.findtext("wpml:action/wpml:actionActuatorFunc", namespaces=namespace), "stopRecord")
+                    # 首末动作组挂在对应航点的 Placemark 内。
+                    placemarks = document.findall(".//kml:Placemark", namespace)
+                    self.assertIsNotNone(placemarks[0].find("wpml:actionGroup", namespace))
+                    self.assertIsNotNone(placemarks[-1].find("wpml:actionGroup", namespace))
+                    self.assertIsNone(placemarks[1].find("wpml:actionGroup", namespace))
+
+    def test_auto_record_disabled_by_default(self):
+        payload = build_dji_kmz([[119.95, 31.67], [119.951, 31.672]], 80, 36, "fly")
+        namespace = {"wpml": "http://www.dji.com/wpmz/1.0.2"}
+        with ZipFile(BytesIO(payload)) as archive:
+            for name in ("wpmz/template.kml", "wpmz/waylines.wpml"):
+                with self.subTest(name=name):
+                    self.assertEqual(ElementTree.fromstring(archive.read(name)).findall(".//wpml:actionGroup", namespace), [])
+
 
 if __name__ == "__main__":
     unittest.main()

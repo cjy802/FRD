@@ -189,6 +189,7 @@ class KmzExportRequest(BaseModel):
     altitude_m: float = Field(gt=0, le=1500, allow_inf_nan=False)
     speed_kmh: float = Field(gt=0, le=200, allow_inf_nan=False)
     drone_model: Literal["fly", "m30", "m3e"] = "fly"
+    auto_record: bool = False
     waypoint_settings: list[KmzWaypointSetting] | None = Field(default=None, max_length=65535)
 
 
@@ -746,7 +747,7 @@ def export_dji_kmz(request: KmzExportRequest, task_id: str | None = Query(defaul
     try:
         settings = [item.model_dump() for item in request.waypoint_settings] if request.waypoint_settings is not None else None
         merge_report: list[tuple[int, int]] = []
-        payload = build_dji_kmz(request.coordinates, request.altitude_m, request.speed_kmh, request.drone_model, settings, merge_report=merge_report)
+        payload = build_dji_kmz(request.coordinates, request.altitude_m, request.speed_kmh, request.drone_model, settings, merge_report=merge_report, auto_record=request.auto_record)
         if task_id:
             directory = tasks.directory(task_id) / "exports"
             directory.mkdir(parents=True, exist_ok=True)
@@ -830,7 +831,7 @@ def rc2_import(request: Request, import_request: Rc2ImportRequest):
         settings = [item.model_dump() for item in import_request.waypoint_settings] if import_request.waypoint_settings is not None else None
         payload = build_dji_kmz(
             import_request.coordinates, import_request.altitude_m, import_request.speed_kmh,
-            "fly", settings,
+            "fly", settings, auto_record=import_request.auto_record,
         )
         return rc2_imports.start(payload, import_request.target_file_name, import_request.target_folder)
     except KmzExportError as error:
