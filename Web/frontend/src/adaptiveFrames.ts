@@ -248,8 +248,13 @@ export async function extractAdaptiveFramesClient(
     const selected: ClientSelectedFrame[] = []
     let scanDone = false
     let step = 1 / options.scanFps
-    let total = Math.floor(duration / step)
+    // ceil 而不是 floor：末尾不足一个步长的片段也要有候选，否则视频最后
+    // 一段永远扫不到（900 上限分支会把步长拉大，漏的可达数秒）。
+    let total = Math.ceil(duration / step)
     if (total > 900) { total = 900; step = duration / total }
+    // 候选秒统一 clamp 到末帧前一帧间隔：seek 到 duration 本身部分浏览器会挂起。
+    const maxCandidateSeconds = Math.max(0, duration - 1 / 30)
+    const lastTelemetry = telemetry.length ? telemetry[telemetry.length - 1] : null
     let blurred = 0
     let blank = 0
     let scanned = 0
@@ -299,10 +304,17 @@ export async function extractAdaptiveFramesClient(
     let lastSelectedSeconds: number | null = null
 
     // —— 第一遍：小图扫描，只决定哪些时刻成为关键帧 ——
+    let previousPlannedSeconds = -1
     for (let index = 0; index < total && candidates.length < options.maxFrames; index += 1) {
       if (isCancelled()) throw new ExtractionCancelled()
-      const seconds = index * step
-      const position = interpolateVideoPosition(telemetry, seconds)
+      const seconds = Math.min(index * step, maxCandidateSeconds)
+      if (seconds <= previousPlannedSeconds) continue // clamp 可能让最后两个候选重合
+      previousPlannedSeconds = seconds
+      let position = interpolateVideoPosition(telemetry, seconds)
+      if (!position && lastTelemetry && seconds > lastTelemetry.time_seconds) {
+        // SRT 常比视频早结束：尾部沿用最后一个遥测点的位置，不能静默丢帧。
+        position = { ...lastTelemetry, time_seconds: seconds }
+      }
       if (!position) continue
       if (!(await seekTo(element, seconds))) continue
       await settleAfterSeek(element)
