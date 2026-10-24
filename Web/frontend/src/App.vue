@@ -319,6 +319,7 @@ function updateWaterAlertThresholds(value: WaterAlertThresholds) {
   saveWaterAlertThresholds(value)
 }
 const analysisMapTargets = ref<VideoCaptureTarget[]>([])
+const showAnalysisTargets = ref(true)
 const savedTasks = ref<MissionTaskSummary[]>([])
 const taskListOpen = ref(false)
 const taskListLoading = ref(false)
@@ -411,7 +412,9 @@ const videoCaptureTargets = ref<VideoCaptureTarget[]>([])
 function setVideoTelemetryTrack(track: number[][]) { videoTelemetryTrack.value = track }
 function setVideoTelemetryPosition(position: VideoTelemetryPoint | null) { videoTelemetryPosition.value = position }
 function setVideoCaptureTargets(targets: VideoCaptureTarget[]) { videoCaptureTargets.value = targets }
-const mapCaptureTargets = computed(() => [...videoCaptureTargets.value, ...analysisMapTargets.value])
+const mapCaptureTargets = computed(() => showAnalysisTargets.value
+  ? [...videoCaptureTargets.value, ...analysisMapTargets.value]
+  : [...videoCaptureTargets.value])
 
 async function openCreateTaskDialog() {
   if (!canFinalizeTask.value) {
@@ -610,15 +613,26 @@ function analysisTargetsFromJob(job: PhotoAnalysisJob): VideoCaptureTarget[] {
 }
 
 function buildTargets(pairs: { image: PhotoAnalysisResultImage; meta: AnalysisFrameMeta }[], job: PhotoAnalysisJob): VideoCaptureTarget[] {
+  // 复检 job 的输入帧都是第一遍模型检出帧：这里再检出即“双模型确认”，
+  // 不再套面积阈值——用户口径是“两遍都有才算疑似积水”。
+  const isRecheck = Boolean(job.context?.recheck_of_job_id)
   return pairs
-    .filter(({ image }) => assessWaterAlert(image, waterAlertThresholds.value).level !== 'none')
+    .filter(({ image }) => isRecheck
+      ? (image.suspected_pixels ?? 0) > 0
+      : assessWaterAlert(image, waterAlertThresholds.value).level !== 'none')
     .sort((first, second) => (second.image.estimated_area_m2 ?? 0) - (first.image.estimated_area_m2 ?? 0))
     .slice(0, 5)
     .map(({ image, meta }, index): VideoCaptureTarget => {
       const assessment = assessWaterAlert(image, waterAlertThresholds.value)
+      const positionText = describeRoutePosition(meta.latitude, meta.longitude)
+      const areaText = assessment.areaText ?? `占比 ${(image.suspected_fraction * 100).toFixed(1)}%`
+      const now = new Date()
+      const dateStamp = `${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
       return {
         id: `analysis-${job.job_id}-${image.name}`,
-        label: `积水候选 ${index + 1} · ${assessment.areaText ?? `占比 ${(image.suspected_fraction * 100).toFixed(1)}%`}`,
+        label: isRecheck
+          ? `疑似积水（双模型确认）${index + 1}${positionText ? ` · ${positionText}` : ''} · ${meta.latitude.toFixed(5)}, ${meta.longitude.toFixed(5)} · ${areaText}`
+          : `积水候选 ${dateStamp} ${index + 1} · ${areaText}`,
         created_at: new Date().toISOString(),
         time_seconds: meta.time_seconds ?? 0,
         latitude: meta.latitude,
@@ -630,6 +644,51 @@ function buildTargets(pairs: { image: PhotoAnalysisResultImage; meta: AnalysisFr
     })
 }
 
+type TaskRouteLike = {
+  geometry?: { coordinates?: number[][] } | null
+  segments?: Array<{ start_index?: number; end_index?: number; road_names?: string[] }> | null
+}
+
+// 把帧坐标投影到任务路线折线：返回“所在路段路名 · 距路线起点约 X m”。
+// 旧任务快照没有 segments 时只报距起点；没有路线则返回空串。
+function describeRoutePosition(latitude: number, longitude: number): string {
+  const route = activeTask.value?.route as TaskRouteLike | undefined
+  const coordinates = route?.geometry?.coordinates
+  if (!Array.isArray(coordinates) || coordinates.length < 2) return ''
+  const metresPerDegree = 111320
+  const lonScale = Math.cos((latitude * Math.PI) / 180)
+  const pointX = longitude * lonScale * metresPerDegree
+  const pointY = latitude * metresPerDegree
+  const vertices = coordinates.map(item => [item[0] * lonScale * metresPerDegree, item[1] * metresPerDegree])
+  let travelledM = 0
+  let best: { alongM: number; distanceM: number; edgeIndex: number } | null = null
+  for (let index = 0; index < vertices.length - 1; index += 1) {
+    const [x1, y1] = vertices[index]
+    const [x2, y2] = vertices[index + 1]
+    const dx = x2 - x1
+    const dy = y2 - y1
+    const lengthM = Math.hypot(dx, dy)
+    let t = lengthM > 0 ? ((pointX - x1) * dx + (pointY - y1) * dy) / (lengthM * lengthM) : 0
+    t = Math.max(0, Math.min(1, t))
+    const distanceM = Math.hypot(pointX - (x1 + t * dx), pointY - (y1 + t * dy))
+    if (best === null || distanceM < best.distanceM) best = { alongM: travelledM + t * lengthM, distanceM, edgeIndex: index }
+    travelledM += lengthM
+  }
+  if (best === null) return ''
+  const parts: string[] = []
+  const segments = route?.segments
+  if (Array.isArray(segments)) {
+    const segment = segments.find(item =>
+      typeof item.start_index === 'number' && typeof item.end_index === 'number'
+      && item.start_index <= best.edgeIndex && best.edgeIndex < item.end_index)
+    const roadName = segment?.road_names?.[0]
+    if (roadName) parts.push(roadName)
+  }
+  const alongM = Math.round(best.alongM)
+  parts.push(alongM >= 1000 ? `距路线起点约 ${(alongM / 1000).toFixed(1)} km` : `距路线起点约 ${alongM} m`)
+  return parts.join(' · ')
+}
+
 async function absorbAnalysisResults(job: PhotoAnalysisJob) {
   if (!activeTask.value) return
   const targets = analysisTargetsFromJob(job)
@@ -638,6 +697,13 @@ async function absorbAnalysisResults(job: PhotoAnalysisJob) {
   for (const target of fresh) absorbedTargetKeys.add(target.id)
   analysisMapTargets.value = [...fresh, ...analysisMapTargets.value].slice(0, 50)
   await persistTask({ analysis_job_id: job.job_id, analysis_targets: analysisMapTargets.value as unknown as Record<string, unknown>[] })
+}
+
+async function clearAnalysisTargets() {
+  if (!activeTask.value || !analysisMapTargets.value.length) return
+  analysisMapTargets.value = []
+  // absorbedTargetKeys 保留：仍在轮询的任务不会把已清除的旧点再加回来。
+  await persistTask({ analysis_targets: [] as unknown as Record<string, unknown>[] })
 }
 
 function onAnalysisJobStarted(jobId: string) {
@@ -1036,6 +1102,8 @@ const taskRouteSnapshot = computed(() => ({
   fingerprint: JSON.stringify({ routeKey: routeKey.value, altitude_m: form.altitude_m, speed_kmh: form.speed_kmh }),
   geometry: preview.value?.geometry ?? null,
   road_names: preview.value?.road_names ?? [],
+  // 每段的顶点区间与路名：给“积水在路的哪个位置”报路名用。
+  segments: preview.value?.segments ?? null,
   data_source: preview.value?.data_source ?? '',
   route_type: planningMode.value === 'area' ? 'area_road_coverage_open'
     : roadSource.value === 'online' ? 'online_driving_reference' : 'road_corridor_demo',
@@ -3062,6 +3130,7 @@ onBeforeUnmount(() => {
           <VideoSurveyPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frame-count="taskFrames.length" @track-change="setVideoTelemetryTrack" @position-change="setVideoTelemetryPosition" @targets-change="setVideoCaptureTargets" @frame-capture="addTaskFrame" @frame-saved="onTaskFrameSaved" @survey-change="onTaskSurveyChange" @job-started="onAnalysisJobStarted" @open-queue="analysisQueueOpen = true" />
           <p class="form-scope-note">关键帧会保存在任务文件夹中。模型只分析勾选的帧，SRT 位置会随结果一同记录。</p>
           <PhotoAnalysisPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frames="taskFrames" :thresholds="waterAlertThresholds" :active-job-id="activeAnalysisJobId" :queue-open="analysisQueueOpen" @remove-frame="removeTaskFrame" @frames-add="addManualTaskFrames" @job-started="onAnalysisJobStarted" @analysis-update="absorbAnalysisResults" @thresholds-change="updateWaterAlertThresholds" @open-queue="analysisQueueOpen = true" @close-queue="analysisQueueOpen = false" />
+          <div class="analysis-target-tools"><label class="route-export-record"><input v-model="showAnalysisTargets" type="checkbox" />显示积水候选标记（{{ analysisMapTargets.length }} 个，跟随任务保存）</label><button type="button" class="weather-refresh" :disabled="!analysisMapTargets.length" @click="clearAnalysisTargets">清除积水标记</button></div>
           </div>
           </div>
             <fluent-button v-if="activeModule === 'route'" class="primary-button" appearance="primary" type="button" :disabled="!weatherCoordinates || loading || checkingPoint || locatingPoint !== null" @click="selectModule('status')"><span class="svg-icon icon-cloud-rain" aria-hidden="true"></span><span>继续查看天气</span></fluent-button>

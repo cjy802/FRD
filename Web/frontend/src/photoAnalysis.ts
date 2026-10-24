@@ -102,6 +102,7 @@ export type PhotoAnalysisJob = {
   context: {
     site_name?: string
     note?: string
+    recheck_of_job_id?: string
     frames?: Array<{ time_seconds: number; latitude: number | null; longitude: number | null; altitude_m: number | null; gimbal_pitch_deg?: number | null; [key: string]: unknown }>
   }
   inputs: { name: string; original_name: string; bytes: number }[]
@@ -165,6 +166,7 @@ export type PhotoAnalysisJobSubmitOptions = {
   note?: string
   cameraFovDeg?: number
   streaming?: boolean
+  recheckOfJobId?: string
 }
 
 export async function submitPhotoAnalysisJob(
@@ -181,6 +183,7 @@ export async function submitPhotoAnalysisJob(
       note: options.note ?? '',
       ...(options.cameraFovDeg !== undefined ? { camera_fov_deg: options.cameraFovDeg } : {}),
       streaming: options.streaming ?? false,
+      ...(options.recheckOfJobId ? { recheck_of_job_id: options.recheckOfJobId } : {}),
     }),
   })
 }

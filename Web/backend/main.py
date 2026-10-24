@@ -863,6 +863,8 @@ class PhotoAnalysisSubmitBody(BaseModel):
     note: str = ""
     camera_fov_deg: float | None = Field(default=None, ge=30.0, le=120.0)
     streaming: bool = False
+    # 复检任务标记：标记后前端把该 job 与第一遍 job 关联，只展示双模型确认帧。
+    recheck_of_job_id: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class PhotoAnalysisAppendBody(BaseModel):
@@ -877,6 +879,8 @@ def photo_analysis_submit(request: Request, body: PhotoAnalysisSubmitBody):
         context: dict = {"site_name": body.site_name, "note": body.note}
         if body.camera_fov_deg is not None:
             context["camera_fov_deg"] = body.camera_fov_deg
+        if body.recheck_of_job_id:
+            context["recheck_of_job_id"] = body.recheck_of_job_id
         job_id = photo_analysis.submit_frames(
             body.task_id, body.frame_ids, model_id=body.model_id or None,
             context=context, streaming=body.streaming)

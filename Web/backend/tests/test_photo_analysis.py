@@ -259,11 +259,14 @@ class QueuePhotoAnalysisTests(unittest.TestCase):
         first = self._add_frame()
         second = self._add_frame()
         submit = self.client.post("/api/photo-analysis/jobs", headers=self.headers, json={
-            "task_id": self.task["task_id"], "frame_ids": [first, second], "camera_fov_deg": 75.0})
+            "task_id": self.task["task_id"], "frame_ids": [first, second], "camera_fov_deg": 75.0,
+            "recheck_of_job_id": "20260101000000-firstjob"})
         self.assertEqual(submit.status_code, 202, submit.text)
         job_id = submit.json()["job_id"]
         job = self._wait_state(job_id)
         self.assertEqual(job["state"], "done", job.get("error"))
+        # 复检标记随 context 回显，前端据此切到“双模型确认”口径。
+        self.assertEqual(job["context"].get("recheck_of_job_id"), "20260101000000-firstjob")
         self.assertEqual(job["counts"], {"total": 2, "done": 2, "failed": 0, "pending": 0, "running": 0, "cancelled": 0})
         self.assertEqual(len(job["results"]["images"]), 2)
         image = job["results"]["images"][0]

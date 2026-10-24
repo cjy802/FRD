@@ -72,6 +72,10 @@ const modelSummary = computed(() => {
 })
 const imageAssessments = computed(() => (job.value?.results?.images ?? [])
   .map(image => ({ image, assessment: assessWaterAlert(image, props.thresholds) })))
+// 复检 job：输入帧均已被第一遍模型检出，这里再检出即双模型确认。
+const isRecheckJob = computed(() => Boolean(job.value?.context?.recheck_of_job_id))
+const recheckConfirmedCount = computed(() => (job.value?.results?.images ?? [])
+  .filter(image => (image.suspected_pixels ?? 0) > 0).length)
 const alertSummary = computed(() => {
   const counts = { elevated: 0, attention: 0 }
   for (const { assessment } of imageAssessments.value) {
@@ -377,7 +381,7 @@ const queueSummaryText = computed(() => {
   if (counts.failed) parts.push(`失败 ${counts.failed}`)
   if (waiting) parts.push(`排队中 ${waiting}`)
   if (job.value?.closed === false) parts.push('仍可追加关键帧')
-  return parts.join(' · ')
+  return `${isRecheckJob.value ? 'GLM 复检 · ' : ''}${parts.join(' · ')}`
 })
 const canCancelJob = computed(() => busy.value && job.value?.state === 'running')
 const canRetryFailed = computed(() => !busy.value && Boolean(job.value && job.value.counts?.failed))
@@ -606,10 +610,11 @@ function onDocumentPointerdown(event: PointerEvent) {
           </div>
           <small>{{ modelSummary }}</small>
         </div>
-        <p :class="['photo-alert-summary', { 'is-elevated': alertSummary.elevated > 0 }]" role="status">
-          {{ alertSummary.elevated || alertSummary.attention
+        <p :class="['photo-alert-summary', { 'is-elevated': !isRecheckJob && alertSummary.elevated > 0 }]" role="status">
+          <template v-if="isRecheckJob">复检完成：双模型确认疑似积水 {{ recheckConfirmedCount }} 帧 · 复检未检出 {{ (job?.results?.images ?? []).length - recheckConfirmedCount }} 帧</template>
+          <template v-else>{{ alertSummary.elevated || alertSummary.attention
             ? `积水警报 ${alertSummary.elevated} 帧 · 注意 ${alertSummary.attention} 帧`
-            : '未触发积水警报' }}（阈值 {{ thresholds.minAlertAreaM2 }} m² · 视场角 {{ thresholds.cameraFovDeg }}°）
+            : '未触发积水警报' }}（阈值 {{ thresholds.minAlertAreaM2 }} m² · 视场角 {{ thresholds.cameraFovDeg }}°）</template>
         </p>
         <ul class="photo-grid">
           <li v-for="{ image, assessment }, index in imageAssessments" :key="image.name">
@@ -618,7 +623,9 @@ function onDocumentPointerdown(event: PointerEvent) {
             </button>
             <div class="photo-meta">
               <strong :title="image.name">{{ image.name }}</strong>
-              <span :class="['photo-alert-badge', `is-${assessment.level}`]">{{ assessment.label }}</span>
+              <span v-if="isRecheckJob && (image.suspected_pixels ?? 0) > 0" class="photo-alert-badge is-recheck">双模型确认</span>
+              <span v-else-if="isRecheckJob" class="photo-alert-badge is-none">复检未检出</span>
+              <span v-else :class="['photo-alert-badge', `is-${assessment.level}`]">{{ assessment.label }}</span>
               <small v-if="assessment.areaText">{{ assessment.areaText }} · 高度 {{ image.altitude_m !== null && image.altitude_m !== undefined ? `${image.altitude_m.toFixed(0)} m` : '未知' }}</small>
               <small>疑似积水 {{ fractionPercent(image.suspected_fraction) }} · {{ image.suspected_patch_count }} 处 · 置信度 {{ fractionPercent(image.mean_confidence_on_suspected) }}</small>
               <small class="photo-alert-reason" :title="assessment.reason">{{ assessment.reason }}</small>
@@ -813,6 +820,7 @@ function onDocumentPointerdown(event: PointerEvent) {
 .photo-alert-summary.is-elevated { background: #fef2f2; color: #a4262c; font-weight: 700; }
 .photo-alert-badge { display: inline-block; margin-top: 3px; padding: 2px 7px; border-radius: 9px; font-size: 10px; font-weight: 700; }
 .photo-alert-badge.is-none { background: #eef2f6; color: #526273; }
+.photo-alert-badge.is-recheck { background: #e7f6ec; color: #16794c; }
 .photo-alert-badge.is-attention { background: #fff7ed; color: #b45309; }
 .photo-alert-badge.is-elevated { background: #fef2f2; color: #a4262c; }
 .photo-alert-reason { overflow-wrap: anywhere; }
