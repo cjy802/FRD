@@ -22,9 +22,10 @@ FLY_NAMESPACE = "http://www.uav.com/wpmz/1.0.2"
 # 设备能力表 waypoint/capability/SPEEDCapability.json：Air 3 航点速度上限 12 m/s。
 # 超限时 DJI Fly 会把整条航线速度重置回默认 2.5 m/s，因此直接拒绝导出。
 FLY_SPEED_LIMIT_M_S = 12.0
-# DJI Fly 导入 coordinateTurn 后会自行改写为该模式（kmzTemp 实测），fly 档位
-# 直接按 Fly 的原生取值导出。
-FLY_TURN_MODE = "toPointAndStopWithContinuityCurvature"
+# DJI Fly 导入解析只认 coordinateTurn / toPointAndStop 两个转弯模式（实测其他
+# 值一律画成放射乱线）；它自身序列化（kmzTemp）虽会写 toPointAndStopWith-
+# ContinuityCurvature，但导入端不接受，导出仍用 coordinateTurn。
+FLY_TURN_MODE = "coordinateTurn"
 DRONE_PROFILES = {
     "m30": {"namespace": PILOT2_NAMESPACE, "author": "Low Altitude Flight Decision Workbench", "enum": 67, "sub_enum": 0, "payload": 52, "fly": False},
     "m3e": {"namespace": PILOT2_NAMESPACE, "author": "Low Altitude Flight Decision Workbench", "enum": 77, "sub_enum": 0, "payload": 66, "fly": False},

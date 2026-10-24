@@ -55,7 +55,7 @@ class DjiKmzTests(unittest.TestCase):
         self.assertNotIn("<Placemark>", template)
         self.assertIn("<wpml:droneEnumValue>68</wpml:droneEnumValue>", waylines)
         self.assertIn("<wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>", waylines)
-        self.assertIn("<wpml:waypointTurnMode>toPointAndStopWithContinuityCurvature</wpml:waypointTurnMode>", waylines)
+        self.assertIn("<wpml:waypointTurnMode>coordinateTurn</wpml:waypointTurnMode>", waylines)
         self.assertIn("<wpml:waypointGimbalPitchAngle>-90</wpml:waypointGimbalPitchAngle>", waylines)
         self.assertNotIn("payloadInfo", template)
         self.assertNotIn("takeOffSecurityHeight", waylines)
