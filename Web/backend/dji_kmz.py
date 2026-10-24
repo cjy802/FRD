@@ -15,9 +15,16 @@ from typing import Literal
 
 
 PILOT2_NAMESPACE = "http://www.dji.com/wpmz/1.0.2"
-# DJI 官方 WPML 规范的命名空间是 dji.com/wpmz；新版 DJI Fly 自身也写出过
-# uav.com 变体，但按官方文档生成兼容性最好。
-FLY_NAMESPACE = PILOT2_NAMESPACE
+# DJI 官方 WPML 规范的命名空间是 dji.com/wpmz；但 RC 2 上 DJI Fly 自身的存档
+# （含崩溃时转存的 kmzTemp 副本）使用 uav.com/wpmz，且 template.kml 只保留
+# missionConfig、航点几何全部写在 waylines.wpml。fly 档位按原生格式导出。
+FLY_NAMESPACE = "http://www.uav.com/wpmz/1.0.2"
+# 设备能力表 waypoint/capability/SPEEDCapability.json：Air 3 航点速度上限 12 m/s。
+# 超限时 DJI Fly 会把整条航线速度重置回默认 2.5 m/s，因此直接拒绝导出。
+FLY_SPEED_LIMIT_M_S = 12.0
+# DJI Fly 导入 coordinateTurn 后会自行改写为该模式（kmzTemp 实测），fly 档位
+# 直接按 Fly 的原生取值导出。
+FLY_TURN_MODE = "toPointAndStopWithContinuityCurvature"
 DRONE_PROFILES = {
     "m30": {"namespace": PILOT2_NAMESPACE, "author": "Low Altitude Flight Decision Workbench", "enum": 67, "sub_enum": 0, "payload": 52, "fly": False},
     "m3e": {"namespace": PILOT2_NAMESPACE, "author": "Low Altitude Flight Decision Workbench", "enum": 77, "sub_enum": 0, "payload": 66, "fly": False},
@@ -152,6 +159,7 @@ def _simplify_coordinates(coordinates: list[tuple[float, float]]) -> list[tuple[
 
 
 def _mission_config(speed_m_s: float, rth_height_m: float, drone: dict[str, object]) -> str:
+    native = bool(drone["fly"])
     payload = ""
     if drone["payload"] is not None:
         payload = f"""  <wpml:payloadInfo>
@@ -159,14 +167,17 @@ def _mission_config(speed_m_s: float, rth_height_m: float, drone: dict[str, obje
     <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
   </wpml:payloadInfo>
 """
+    # Fly 原生存档的 missionConfig 不带这两个字段；行业档位按规范保留。
+    extras = "" if native else (
+        f"  <wpml:takeOffSecurityHeight>20</wpml:takeOffSecurityHeight>\n"
+        f"  <wpml:globalRTHHeight>{_number(rth_height_m)}</wpml:globalRTHHeight>\n"
+    )
     return f"""<wpml:missionConfig>
   <wpml:flyToWaylineMode>safely</wpml:flyToWaylineMode>
   <wpml:finishAction>goHome</wpml:finishAction>
   <wpml:exitOnRCLost>executeLostAction</wpml:exitOnRCLost>
   <wpml:executeRCLostAction>hover</wpml:executeRCLostAction>
-  <wpml:takeOffSecurityHeight>20</wpml:takeOffSecurityHeight>
-  <wpml:globalTransitionalSpeed>{_number(speed_m_s)}</wpml:globalTransitionalSpeed>
-  <wpml:globalRTHHeight>{_number(rth_height_m)}</wpml:globalRTHHeight>
+{extras}  <wpml:globalTransitionalSpeed>{_number(speed_m_s)}</wpml:globalTransitionalSpeed>
   <wpml:droneInfo>
     <wpml:droneEnumValue>{drone['enum']}</wpml:droneEnumValue>
     <wpml:droneSubEnumValue>{drone['sub_enum']}</wpml:droneSubEnumValue>
@@ -177,7 +188,7 @@ def _mission_config(speed_m_s: float, rth_height_m: float, drone: dict[str, obje
 HEADING_MODES = {"followWayline", "manually", "fixed", "smoothTransition", "towardPOI"}
 
 
-def _heading_param(setting: dict[str, object] | None = None) -> str:
+def _heading_param(setting: dict[str, object] | None = None, native: bool = False) -> str:
     setting = setting or {}
     mode = str(setting.get("heading_mode", "followWayline"))
     angle = float(setting.get("heading_angle", 0))
@@ -196,6 +207,16 @@ def _heading_param(setting: dict[str, object] | None = None) -> str:
         poi_text = "0.000000,0.000000,0.000000"
     if mode != "towardPOI":
         poi_text = "0.000000,0.000000,0.000000"
+    if native:
+        # Fly 原生格式多两个字段（kmzTemp 实测顺序）。
+        return """  <wpml:waypointHeadingParam>
+    <wpml:waypointHeadingMode>{mode}</wpml:waypointHeadingMode>
+    <wpml:waypointHeadingAngle>{angle}</wpml:waypointHeadingAngle>
+    <wpml:waypointPoiPoint>{poi_text}</wpml:waypointPoiPoint>
+    <wpml:waypointHeadingAngleEnable>1</wpml:waypointHeadingAngleEnable>
+    <wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>
+    <wpml:waypointHeadingPoiIndex>0</wpml:waypointHeadingPoiIndex>
+  </wpml:waypointHeadingParam>""".format(mode=mode, angle=_number(angle), poi_text=poi_text)
     return """  <wpml:waypointHeadingParam>
     <wpml:waypointHeadingMode>{mode}</wpml:waypointHeadingMode>
     <wpml:waypointHeadingAngle>{angle}</wpml:waypointHeadingAngle>
@@ -217,15 +238,23 @@ def _turn_damping_distances(coordinates: list[tuple[float, float]]) -> list[floa
     return dampings
 
 
-def _record_action_group(group_id: int, waypoint_index: int, func: str) -> str:
-    params = ["      <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>"]
-    if func == "startRecord":
-        params.append("      <wpml:fileSuffix>route</wpml:fileSuffix>")
+def _record_action_group(group_id: int, waypoint_index: int, func: str, native: bool = False) -> str:
+    if native:
+        # Fly 原生格式：parallel 模式，startRecord 带 useGlobalPayloadLensIndex、无 fileSuffix。
+        params = ["      <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>"]
+        if func == "startRecord":
+            params.append("      <wpml:useGlobalPayloadLensIndex>0</wpml:useGlobalPayloadLensIndex>")
+        mode = "parallel"
+    else:
+        params = ["      <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>"]
+        if func == "startRecord":
+            params.append("      <wpml:fileSuffix>route</wpml:fileSuffix>")
+        mode = "sequence"
     return f"""  <wpml:actionGroup>
     <wpml:actionGroupId>{group_id}</wpml:actionGroupId>
     <wpml:actionGroupStartIndex>{waypoint_index}</wpml:actionGroupStartIndex>
     <wpml:actionGroupEndIndex>{waypoint_index}</wpml:actionGroupEndIndex>
-    <wpml:actionGroupMode>sequence</wpml:actionGroupMode>
+    <wpml:actionGroupMode>{mode}</wpml:actionGroupMode>
     <wpml:actionTrigger>
       <wpml:actionTriggerType>reachPoint</wpml:actionTriggerType>
     </wpml:actionTrigger>
@@ -239,12 +268,12 @@ def _record_action_group(group_id: int, waypoint_index: int, func: str) -> str:
   </wpml:actionGroup>"""
 
 
-def _record_actions(index: int, count: int) -> str:
+def _record_actions(index: int, count: int, native: bool = False) -> str:
     """auto_record 开启时：首航点到点开始录像，末航点到点停止录像。"""
     if index == 0:
-        return _record_action_group(0, index, "startRecord")
+        return _record_action_group(0, index, "startRecord", native)
     if index == count - 1:
-        return _record_action_group(1, index, "stopRecord")
+        return _record_action_group(1, index, "stopRecord", native)
     return ""
 
 
@@ -274,29 +303,56 @@ def _template_waypoint(index: int, longitude: float, latitude: float, altitude_m
 </Placemark>"""
 
 
-def _wayline_waypoint(index: int, longitude: float, latitude: float, altitude_m: float, speed_m_s: float, setting: dict[str, object] | None = None, action_group: str = "") -> str:
+def _wayline_waypoint(index: int, longitude: float, latitude: float, altitude_m: float, speed_m_s: float, setting: dict[str, object] | None = None, action_group: str = "", native: bool = False) -> str:
     setting = setting or {}
     raw_altitude = setting.get("altitude_m")
     point_altitude = altitude_m if raw_altitude is None else float(raw_altitude)
     gimbal_pitch = float(setting.get("gimbal_pitch_angle", DEFAULT_GIMBAL_PITCH_ANGLE))
+    damping = _number(float(setting.get("turn_damping_dist", TURN_DAMPING_MAX_M)))
+    turn_mode = FLY_TURN_MODE if native else WAYPOINT_TURN_MODE
+    if native:
+        # Fly 原生：云台俯仰在 waypointGimbalHeadingParam 里，不吃规范的 gimbalPitchAngle。
+        gimbal = f"""  <wpml:waypointGimbalHeadingParam>
+    <wpml:waypointGimbalPitchAngle>{_number(gimbal_pitch)}</wpml:waypointGimbalPitchAngle>
+    <wpml:waypointGimbalYawAngle>0</wpml:waypointGimbalYawAngle>
+  </wpml:waypointGimbalHeadingParam>"""
+    else:
+        gimbal = f"  <wpml:gimbalPitchAngle>{_number(gimbal_pitch)}</wpml:gimbalPitchAngle>"
     body = f"""<Placemark>
   <Point><coordinates>{_number(longitude, 7)},{_number(latitude, 7)}</coordinates></Point>
   <wpml:index>{index}</wpml:index>
   <wpml:executeHeight>{_number(point_altitude)}</wpml:executeHeight>
   <wpml:waypointSpeed>{_number(speed_m_s)}</wpml:waypointSpeed>
-{_heading_param(setting)}
+{_heading_param(setting, native)}
   <wpml:waypointTurnParam>
-    <wpml:waypointTurnMode>{WAYPOINT_TURN_MODE}</wpml:waypointTurnMode>
-    <wpml:waypointTurnDampingDist>{_number(float(setting.get("turn_damping_dist", TURN_DAMPING_MAX_M)))}</wpml:waypointTurnDampingDist>
-  </wpml:waypointTurnParam>
-  <wpml:gimbalPitchAngle>{_number(gimbal_pitch)}</wpml:gimbalPitchAngle>
-  <wpml:useStraightLine>1</wpml:useStraightLine>"""
+    <wpml:waypointTurnMode>{turn_mode}</wpml:waypointTurnMode>
+    <wpml:waypointTurnDampingDist>{damping}</wpml:waypointTurnDampingDist>
+  </wpml:waypointTurnParam>"""
+    if native:
+        # kmzTemp 实测顺序：useStraightLine → actionGroup → 云台参数在最末。
+        body = f"{body}\n  <wpml:useStraightLine>1</wpml:useStraightLine>"
+        if action_group:
+            body = f"{body}\n{action_group}"
+        return f"{body}\n{gimbal}\n</Placemark>"
+    body = f"{body}\n{gimbal}\n  <wpml:useStraightLine>1</wpml:useStraightLine>"
     if action_group:
         body = f"{body}\n{action_group}"
     return f"{body}\n</Placemark>"
 
-
 def _template_kml(coordinates: list[tuple[float, float]], altitude_m: float, speed_m_s: float, rth_height_m: float, timestamp_ms: int, drone: dict[str, object], waypoint_settings: list[dict[str, object]] | None = None, auto_record: bool = False) -> str:
+    mission = _mission_config(speed_m_s, rth_height_m, drone)
+    if drone["fly"]:
+        # Fly 原生存档的 template.kml 只有 missionConfig，航点几何全在 waylines.wpml。
+        return f"""<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="{drone['namespace']}">
+  <Document>
+    <wpml:author>{drone['author']}</wpml:author>
+    <wpml:createTime>{timestamp_ms}</wpml:createTime>
+    <wpml:updateTime>{timestamp_ms}</wpml:updateTime>
+    {mission}
+  </Document>
+</kml>
+"""
     waypoint_settings = waypoint_settings or [{} for _ in coordinates]
     placemarks = "\n".join(
         _template_waypoint(i, lon, lat, altitude_m, speed_m_s, waypoint_settings[i], _record_actions(i, len(coordinates)) if auto_record else "")
@@ -333,11 +389,18 @@ def _template_kml(coordinates: list[tuple[float, float]], altitude_m: float, spe
 
 
 def _waylines_wpml(coordinates: list[tuple[float, float]], altitude_m: float, speed_m_s: float, rth_height_m: float, drone: dict[str, object], waypoint_settings: list[dict[str, object]] | None = None, auto_record: bool = False) -> str:
+    native = bool(drone["fly"])
     waypoint_settings = waypoint_settings or [{} for _ in coordinates]
     placemarks = "\n".join(
-        _wayline_waypoint(i, lon, lat, altitude_m, speed_m_s, waypoint_settings[i], _record_actions(i, len(coordinates)) if auto_record else "")
+        _wayline_waypoint(i, lon, lat, altitude_m, speed_m_s, waypoint_settings[i], _record_actions(i, len(coordinates), native) if auto_record else "", native)
         for i, (lon, lat) in enumerate(coordinates)
     )
+    extras = ""
+    if native:
+        # Fly 原生 Folder 头带航线总距与时长（kmzTemp 顺序：waylineId → distance → duration）。
+        total_m = sum(_distance_m(coordinates[index], coordinates[index + 1]) for index in range(len(coordinates) - 1))
+        duration_s = total_m / speed_m_s if speed_m_s > 0 else 0
+        extras = f"      <wpml:distance>{_number(total_m, 1)}</wpml:distance>\n      <wpml:duration>{_number(duration_s, 1)}</wpml:duration>\n"
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="{drone['namespace']}">
   <Document>
@@ -346,7 +409,7 @@ def _waylines_wpml(coordinates: list[tuple[float, float]], altitude_m: float, sp
       <wpml:templateId>0</wpml:templateId>
       <wpml:executeHeightMode>relativeToStartPoint</wpml:executeHeightMode>
       <wpml:waylineId>0</wpml:waylineId>
-      <wpml:autoFlightSpeed>{_number(speed_m_s)}</wpml:autoFlightSpeed>
+{extras}      <wpml:autoFlightSpeed>{_number(speed_m_s)}</wpml:autoFlightSpeed>
       {placemarks}
     </Folder>
   </Document>
@@ -446,6 +509,8 @@ def build_dji_kmz(coordinates, altitude_m: float, speed_kmh: float, drone_model:
         raise KmzExportError("DJI WPML 草稿速度须在 3.6–54 km/h（1–15 m/s）。")
     if drone_model not in DRONE_PROFILES:
         raise KmzExportError("暂不支持该 DJI 机型模板。")
+    if drone_model == "fly" and speed_kmh / 3.6 > FLY_SPEED_LIMIT_M_S + 1e-9:
+        raise KmzExportError("DJI Fly 机型航点速度上限 43.2 km/h（12 m/s 设备能力）；超限会被 Fly 整线重置回默认速度，请调低巡航速度后导出。")
     settings = _normalise_waypoint_settings(waypoint_settings, len(coordinates))
     cleaned: list[tuple[float, float]] = []
     cleaned_settings: list[dict[str, object]] = []
