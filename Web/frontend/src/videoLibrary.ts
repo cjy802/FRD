@@ -100,7 +100,7 @@ export async function countSrtTelemetry(file: File): Promise<number> {
   return count
 }
 
-// Capture a poster frame near the clip start for the library grid.
+// Capture the first decoded frame for the library grid.
 // DJI 主片可能是 HEVC，部分浏览器解不了；LRF 代理始终是 H.264，优先用它出封面。
 export async function makeGroupThumbnail(group: Pick<VideoLibraryGroup, 'video' | 'lrf'>): Promise<string | null> {
   if (group.lrf) {
@@ -115,6 +115,7 @@ export function makeVideoThumbnail(file: File): Promise<string | null> {
     const url = URL.createObjectURL(file)
     const video = document.createElement('video')
     let settled = false
+    let captured = false
     const finish = (value: string | null) => {
       if (settled) return
       settled = true
@@ -124,17 +125,13 @@ export function makeVideoThumbnail(file: File): Promise<string | null> {
       window.clearTimeout(timer)
       resolve(value)
     }
-    const timer = window.setTimeout(() => finish(null), 8000)
-    video.muted = true
-    video.preload = 'metadata'
-    video.addEventListener('loadedmetadata', () => {
-      const duration = Number.isFinite(video.duration) ? video.duration : 1
-      video.currentTime = Math.min(0.1, duration * 0.1)
-    })
-    video.addEventListener('seeked', () => {
+    const captureFirstFrame = () => {
+      if (settled || captured || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA
+        || !video.videoWidth || !video.videoHeight) return
+      captured = true
       try {
         const width = 320
-        const height = Math.max(1, Math.round(width * (video.videoHeight || 180) / (video.videoWidth || 320)))
+        const height = Math.max(1, Math.round(width * video.videoHeight / video.videoWidth))
         const canvas = document.createElement('canvas')
         canvas.width = width
         canvas.height = height
@@ -145,9 +142,32 @@ export function makeVideoThumbnail(file: File): Promise<string | null> {
       } catch {
         finish(null)
       }
+    }
+    const scheduleCapture = () => {
+      // loadeddata/canplay can fire before the decoded frame is paintable.
+      // A short retry also covers browsers that do not emit seeked for time 0.
+      window.setTimeout(captureFirstFrame, 50)
+    }
+    const timer = window.setTimeout(() => finish(null), 15000)
+    video.muted = true
+    video.playsInline = true
+    video.preload = 'auto'
+    video.addEventListener('loadedmetadata', () => {
+      try {
+        // Keep the poster on the actual first frame rather than an arbitrary
+        // 0.1s seek, which can skip a short DJI clip's opening image.
+        video.currentTime = 0
+        scheduleCapture()
+      } catch {
+        finish(null)
+      }
     })
+    video.addEventListener('loadeddata', scheduleCapture)
+    video.addEventListener('canplay', scheduleCapture)
+    video.addEventListener('seeked', scheduleCapture)
     video.addEventListener('error', () => finish(null))
     video.src = url
+    video.load()
   })
 }
 
