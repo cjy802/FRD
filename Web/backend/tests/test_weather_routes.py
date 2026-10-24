@@ -9,6 +9,7 @@ from main import app, road_candidates_cached
 from road_planner import CampusRoadNetwork, METRES_PER_DEGREE_LAT, METRES_PER_DEGREE_LON, RouteUnavailable
 from route_candidates import local_road_candidates
 from weather_routes import compare_road_weather
+from auth_test_support import login_admin
 
 
 class WeatherRouteTests(unittest.TestCase):
@@ -75,6 +76,7 @@ class WeatherRouteTests(unittest.TestCase):
                    'end': {'latitude': 31.6804, 'longitude': 119.9495}, 'departure_time_utc': '2026-10-08T03:00:00Z'}
         with patch('main.forecast_jobs', manager), patch('main.road_candidates_cached', return_value=routes) as planner:
             client = TestClient(app)
+            login_admin(client)
             response = client.post('/api/routes/compare-weather', json=payload)
             self.assertEqual(response.status_code, 200)
             self.assertIn('distance_km', response.json()['candidates'][0]['route'])

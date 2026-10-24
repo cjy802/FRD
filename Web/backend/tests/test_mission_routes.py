@@ -8,11 +8,13 @@ from main import MissionRouteRequest, app
 from mission_routes import MAX_MISSION_ANCHORS, MAX_MISSION_VERTICES
 from online_router import OnlineServiceUnavailable
 from road_planner import RouteUnavailable
+from auth_test_support import login_admin
 
 
 class MissionRouteTests(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
+        login_admin(self.client)
         self.anchors = [
             {"id": "A", "latitude": 31.6792, "longitude": 119.9515},
             {"id": "B", "latitude": 31.6804, "longitude": 119.9495},

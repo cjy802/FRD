@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from main import app
 from weather_service import WeatherUnavailable
 from weather_windows import compare_departures
+from auth_test_support import login_admin
 
 
 class WindowTests(unittest.TestCase):
@@ -62,6 +63,7 @@ class WindowTests(unittest.TestCase):
         payload = {'coordinates': self.coords, 'departure_time_utc': '2026-10-08T03:00:00Z'}
         with patch('main.forecast_jobs', manager):
             client = TestClient(app)
+            login_admin(client)
             self.assertEqual(client.post('/api/weather/predictions/test/windows', json=payload).status_code, 200)
             manager.windows.side_effect = KeyError('test')
             self.assertEqual(client.post('/api/weather/predictions/test/windows', json=payload).status_code, 404)

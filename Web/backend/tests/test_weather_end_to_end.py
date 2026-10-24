@@ -12,6 +12,7 @@ from test_height_weather import height_payload
 from test_live_weather import METADATA, NOW, RAW, model, wait_for_job
 from test_route_weather import temporal_payload
 from weather_service import WeatherUnavailable
+from auth_test_support import login_admin
 
 
 class EndToEndWeatherTests(unittest.TestCase):
@@ -31,6 +32,7 @@ class EndToEndWeatherTests(unittest.TestCase):
         payload = {'coordinates': [[119.51, 31.51], [119.6, 31.6]], 'departure_time_utc': '2026-10-08T03:00:00Z', 'altitude_m': 100, 'speed_kmh': 45}
         with patch('main.forecast_jobs', manager), patch.object(manager, 'worker', wraps=manager.worker) as worker:
             client = TestClient(app)
+            login_admin(client)
             assessment = client.post(f"/api/weather/predictions/{result['job_id']}/route", json=payload).json()
             windows = client.post(f"/api/weather/predictions/{result['job_id']}/windows", json=payload).json()
             self.assertTrue(assessment['weather_risk']['coverage_complete'])
@@ -64,6 +66,7 @@ class EndToEndWeatherTests(unittest.TestCase):
         payload = {'coordinates': [[119.51, 31.51], [119.6, 31.6]], 'departure_time_utc': '2026-10-08T03:00:00Z', 'altitude_m': 100}
         with patch('main.forecast_jobs', manager):
             client = TestClient(app)
+            login_admin(client)
             path = f"/api/weather/predictions/{result['job_id']}/route"
             self.assertEqual(client.post(path, json={**payload, 'departure_time_utc': '2026-10-08T00:00:00Z'}).status_code, 422)
             unsupported = client.post(path, json={**payload, 'altitude_m': 120}).json()
@@ -87,7 +90,9 @@ class EndToEndWeatherTests(unittest.TestCase):
                         'end': {'latitude': 31.6804, 'longitude': 119.9495}, 'road_source': 'online',
                         'departure_time_utc': '2026-10-08T03:00:00Z'}
         with patch('main.forecast_jobs', manager), patch('online_router.requests.get', side_effect=Timeout), patch('main.local_road_store') as local:
-            self.assertEqual(TestClient(app).post('/api/routes/compare-weather', json=request_body).status_code, 503)
+            client = TestClient(app)
+            login_admin(client)
+            self.assertEqual(client.post('/api/routes/compare-weather', json=request_body).status_code, 503)
             local.assert_not_called()
         road_candidates_cached.cache_clear(); _fetch_route.cache_clear()
 

@@ -10,6 +10,7 @@ from regional_weather import RegionalWeather
 from route_weather import align_route, route_positions, segment_distance
 from weather_service import WeatherUnavailable
 from test_live_weather import METADATA, NOW, RAW, model
+from auth_test_support import login_admin
 
 
 def temporal_payload():
@@ -99,6 +100,7 @@ class RouteWeatherTests(unittest.TestCase):
         payload = {'coordinates': [[119.51, 31.51], [119.6, 31.6]], 'departure_time_utc': '2026-10-08T03:00:00Z', 'speed_kmh': 45, 'altitude_m': 100}
         with patch('main.forecast_jobs', manager):
             client = TestClient(app)
+            login_admin(client)
             self.assertEqual(client.post('/api/weather/predictions/test/route', json=payload).status_code, 200)
             self.assertEqual(manager.route.call_args.args[0], 'test')
             self.assertEqual(client.post('/api/weather/predictions/test/route', json={**payload, 'speed_kmh': 0}).status_code, 422)

@@ -9,6 +9,7 @@ from live_weather import ForecastJobs
 from test_live_weather import METADATA, NOW, RAW, model, wait_for_job
 from test_route_weather import temporal_payload
 from weather_service import WeatherUnavailable
+from auth_test_support import login_admin
 
 
 class GroundSeriesTests(unittest.TestCase):
@@ -43,6 +44,7 @@ class GroundSeriesTests(unittest.TestCase):
         with self.assertRaises(WeatherUnavailable): manager.series(job['job_id'], 31.625, 119.625, 7)
         with self.assertRaises(WeatherUnavailable): manager.series(job['job_id'], 20, 119.625, 1)
         client = TestClient(app)
+        login_admin(client)
         with patch('main.forecast_jobs.series', return_value={'samples': []}) as series:
             response = client.get('/api/weather/predictions/test/series?latitude=31.5&longitude=119.5&hours=6')
             self.assertEqual(response.status_code, 200)

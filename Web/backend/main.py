@@ -18,11 +18,12 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse, Response, StreamingResponse
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile, status
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+import auth
 from online_router import OnlineServiceUnavailable, plan_online_route, plan_online_alternatives
 from road_planner import CampusRoadNetwork, LOCAL_INDEX_FILE, LocalRoadStore, ROAD_KINDS, RouteUnavailable
 from weather_service import weather_store
@@ -44,13 +45,78 @@ from adaptive_video import AdaptiveVideoError, select_frames as select_adaptive_
 
 
 app = FastAPI(title="低空飞行决策工作台", version="0.1.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-    allow_headers=["*"],
-    expose_headers=["X-Kmz-Merges"],
-)
+
+# 登录会话门禁：同源部署（8011 托管前端或 5173 代理），不再提供 CORS 跨域许可；
+# 浏览器跨域请求拿不到响应头，本机回环与 Origin 校验由 require_local_request
+# 在各端点内继续执行。
+_PUBLIC_API_PATHS = {"/api/health"}
+_AUTH_API_PREFIX = "/api/auth/"
+
+
+def _field_readable(path: str, method: str) -> bool:
+    """现场端（使用者角色）只读白名单：任务读取与照片分析结果/文件。"""
+    if method != "GET":
+        return False
+    parts = [segment for segment in path.split("/") if segment]
+    # /api/tasks 与 /api/tasks/{task_id}
+    if len(parts) == 2 and parts[1] == "tasks":
+        return True
+    if len(parts) == 3 and parts[1] == "tasks":
+        return True
+    # /api/photo-analysis/jobs/{job_id} 与 .../files/{file_name}
+    if len(parts) in (4, 5) and parts[1] == "photo-analysis" and parts[2] == "jobs":
+        return True
+    return False
+
+
+@app.middleware("http")
+async def guard_api(request: Request, call_next):
+    path = request.url.path
+    if not path.startswith("/api/") or path in _PUBLIC_API_PATHS or path.startswith(_AUTH_API_PREFIX):
+        return await call_next(request)
+    session = auth.session_from_cookie(request.cookies.get(auth.SESSION_COOKIE))
+    if session is None:
+        return JSONResponse({"detail": "请先登录。"}, status_code=401)
+    if session["role"] != "admin" and not _field_readable(path, request.method):
+        return JSONResponse({"detail": "该操作需要管理员账号。"}, status_code=403)
+    return await call_next(request)
+
+
+class LoginBody(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=128)
+
+
+@app.post("/api/auth/login")
+def login(body: LoginBody, response: Response) -> dict:
+    role = auth.verify_credentials(body.username, body.password)
+    if role is None:
+        # 认证失败稍作延迟，拖慢在线爆破。
+        time.sleep(0.4)
+        raise HTTPException(status_code=401, detail="用户名或密码不正确。")
+    response.set_cookie(
+        auth.SESSION_COOKIE,
+        auth.issue_token(body.username, role),
+        max_age=auth.SESSION_MAX_AGE_SECONDS,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+    return {"username": body.username, "role": role}
+
+
+@app.post("/api/auth/logout")
+def logout(response: Response) -> dict:
+    response.delete_cookie(auth.SESSION_COOKIE, path="/")
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+def whoami(request: Request) -> dict:
+    session = auth.session_from_cookie(request.cookies.get(auth.SESSION_COOKIE))
+    if session is None:
+        raise HTTPException(status_code=401, detail="请先登录。")
+    return {"username": session["username"], "role": session["role"]}
 
 
 def _resolve_task_frame(task_id: str, frame_id: str) -> dict:
@@ -1128,3 +1194,23 @@ def compare_weather_routes(request: WeatherRouteComparisonRequest):
         raise HTTPException(status_code=503, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+# ---- 同源前端托管（生产形态）----
+# vite build 产出 frontend/dist 后，浏览器直接访问 http://127.0.0.1:8011/ 即
+# 主控工作台、/field 为现场处理端、/login 为登录页；单源访问，没有跨域。
+# dist 不存在（纯开发态走 vite 5173 代理）时跳过挂载。
+
+_FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
+if (_FRONTEND_DIST / "index.html").is_file():
+    app.mount("/assets", StaticFiles(directory=_FRONTEND_DIST / "assets"), name="frontend-assets")
+
+    @app.get("/{spa_path:path}", include_in_schema=False)
+    def serve_spa(spa_path: str):
+        if spa_path.startswith("api/") or spa_path == "api":
+            raise HTTPException(status_code=404, detail="Not found")
+        candidate = (_FRONTEND_DIST / spa_path).resolve()
+        if spa_path and candidate.is_file() and _FRONTEND_DIST.resolve() in candidate.parents:
+            return FileResponse(candidate)
+        return FileResponse(_FRONTEND_DIST / "index.html")

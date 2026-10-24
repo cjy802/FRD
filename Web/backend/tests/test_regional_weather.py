@@ -10,6 +10,7 @@ from regional_weather import RegionalWeather
 from weather_service import WeatherUnavailable
 from test_live_weather import METADATA, NOW, RAW, model, wait_for_job
 from live_weather import ForecastJobs
+from auth_test_support import login_admin
 
 
 def region_payload():
@@ -57,6 +58,7 @@ class RegionalWeatherTests(unittest.TestCase):
 
     def test_sample_api_status_codes(self):
         client = TestClient(app)
+        login_admin(client)
         with patch('main.forecast_jobs.sample', return_value={'point': {'latitude_deg': 31.5}}) as sample:
             response = client.get('/api/weather/predictions/test/sample?latitude=31.5&longitude=119.5')
             self.assertEqual(response.status_code, 200)

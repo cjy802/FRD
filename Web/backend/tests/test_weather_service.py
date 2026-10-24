@@ -13,6 +13,7 @@ from weather_service import (
     DEFAULT_MODEL, DEFAULT_PAIRS, FEATURE_NAMES, FIELDS, TARGET_NAMES,
     PROJECT_ROOT, PointWeatherStore, WeatherUnavailable, point_risk,
 )
+from auth_test_support import login_admin
 
 VALIDATED_MODEL = PROJECT_ROOT / "Web/mode/output_year_transfer_2026/corrector_ridge.npz"
 
@@ -115,6 +116,7 @@ class WeatherServiceTests(unittest.TestCase):
         store = self.store()
         with patch("main.weather_store", return_value=store):
             client = TestClient(app)
+            login_admin(client)
             status = client.get("/api/weather/status").json()
             forecast = client.get("/api/weather/forecast").json()
             risk = client.get("/api/weather/risk").json()

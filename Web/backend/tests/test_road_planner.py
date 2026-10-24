@@ -12,11 +12,13 @@ from road_planner import (
     LOCAL_INDEX_FILE, MAX_SNAP_M, METRES_PER_DEGREE_LAT,
     METRES_PER_DEGREE_LON, CampusRoadNetwork, to_lon_lat, to_xy,
 )
+from auth_test_support import login_admin
 
 
 class CampusRouteTests(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
+        login_admin(self.client)
         self.request = {
             "start": {"latitude": 31.67920, "longitude": 119.95150},
             "end": {"latitude": 31.68040, "longitude": 119.94950},

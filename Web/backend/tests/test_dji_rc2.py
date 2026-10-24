@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 import dji_rc2
 import main
 from dji_kmz import build_dji_kmz
+from auth_test_support import login_admin
 
 
 class Rc2BridgeTests(unittest.TestCase):
@@ -200,6 +201,7 @@ class Rc2BridgeTests(unittest.TestCase):
 
     def test_local_http_guard_and_import_api(self):
         client = TestClient(main.app, base_url="http://127.0.0.1:5173", client=("127.0.0.1", 50000))
+        login_admin(client)
         self.assertEqual(client.get("/api/dji/rc2/status", headers={"Host": "evil.example"}).status_code, 403)
         self.assertEqual(client.get("/api/dji/rc2/status", headers={"Sec-Fetch-Site": "cross-site"}).status_code, 403)
         self.assertEqual(client.get("/api/dji/rc2/status", headers={"Referer": "http://evil.example/"}).status_code, 403)

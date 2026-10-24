@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from main import app
 from place_search import PlaceSearchError, reverse_geocode, search_nearby_places, search_places
+from auth_test_support import login_admin
 
 
 def response(payload):
@@ -51,7 +52,9 @@ class PlaceSearchTests(unittest.TestCase):
 
     def test_disabled_service_is_503_without_exposing_upstream_message_or_key(self):
         with patch('place_search.requests.get', return_value=response({'status': 240, 'message': 'test-server-key'})) as get:
-            result = TestClient(app).get('/api/places/search', params={'query': '测试学校'})
+            client = TestClient(app)
+            login_admin(client)
+            result = client.get('/api/places/search', params={'query': '测试学校'})
         self.assertEqual(result.status_code, 503)
         self.assertIn('240', result.json()['detail'])
         self.assertNotIn('test-server-key', result.text)
@@ -60,19 +63,24 @@ class PlaceSearchTests(unittest.TestCase):
     def test_quota_and_timeout_have_distinct_errors(self):
         for failure, status in ((response({'status': 302}), 429), (requests.Timeout('secret request URL'), 504)):
             with self.subTest(status=status), patch('place_search.requests.get', **({'side_effect': failure} if isinstance(failure, Exception) else {'return_value': failure})):
-                result = TestClient(app).get('/api/places/search', params={'query': '测试学校'})
+                client = TestClient(app)
+                login_admin(client)
+                result = client.get('/api/places/search', params={'query': '测试学校'})
                 self.assertEqual(result.status_code, status)
                 self.assertNotIn('secret request URL', result.text)
 
     def test_missing_key_does_not_make_request(self):
         self.key_patch.stop()
         with patch.dict('os.environ', {'BAIDU_WEB_SERVICE_AK': ''}), patch('place_search.dotenv_values', return_value={}), patch('place_search.requests.get') as get:
-            result = TestClient(app).get('/api/places/search', params={'query': '测试学校'})
+            client = TestClient(app)
+            login_admin(client)
+            result = client.get('/api/places/search', params={'query': '测试学校'})
         self.assertEqual(result.status_code, 503)
         get.assert_not_called()
 
     def test_invalid_input_and_malformed_response(self):
         client = TestClient(app)
+        login_admin(client)
         for query in ('', '   ', 'a' * 129):
             with self.subTest(query=query), patch('place_search.requests.get') as get:
                 self.assertEqual(client.get('/api/places/search', params={'query': query}).status_code, 422)
@@ -212,6 +220,7 @@ class PlaceSearchTests(unittest.TestCase):
 
     def test_nearby_and_reverse_http_routes(self):
         client = TestClient(app)
+        login_admin(client)
         with patch('place_search.requests.get', side_effect=[
             response({'status': 0, 'results': [{'name': '测试公园', 'location': {'lat': 31.68, 'lng': 119.96}}]}),
             response({'status': 0, 'result': {'formatted_address': '江苏省常州市测试路'}}),

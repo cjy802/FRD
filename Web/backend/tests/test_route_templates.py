@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from main import app
 from route_templates import RouteTemplateStore
+from auth_test_support import login_admin
 
 
 def example_payload():
@@ -62,6 +63,7 @@ class RouteTemplateTests(unittest.TestCase):
         self.store_patch.start()
         self.addCleanup(self.store_patch.stop)
         self.client = TestClient(app)
+        login_admin(self.client)
 
     def _create(self, name="演示航线"):
         return self.client.post("/api/route-templates", json={
@@ -181,12 +183,19 @@ class RouteTemplateTests(unittest.TestCase):
             "name": "Missing", "payload": example_payload(), "expected_version": 1,
         }).status_code, 404)
 
-    def test_cors_allows_template_mutations(self):
-        response = self.client.options("/api/route-templates/test", headers={
+    def test_same_origin_mutations_and_no_cors_grants(self):
+        # CORS 中间件已移除：同源部署（8011 托管前端 / 5173 代理）不颁发跨域许可，
+        # 预检请求不再被特判，改写模板靠登录会话直接请求。
+        body = {"name": "SameOrigin", "payload": example_payload(), "expected_version": 1}
+        created = self.client.post("/api/route-templates", json=body).json()
+        self.assertEqual(self.client.put(f"/api/route-templates/{created['id']}", json={
+            **body, "expected_version": created["version"],
+        }).status_code, 200)
+        response = self.client.options(f"/api/route-templates/{created['id']}", headers={
             "Origin": "http://localhost:5173", "Access-Control-Request-Method": "PUT",
         })
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("PUT", response.headers["access-control-allow-methods"])
+        self.assertEqual(response.status_code, 405)
+        self.assertNotIn("access-control-allow-methods", response.headers)
 
 
 if __name__ == "__main__":

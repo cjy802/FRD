@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from main import app
 from live_weather import ForecastJobs, validate_metadata
 from weather_service import WeatherUnavailable
+from auth_test_support import login_admin
 
 
 NOW = datetime(2026, 10, 8, 1, tzinfo=timezone.utc)
@@ -154,6 +155,7 @@ class LiveWeatherTests(unittest.TestCase):
         manager.get.return_value = manager.start.return_value
         with patch("main.forecast_jobs", manager):
             client = TestClient(app)
+            login_admin(client)
             self.assertEqual(client.post("/api/weather/predict").json()["job_id"], "test")
             self.assertEqual(client.get("/api/weather/predictions/test").json()["status"], "queued")
             manager.get.side_effect = KeyError("unknown")

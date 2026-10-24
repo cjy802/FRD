@@ -17,6 +17,7 @@ import main
 import photo_analysis as photo_analysis_module
 from photo_analysis import ONNX_MODEL_ID, PhotoAnalysisManager
 from task_store import TaskStore
+from auth_test_support import login_admin
 
 TINY_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8QAAwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
@@ -134,6 +135,7 @@ class PhotoAnalysisTests(unittest.TestCase):
         self.patch.start()
         self.addCleanup(self.patch.stop)
         self.client = TestClient(main.app, base_url="http://127.0.0.1:5173", client=("127.0.0.1", 50001))
+        login_admin(self.client)
         self.headers = {"Origin": "http://127.0.0.1:5173"}
 
     def _wait_done(self, job_id, timeout=20):
@@ -221,6 +223,7 @@ class QueuePhotoAnalysisTests(unittest.TestCase):
         self.tasks_patch.start()
         self.addCleanup(self.tasks_patch.stop)
         self.client = TestClient(main.app, base_url="http://127.0.0.1:5173", client=("127.0.0.1", 50001))
+        login_admin(self.client)
         self.headers = {"Origin": "http://127.0.0.1:5173"}
         self.task = self.store.create({"anchors": []}, "2026-10-23T08:00:00+08:00")
 
@@ -553,6 +556,7 @@ class RemoteRecheckManifestTests(unittest.TestCase):
         self.tasks_patch.start()
         self.addCleanup(self.tasks_patch.stop)
         self.client = TestClient(main.app, base_url="http://127.0.0.1:5173", client=("127.0.0.1", 50001))
+        login_admin(self.client)
         self.headers = {"Origin": "http://127.0.0.1:5173"}
         self.task = self.store.create({"anchors": []}, "2026-10-23T08:00:00+08:00")
 
