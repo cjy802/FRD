@@ -374,7 +374,7 @@ def _course_heading(coordinates: list[tuple[float, float]], index: int) -> float
     return ((bearing + 180) % 360) - 180
 
 
-def build_dji_kmz(coordinates, altitude_m: float, speed_kmh: float, drone_model: Literal["fly", "m30", "m3e"] = "fly", waypoint_settings=None) -> bytes:
+def build_dji_kmz(coordinates, altitude_m: float, speed_kmh: float, drone_model: Literal["fly", "m30", "m3e"] = "fly", waypoint_settings=None, *, merge_report: list[tuple[int, int]] | None = None) -> bytes:
     if not isinstance(coordinates, list) or len(coordinates) < 2 or len(coordinates) > 65535:
         raise KmzExportError("DJI 航点草稿至少需要 2 个、最多 65535 个路线点。")
     if not isfinite(altitude_m) or not 0 < altitude_m <= 1500:
@@ -386,7 +386,8 @@ def build_dji_kmz(coordinates, altitude_m: float, speed_kmh: float, drone_model:
     settings = _normalise_waypoint_settings(waypoint_settings, len(coordinates))
     cleaned: list[tuple[float, float]] = []
     cleaned_settings: list[dict[str, object]] = []
-    for point, setting in zip(coordinates, settings):
+    cleaned_origins: list[int] = []
+    for index, (point, setting) in enumerate(zip(coordinates, settings)):
         if not isinstance(point, (list, tuple)) or len(point) < 2:
             raise KmzExportError("路线点坐标格式无效。")
         longitude, latitude = float(point[0]), float(point[1])
@@ -394,15 +395,17 @@ def build_dji_kmz(coordinates, altitude_m: float, speed_kmh: float, drone_model:
             raise KmzExportError("路线包含超出经纬度范围的坐标。")
         point = (longitude, latitude)
         if cleaned and _distance_m(cleaned[-1], point) < 0.5:
-            # 近重复点合并为一个；完全重合、或两端都带自定义设置时是真正的冲突。
+            # 近重复点合并为一个，后点坐标与设置生效；仅前点的自定义设置被丢弃时上报。
             if _has_custom_setting(setting, altitude_m):
-                if (longitude, latitude) == cleaned[-1] or _has_custom_setting(cleaned_settings[-1], altitude_m):
-                    raise KmzExportError("已编辑航点与前一个航点位置重合；请移动或删除重复点后导出。")
+                if _has_custom_setting(cleaned_settings[-1], altitude_m) and merge_report is not None:
+                    merge_report.append((cleaned_origins[-1], index))
                 cleaned[-1] = point
                 cleaned_settings[-1] = setting
+                cleaned_origins[-1] = index
             continue
         cleaned.append(point)
         cleaned_settings.append(setting)
+        cleaned_origins.append(index)
     if len(cleaned) < 2:
         raise KmzExportError("路线去重后不足 2 个航点。")
     protected_indices = _protected_setting_indices(cleaned_settings, altitude_m)

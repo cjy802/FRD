@@ -49,6 +49,7 @@ app.add_middleware(
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["*"],
+    expose_headers=["X-Kmz-Merges"],
 )
 
 
@@ -745,7 +746,8 @@ def plan_area_coverage(route: AreaCoverageRequest):
 def export_dji_kmz(request: KmzExportRequest, task_id: str | None = Query(default=None, min_length=23, max_length=23)):
     try:
         settings = [item.model_dump() for item in request.waypoint_settings] if request.waypoint_settings is not None else None
-        payload = build_dji_kmz(request.coordinates, request.altitude_m, request.speed_kmh, request.drone_model, settings)
+        merge_report: list[tuple[int, int]] = []
+        payload = build_dji_kmz(request.coordinates, request.altitude_m, request.speed_kmh, request.drone_model, settings, merge_report=merge_report)
         if task_id:
             directory = tasks.directory(task_id) / "exports"
             directory.mkdir(parents=True, exist_ok=True)
@@ -759,10 +761,14 @@ def export_dji_kmz(request: KmzExportRequest, task_id: str | None = Query(defaul
         raise HTTPException(status_code=422, detail=str(error)) from error
     except TaskError as error:
         raise HTTPException(status_code=error.http_status, detail=str(error)) from error
+    response_headers = {"Content-Disposition": 'attachment; filename="dji_waypoint_draft.kmz"'}
+    if merge_report:
+        # 0 基原始下标，格式"丢弃点:生效点"；前端据此提示哪些重合航点被合并。
+        response_headers["X-Kmz-Merges"] = ",".join(f"{dropped}:{kept}" for dropped, kept in merge_report)
     return Response(
         content=payload,
         media_type="application/vnd.google-earth.kmz",
-        headers={"Content-Disposition": 'attachment; filename="dji_waypoint_draft.kmz"'},
+        headers=response_headers,
     )
 
 

@@ -175,12 +175,48 @@ class DjiKmzTests(unittest.TestCase):
                 self.assertEqual([heading.findtext("wpml:waypointHeadingAngle", namespaces=namespace) for heading in headings], ["-1", "1"])
                 self.assertTrue(all(heading.findtext("wpml:waypointHeadingPathMode", namespaces=namespace) == "followBadArc" for heading in headings))
 
-    def test_rejects_unexecutable_manual_heading_and_duplicate_edited_point(self):
+    def test_rejects_unexecutable_manual_heading(self):
         points = [[119.95, 31.67], [119.951, 31.67]]
         with self.assertRaisesRegex(KmzExportError, "手动控制"):
             build_dji_kmz(points, 80, 36, "fly", [{}, {"heading_mode": "manually"}])
-        with self.assertRaisesRegex(KmzExportError, "位置重合"):
-            build_dji_kmz([points[0], points[0], points[1]], 80, 36, "fly", [{}, {"export_anchor": True}, {}])
+
+    def test_merges_duplicate_edited_waypoints_with_latter_setting(self):
+        points = [[119.95, 31.67], [119.9500005, 31.67], [119.951, 31.67]]
+        settings = [
+            {"altitude_m": 60, "heading_mode": "fixed", "heading_angle": 45, "gimbal_pitch_angle": -30, "export_anchor": True},
+            {"altitude_m": 100, "heading_mode": "fixed", "heading_angle": 90, "gimbal_pitch_angle": -60, "export_anchor": True},
+            {},
+        ]
+        merge_report: list[tuple[int, int]] = []
+        payload = build_dji_kmz(points, 80, 36, "fly", settings, merge_report=merge_report)
+        self.assertEqual(merge_report, [(0, 1)])
+        namespace = {"wpml": "http://www.dji.com/wpmz/1.0.2", "kml": "http://www.opengis.net/kml/2.2"}
+        with ZipFile(BytesIO(payload)) as archive:
+            for name in ("wpmz/template.kml", "wpmz/waylines.wpml"):
+                with self.subTest(name=name):
+                    document = ElementTree.fromstring(archive.read(name))
+                    placemarks = document.findall(".//kml:Placemark", namespace)
+                    self.assertEqual(len(placemarks), 2)
+                    merged = placemarks[0]
+                    self.assertEqual(merged.findtext("kml:Point/kml:coordinates", namespaces=namespace), "119.9500005,31.67")
+                    self.assertEqual(merged.findtext("wpml:waypointHeadingParam/wpml:waypointHeadingAngle", namespaces=namespace), "90")
+                    self.assertEqual(merged.findtext("wpml:gimbalPitchAngle", namespaces=namespace), "-60")
+                    height_tag = "wpml:executeHeight" if name == "wpmz/waylines.wpml" else "wpml:height"
+                    self.assertEqual(merged.findtext(height_tag, namespaces=namespace), "100")
+
+    def test_merges_coincident_waypoint_silently_when_front_is_unedited(self):
+        points = [[119.95, 31.67], [119.95, 31.67], [119.951, 31.67]]
+        merge_report: list[tuple[int, int]] = []
+        payload = build_dji_kmz(points, 80, 36, "fly", [{}, {"export_anchor": True}, {}], merge_report=merge_report)
+        self.assertEqual(merge_report, [])
+        namespace = {"wpml": "http://www.dji.com/wpmz/1.0.2", "kml": "http://www.opengis.net/kml/2.2"}
+        with ZipFile(BytesIO(payload)) as archive:
+            waylines = ElementTree.fromstring(archive.read("wpmz/waylines.wpml"))
+        placemarks = waylines.findall(".//kml:Placemark", namespace)
+        self.assertEqual(
+            [point.findtext("kml:Point/kml:coordinates", namespaces=namespace) for point in placemarks],
+            ["119.95,31.67", "119.951,31.67"],
+        )
 
     def test_rejects_more_edited_waypoints_than_export_limit(self):
         coordinates = [(119.95 + index * 0.0001, 31.67) for index in range(502)]
