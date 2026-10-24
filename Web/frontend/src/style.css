@@ -75,6 +75,9 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .field-client-entry { display: inline-flex; align-items: center; gap: 6px; padding: 6px 9px; border: 1px solid #c8dcb3; border-radius: 7px; background: #f5fbeb; color: #527517; font-weight: 700; text-decoration: none; }
 .field-client-entry:hover { border-color: #9fbe72; background: #eaf7ce; color: #3f5e0f; }
 .field-client-entry .svg-icon { width: 14px; height: 14px; }
+.session-badge { display: inline-flex; align-items: center; min-height: 30px; padding: 4px 10px; border: 1px solid #dbe8f4; border-radius: 7px; background: #f5f9fd; color: #1769aa; font-size: var(--font-caption); font-weight: 600; white-space: nowrap; }
+.session-logout { min-height: 30px; padding: 4px 10px; border: 1px solid #d7dfe8; border-radius: 7px; background: #fff; color: #526273; font-size: var(--font-caption); white-space: nowrap; }
+.session-logout:hover { border-color: #d5a3a3; color: #a4262c; background: #fff7f7; }
 .prototype-tag { display: inline-flex; align-items: center; gap: 6px; padding-right: 14px; border-right: 1px solid var(--ui-line); color: var(--ui-accent); font-weight: 600; }
 .connection { color: var(--ui-muted); }
 .layout { position: relative; flex: 1; min-height: 0; min-width: 0; overflow: hidden; display: grid; grid-template-columns: 76px var(--sidebar-width, 360px) minmax(420px, 1fr); grid-template-rows: minmax(0, 1fr); }

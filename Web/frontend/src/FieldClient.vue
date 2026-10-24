@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import CustomSelect from './CustomSelect.vue'
 import FieldMapSheet, { type FieldMapPoint } from './FieldMapSheet.vue'
+import { fetchSession, logout, type Session } from './auth'
 import { fetchMissionTask, listMissionTasks, type MissionTask, type MissionTaskSummary } from './missionTasks'
 import { fetchPhotoAnalysisJob, photoAnalysisFileUrl, type PhotoAnalysisJob, type PhotoAnalysisResultImage } from './photoAnalysis'
 
@@ -41,7 +42,13 @@ const error = ref('')
 const updatedAt = ref('')
 const completedIds = ref<string[]>(loadCompletedIds())
 const lightbox = ref<FieldAlert | null>(null)
+const session = ref<Session | null>(null)
 let refreshTimer: ReturnType<typeof setInterval> | null = null
+
+async function signOut() {
+  await logout()
+  window.location.replace('/login')
+}
 
 function loadCompletedIds(): string[] {
   try {
@@ -115,45 +122,22 @@ function makeAlert(job: PhotoAnalysisJob, image: PhotoAnalysisResultImage, targe
 }
 
 function buildAlerts(taskValue: MissionTask, taskJobs: PhotoAnalysisJob[]): FieldAlert[] {
-  const targetRecords = (taskValue.analysis_targets || []) as TargetRecord[]
-  // 与主控端同口径：只认终审确认点。旧版页面写入的标记没有 analysis_kind
-  // 字段，视同未确认——这种任务走下面的复检 job 推导，同样只出最终结果。
-  const confirmedRecords = targetRecords.filter(item => typeof item.id === 'string' && item.analysis_kind === 'confirmed')
-  const hasSavedTargets = confirmedRecords.length > 0
-  const fallbackJobs = hasSavedTargets
-    ? taskJobs
-    : (() => {
-        // 没有确认点快照的任务优先使用最新的复检任务；复检任务代表主控端
-        // 已经用最后一遍模型确认过的结果，现场端不再展示前几轮的全部候选帧。
-        const recheckJobs = taskJobs.filter(job => Boolean(job.context?.recheck_of_job_id))
-        const candidates = recheckJobs.length ? recheckJobs : taskJobs
-        return candidates.slice().sort((first, second) => first.created_at.localeCompare(second.created_at)).slice(-1)
-      })()
+  // 现场端只展示主控端管理员人工确认并"下发"的积水点（任务 analysis_targets
+  // 里 analysis_kind === 'confirmed' 的快照）。不再从分析结果回退推导——
+  // 未下发的任务在这里保持空态，等待主控端复核。
+  const confirmedRecords = ((taskValue.analysis_targets || []) as TargetRecord[])
+    .filter(item => typeof item.id === 'string' && item.analysis_kind === 'confirmed')
   const byId = new Map(confirmedRecords.map(item => [item.id as string, item]))
   const output: FieldAlert[] = []
   const seen = new Set<string>()
-  for (const job of fallbackJobs) {
-    const itemMeta = new Map((job.items || []).map(item => [item.name, item.meta]))
+  for (const job of taskJobs) {
     for (const image of job.results?.images || []) {
       const id = `analysis-${job.job_id}-${image.name}`
       const savedTarget = byId.get(id)
-      const meta = itemMeta.get(image.name)
-      const derivedTarget: TargetRecord = savedTarget || {
-        id,
-        label: '疑似积水',
-        latitude: meta?.latitude,
-        longitude: meta?.longitude,
-        altitude_m: meta?.altitude_m,
-        time_seconds: meta?.time_seconds,
-      }
-      // 主控端已经把筛选后的目标写进任务时，以它为准，避免把同一批分析里的
-      // 普通帧、复检帧全部暴露给现场人员。没有快照的旧任务才从分析结果回退推导。
-      if (!savedTarget && hasSavedTargets) continue
-      if (!savedTarget && !(Number.isFinite(Number(meta?.latitude)) && Number.isFinite(Number(meta?.longitude)))) continue
-      if (!savedTarget && (image.suspected_pixels || 0) <= 0) continue
+      if (!savedTarget) continue
       if (seen.has(id)) continue
       seen.add(id)
-      output.push(makeAlert(job, image, derivedTarget))
+      output.push(makeAlert(job, image, savedTarget))
     }
   }
   const sorted = output.sort((first, second) => {
@@ -314,6 +298,11 @@ watch(lightbox, value => {
 
 onMounted(() => {
   document.title = '积水处置 · 现场处理端'
+  // 登录守卫：未登录去登录页；管理员也可以看现场端，但 brand 链接回主控。
+  void fetchSession().then(current => {
+    if (!current) window.location.replace('/login')
+    else session.value = current
+  })
   void refresh(true)
   refreshTimer = window.setInterval(() => void refresh(), 60_000)
 })
@@ -333,6 +322,8 @@ onBeforeUnmount(() => {
         <span><strong>积水处置</strong><small>现场处理端</small></span>
       </a>
       <div class="field-top-actions">
+        <span v-if="session" class="field-session">{{ session.role === 'admin' ? '管理员' : '使用者' }} · {{ session.username }}</span>
+        <button type="button" class="field-logout-button" @click="signOut">退出</button>
         <span class="field-live"><i></i>自动更新</span>
         <button type="button" class="field-refresh-button" :disabled="loading || refreshing" @click="refresh()" aria-label="刷新积水点">{{ refreshing ? '刷新中' : '刷新' }}</button>
       </div>
@@ -358,7 +349,7 @@ onBeforeUnmount(() => {
 
       <div v-if="loading" class="field-state field-loading" role="status"><span class="field-loader"></span><strong>正在读取最新积水点</strong><small>把位置和现场照片整理好后会显示在这里。</small></div>
       <div v-else-if="error" class="field-state field-error" role="alert"><strong>暂时读不到积水点</strong><small>{{ error }}</small><button type="button" @click="refresh()">重新读取</button></div>
-      <div v-else-if="!alerts.length" class="field-state field-empty"><span class="field-empty-mark">✓</span><strong>目前没有可处理的积水点</strong><small>主控端完成航后照片分析后，新的位置会自动出现在这里。</small></div>
+      <div v-else-if="!alerts.length" class="field-state field-empty"><span class="field-empty-mark">✓</span><strong>主控端尚未下发积水点</strong><small>管理员在照片分析中人工确认积水后才会下发到这里，请稍后刷新查看。</small></div>
       <div v-else-if="!visibleAlerts.length" class="field-state field-empty"><span class="field-empty-mark">✓</span><strong>这一批已全部处理</strong><small>共完成 {{ completedCount }} 处。需要复看时，可刷新主控端任务。</small></div>
 
       <section v-else class="field-alert-list" aria-label="积水点列表">
@@ -419,7 +410,10 @@ onBeforeUnmount(() => {
 .field-brand strong, .field-brand small { display: block; }
 .field-brand strong { font-size: var(--font-heading); line-height: 1.25; font-weight: 600; letter-spacing: -.02em; }
 .field-brand small { margin-top: 1px; color: var(--ui-muted); font-size: var(--font-caption); line-height: 1.3; }
-.field-top-actions { display: flex; align-items: center; gap: 12px; }
+.field-top-actions { display: flex; align-items: center; gap: 10px; }
+.field-session { display: inline-flex; align-items: center; min-height: 30px; padding: 4px 10px; border: 1px solid #dbe8f4; border-radius: 7px; background: #f5f9fd; color: #1769aa; font-size: var(--font-caption); font-weight: 600; white-space: nowrap; }
+.field-logout-button { min-height: 30px; padding: 4px 10px; border: 1px solid #d7dfe8; border-radius: 7px; background: #fff; color: #526273; font-size: var(--font-caption); white-space: nowrap; }
+.field-logout-button:hover { border-color: #d5a3a3; color: #a4262c; background: #fff7f7; }
 .field-live { display: inline-flex; align-items: center; gap: 5px; color: var(--ui-muted); font-size: var(--font-caption); white-space: nowrap; }
 .field-live i { width: 7px; height: 7px; border-radius: 50%; background: var(--ui-accent); box-shadow: 0 0 0 4px #2563eb1f; }
 .field-refresh-button { min-height: 32px; padding: 4px 10px; border: 1px solid #d7dfe8; border-radius: 7px; background: #fff; color: #34506c; font-size: var(--font-caption); white-space: nowrap; }

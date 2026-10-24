@@ -8,6 +8,7 @@ import BaiduCameraPreview from './BaiduCameraPreview.vue'
 import PhotoAnalysisPanel from './PhotoAnalysisPanel.vue'
 import VideoSurveyPanel from './VideoSurveyPanel.vue'
 import CustomSelect from './CustomSelect.vue'
+import { fetchSession, logout, type Session } from './auth'
 import type { VideoCaptureTarget, VideoTelemetryPoint } from './videoSurvey'
 import type { CameraPose } from './baiduScene'
 import type { RouteAssessment, WeatherLimits } from './weatherTypes'
@@ -322,6 +323,12 @@ function updateWaterAlertThresholds(value: WaterAlertThresholds) {
 }
 const analysisMapTargets = ref<VideoCaptureTarget[]>([])
 const showAnalysisTargets = ref(true)
+
+const session = ref<Session | null>(null)
+async function signOut() {
+  await logout()
+  window.location.replace('/login')
+}
 const savedTasks = ref<MissionTaskSummary[]>([])
 const taskListOpen = ref(false)
 const taskListLoading = ref(false)
@@ -466,6 +473,7 @@ async function createCurrentTask() {
       localStorage.setItem(ACTIVE_TASK_STORAGE_KEY, taskId)
       taskFrames.value = []
       analysisMapTargets.value = []
+      pendingReviewTargets.value = []
       selectedWaypointIndex.value = null
       void refreshMissionTaskList()
     }
@@ -595,7 +603,6 @@ async function recordTaskWeather(assessment: RouteAssessment | null) {
 
 const activeAnalysisJobId = ref('')
 const analysisQueueOpen = ref(false)
-const absorbedTargetKeys = new Set<string>()
 
 async function openActiveTaskAnalysisQueue() {
   const taskId = activeTask.value?.task_id
@@ -708,30 +715,30 @@ function describeRoutePosition(latitude: number, longitude: number): string {
   return parts.join(' · ')
 }
 
+// 复检完成的结果先进待复核暂存区，等管理员在照片面板逐张勾选后显式下发；
+// 只有下发动作才会写进任务的 analysis_targets（现场端只认这份快照）。
+const pendingReviewTargets = ref<VideoCaptureTarget[]>([])
+
 async function absorbAnalysisResults(job: PhotoAnalysisJob) {
   if (!activeTask.value) return
-  const isRecheck = Boolean(job.context?.recheck_of_job_id)
-  const targets = analysisTargetsFromJob(job)
-  if (isRecheck) {
-    // 流水线逐级复检：更末级的确认点取代上一级的确认点（如 GLM 终审取代 YOLO 复查），
-    // 首级产出的候选点保留不动；末级一帧都没检出时也要把上一级确认点清掉再落盘。
-    for (const stale of analysisMapTargets.value.filter(target => target.analysis_kind === 'confirmed')) {
-      absorbedTargetKeys.delete(stale.id)
-    }
-    analysisMapTargets.value = analysisMapTargets.value.filter(target => target.analysis_kind !== 'confirmed')
-  }
-  const fresh = targets.filter(target => !absorbedTargetKeys.has(target.id))
-  for (const target of fresh) absorbedTargetKeys.add(target.id)
-  if (fresh.length) analysisMapTargets.value = [...fresh, ...analysisMapTargets.value].slice(0, 50)
-  if (fresh.length || isRecheck) {
-    await persistTask({ analysis_job_id: job.job_id, analysis_targets: analysisMapTargets.value as unknown as Record<string, unknown>[] })
-  }
+  if (!job.context?.recheck_of_job_id) return
+  pendingReviewTargets.value = analysisTargetsFromJob(job)
+}
+
+async function dispatchAnalysisReview(ids: string[]) {
+  if (!activeTask.value || !ids.length) return
+  // 下发 = 用本次人工勾选结果整体替换已下发点，以最新复核为准。
+  const chosen = pendingReviewTargets.value.filter(target => ids.includes(target.id))
+  if (!chosen.length) return
+  analysisMapTargets.value = chosen
+  pendingReviewTargets.value = []
+  await persistTask({ analysis_targets: chosen as unknown as Record<string, unknown>[] })
 }
 
 async function clearAnalysisTargets() {
   if (!activeTask.value || !analysisMapTargets.value.length) return
   analysisMapTargets.value = []
-  // absorbedTargetKeys 保留：仍在轮询的任务不会把已清除的旧点再加回来。
+      pendingReviewTargets.value = []
   await persistTask({ analysis_targets: [] as unknown as Record<string, unknown>[] })
 }
 
@@ -917,7 +924,7 @@ function applyMissionTask(task: MissionTask) {
   }
   taskFrames.value = []
   analysisMapTargets.value = (task.analysis_targets ?? []) as unknown as VideoCaptureTarget[]
-  for (const target of analysisMapTargets.value) absorbedTargetKeys.add(target.id)
+  pendingReviewTargets.value = []
   activeAnalysisJobId.value = task.analysis_job_ids?.length ? task.analysis_job_ids[task.analysis_job_ids.length - 1] : ''
   analysisQueueOpen.value = false
   // 切回任务自动续跑：流水线若在页面关闭/刷新期间断链（初筛 done 但 GLM 未提交）
@@ -1019,6 +1026,7 @@ async function deleteAllMissionTasks() {
       activeTask.value = null
       taskFrames.value = []
       analysisMapTargets.value = []
+      pendingReviewTargets.value = []
       selectedWaypointIndex.value = null
       routeAssessment.value = null
       selectModule('route')
@@ -1050,6 +1058,7 @@ async function deleteSavedMissionTask(task: MissionTaskSummary) {
       activeTask.value = null
       taskFrames.value = []
       analysisMapTargets.value = []
+      pendingReviewTargets.value = []
       selectedWaypointIndex.value = null
       routeAssessment.value = null
       selectModule('route')
@@ -2975,6 +2984,12 @@ function initCameraPreview() {
 }
 
 onMounted(() => {
+  // 登录守卫：主控工作台仅管理员进入；使用者账号自动转去现场处理端。
+  void fetchSession().then(current => {
+    if (!current) { window.location.replace('/login'); return }
+    if (current.role === 'field') { window.location.replace('/field'); return }
+    session.value = current
+  })
   window.addEventListener('resize', handleColumnViewportResize)
   handleColumnViewportResize()
   window.addEventListener('keydown', handleWaypointKeydown)
@@ -3036,7 +3051,7 @@ onBeforeUnmount(() => {
   <div class="shell">
     <header class="topbar">
       <div class="brand"><span class="brand-mark" aria-hidden="true"><span class="svg-icon icon-route"></span></span><div class="brand-copy"><strong>低空飞行决策工作台</strong><small>航线规划与天气评估</small></div></div>
-      <div class="top-actions"><a class="field-client-entry" href="/field"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>现场处理端</a><span class="prototype-tag"><span class="svg-icon icon-route" aria-hidden="true"></span>道路参考路线</span><span class="connection">原型阶段</span></div>
+      <div class="top-actions"><a class="field-client-entry" href="/field"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>现场处理端</a><span class="prototype-tag"><span class="svg-icon icon-route" aria-hidden="true"></span>道路参考路线</span><span class="connection">原型阶段</span><span v-if="session" class="session-badge">管理员 · {{ session.username }}</span><button type="button" class="session-logout" @click="signOut">退出</button></div>
     </header>
 
     <nav class="workspace-tabs" aria-label="工作区面板">
@@ -3223,8 +3238,8 @@ onBeforeUnmount(() => {
           <p class="form-scope-note">当前任务导入视频与对应 SRT。拖动时间线核对无人机位置，只截取需要分析的关键帧。</p>
           <VideoSurveyPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frame-count="taskFrames.length" @track-change="setVideoTelemetryTrack" @position-change="setVideoTelemetryPosition" @targets-change="setVideoCaptureTargets" @frame-capture="addTaskFrame" @frame-saved="onTaskFrameSaved" @survey-change="onTaskSurveyChange" @job-started="onAnalysisJobStarted" @open-queue="analysisQueueOpen = true" />
           <p class="form-scope-note">关键帧会保存在任务文件夹中。模型只分析勾选的帧，SRT 位置会随结果一同记录。</p>
-          <PhotoAnalysisPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frames="taskFrames" :thresholds="waterAlertThresholds" :active-job-id="activeAnalysisJobId" :queue-open="analysisQueueOpen" @remove-frame="removeTaskFrame" @remove-all-frames="removeAllTaskFrames" @frames-add="addManualTaskFrames" @job-started="onAnalysisJobStarted" @analysis-update="absorbAnalysisResults" @thresholds-change="updateWaterAlertThresholds" @open-queue="analysisQueueOpen = true" @close-queue="analysisQueueOpen = false" />
-          <div class="analysis-target-tools"><label class="route-export-record"><input v-model="showAnalysisTargets" type="checkbox" />显示积水确认点（{{ mapAnalysisTargets.length }} 个，跟随任务保存）</label><button type="button" class="weather-refresh" :disabled="!analysisMapTargets.length" @click="clearAnalysisTargets">清除积水标记</button></div>
+          <PhotoAnalysisPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frames="taskFrames" :thresholds="waterAlertThresholds" :active-job-id="activeAnalysisJobId" :queue-open="analysisQueueOpen" :pending-review="pendingReviewTargets" :dispatched-count="mapAnalysisTargets.length" @remove-frame="removeTaskFrame" @remove-all-frames="removeAllTaskFrames" @frames-add="addManualTaskFrames" @job-started="onAnalysisJobStarted" @analysis-update="absorbAnalysisResults" @thresholds-change="updateWaterAlertThresholds" @dispatch-review="dispatchAnalysisReview" @open-queue="analysisQueueOpen = true" @close-queue="analysisQueueOpen = false" />
+          <div class="analysis-target-tools"><label class="route-export-record"><input v-model="showAnalysisTargets" type="checkbox" />显示已下发积水点（{{ mapAnalysisTargets.length }} 个 · 现场端可见）</label><button type="button" class="weather-refresh" :disabled="!analysisMapTargets.length" @click="clearAnalysisTargets">撤销全部下发</button></div>
           </div>
           </div>
             <fluent-button v-if="activeModule === 'route'" class="primary-button" appearance="primary" type="button" :disabled="!weatherCoordinates || loading || checkingPoint || locatingPoint !== null" @click="selectModule('status')"><span class="svg-icon icon-cloud-rain" aria-hidden="true"></span><span>继续查看天气</span></fluent-button>

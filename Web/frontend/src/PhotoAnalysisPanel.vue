@@ -14,10 +14,36 @@ import {
 } from './photoAnalysis'
 import type { ActivePhotoAnalysisJob, PhotoAnalysisHealth, PhotoAnalysisJob, PhotoAnalysisJobItem, PhotoAnalysisResultImage, WaterAlertThresholds } from './photoAnalysis'
 import type { TaskVideoFrame } from './photoAnalysis'
+import type { VideoCaptureTarget } from './videoSurvey'
 import { STAGE_LABELS } from './analysisPipeline'
 
-const props = withDefaults(defineProps<{ taskId: string | null; frames: TaskVideoFrame[]; thresholds: WaterAlertThresholds; activeJobId?: string | null; queueOpen?: boolean }>(), { activeJobId: null, queueOpen: false })
-const emit = defineEmits<{ 'remove-frame': [index: number]; 'remove-all-frames': []; 'frames-add': [frames: TaskVideoFrame[]]; 'job-started': [jobId: string]; 'analysis-update': [job: PhotoAnalysisJob]; 'thresholds-change': [thresholds: WaterAlertThresholds]; 'open-queue': []; 'close-queue': [] }>()
+const props = withDefaults(defineProps<{ taskId: string | null; frames: TaskVideoFrame[]; thresholds: WaterAlertThresholds; activeJobId?: string | null; queueOpen?: boolean; pendingReview?: VideoCaptureTarget[]; dispatchedCount?: number }>(), { activeJobId: null, queueOpen: false, pendingReview: () => [], dispatchedCount: 0 })
+const emit = defineEmits<{ 'remove-frame': [index: number]; 'remove-all-frames': []; 'frames-add': [frames: TaskVideoFrame[]]; 'job-started': [jobId: string]; 'analysis-update': [job: PhotoAnalysisJob]; 'thresholds-change': [thresholds: WaterAlertThresholds]; 'dispatch-review': [ids: string[]]; 'open-queue': []; 'close-queue': [] }>()
+
+// 人工复核：默认全部勾选，管理员逐张看图取消误检后一键下发到现场端。
+const reviewExcludedIds = ref<string[]>([])
+watch(() => props.pendingReview.map(target => target.id).join('|'), () => { reviewExcludedIds.value = [] })
+const reviewSelectedTargets = computed(() => props.pendingReview.filter(target => !reviewExcludedIds.value.includes(target.id)))
+function toggleReviewTarget(id: string, checked: boolean) {
+  reviewExcludedIds.value = checked
+    ? reviewExcludedIds.value.filter(item => item !== id)
+    : [...reviewExcludedIds.value, id]
+}
+function dispatchReview() {
+  if (!reviewSelectedTargets.value.length) return
+  emit('dispatch-review', reviewSelectedTargets.value.map(target => target.id))
+}
+const reviewIdByName = computed(() => {
+  const map = new Map<string, string>()
+  const prefix = `analysis-${job.value?.job_id}-`
+  for (const target of props.pendingReview) {
+    if (target.id.startsWith(prefix)) map.set(target.id.slice(prefix.length), target.id)
+  }
+  return map
+})
+function toggleAllReview(checked: boolean) {
+  reviewExcludedIds.value = checked ? [] : props.pendingReview.map(target => target.id)
+}
 
 const removeAllArmed = ref(false)
 watch(() => props.frames.length, (count) => { if (!count) removeAllArmed.value = false })
@@ -646,6 +672,16 @@ function onDocumentPointerdown(event: PointerEvent) {
             <button type="button" @click="emit('open-queue')">查看识别队列</button>
           </span>
         </div>
+        <div v-if="pendingReview.length" class="review-dispatch-bar" role="region" aria-label="人工复核下发">
+          <div class="review-dispatch-copy">
+            <strong>人工复核下发</strong>
+            <small>{{ pendingReview.length }} 处{{ confirmWord }}积水待复核{{ dispatchedCount ? ` · 已下发 ${dispatchedCount} 处（本次下发将整体替换）` : '' }} · 逐张看图勾选后下发到现场处理端</small>
+          </div>
+          <div class="review-dispatch-actions">
+            <label class="route-export-record"><input type="checkbox" :checked="reviewSelectedTargets.length === pendingReview.length" @change="toggleAllReview(($event.target as HTMLInputElement).checked)" />全选</label>
+            <button type="button" class="review-dispatch-button" :disabled="!reviewSelectedTargets.length" @click="dispatchReview">确认并下发到现场端（{{ reviewSelectedTargets.length }} 处）</button>
+          </div>
+        </div>
         <ul class="photo-grid">
           <li v-for="{ image, assessment }, index in visibleImageAssessments" :key="image.name">
             <button type="button" class="photo-thumbnail" :aria-label="`放大查看 ${image.name}`" @click="openPreview(image, index)">
@@ -659,6 +695,7 @@ function onDocumentPointerdown(event: PointerEvent) {
               <span v-if="isRecheckJob && (image.suspected_pixels ?? 0) > 0" class="photo-alert-badge is-recheck">{{ confirmWord }}</span>
               <span v-else-if="isRecheckJob" class="photo-alert-badge is-none">复检未检出</span>
               <span v-else :class="['photo-alert-badge', `is-${assessment.level}`]">{{ assessment.label }}</span>
+              <label v-if="reviewIdByName.get(image.name)" class="review-check"><input type="checkbox" :checked="!reviewExcludedIds.includes(reviewIdByName.get(image.name)!)" @change="toggleReviewTarget(reviewIdByName.get(image.name)!, ($event.target as HTMLInputElement).checked)" />确认积水</label>
               <small v-if="assessment.areaText">{{ assessment.areaText }} · 高度 {{ image.altitude_m !== null && image.altitude_m !== undefined ? `${image.altitude_m.toFixed(0)} m` : '未知' }}</small>
               <small>疑似积水 {{ fractionPercent(image.suspected_fraction) }} · {{ image.suspected_patch_count }} 处 · 置信度 {{ fractionPercent(image.mean_confidence_on_suspected) }}</small>
               <small class="photo-alert-reason" :title="assessment.reason">{{ assessment.reason }}</small>
@@ -738,6 +775,16 @@ function onDocumentPointerdown(event: PointerEvent) {
 .analysis-queue-inline { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin: 8px 0 10px; padding: 6px 8px; border: 1px solid var(--ui-line); border-radius: 7px; background: #fbfcfe; }
 .analysis-queue-inline small { min-width: 0; flex: 1 1 120px; color: #526273; font-size: 11px; line-height: 1.4; }
 .analysis-queue-inline > span { display: inline-flex; gap: 6px; }
+.review-dispatch-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: 8px 0 10px; padding: 10px 12px; border: 1px solid #bfd9ef; border-radius: 8px; background: #eff6ff; }
+.review-dispatch-copy { display: grid; min-width: 0; flex: 1 1 200px; gap: 3px; }
+.review-dispatch-copy strong { color: #1e3a5f; font-size: 13px; }
+.review-dispatch-copy small { color: #44607d; font-size: 11px; line-height: 1.45; }
+.review-dispatch-actions { display: inline-flex; align-items: center; gap: 10px; }
+.review-dispatch-button { min-height: 34px; padding: 5px 12px; border: 1px solid var(--ui-accent); border-radius: 7px; background: var(--ui-accent); color: #fff; font-size: 12px; font-weight: 700; white-space: nowrap; }
+.review-dispatch-button:hover:not(:disabled) { border-color: var(--ui-accent-hover); background: var(--ui-accent-hover); }
+.review-dispatch-button:disabled { opacity: .5; cursor: not-allowed; }
+.review-check { display: inline-flex; align-items: center; gap: 5px; margin-top: 4px; color: #1769aa; font-size: 11px; font-weight: 700; cursor: pointer; user-select: none; }
+.review-check input { width: 14px; height: 14px; margin: 0; accent-color: var(--ui-accent); cursor: pointer; }
 .analysis-queue-overlay { position: fixed; z-index: 6000; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--ui-line); border-radius: 10px; background: #f4f7fa; box-shadow: 0 14px 40px rgb(15 23 42 / .24); }
 .analysis-queue-overlay-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--ui-line); background: #fff; }
 .analysis-queue-overlay-title { display: grid; min-width: 0; gap: 2px; }
