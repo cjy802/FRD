@@ -47,6 +47,7 @@ const viewMode = ref<'overlay' | 'original'>('overlay')
 const previewDialog = ref<HTMLDialogElement | null>(null)
 const preview = ref<{ image: PhotoAnalysisResultImage; index: number } | null>(null)
 const photoInput = ref<HTMLInputElement | null>(null)
+const hiddenNoWaterNames = ref<string[]>([])
 let pollTimer: number | null = null
 
 const localThresholds = ref<WaterAlertThresholds>({ ...props.thresholds })
@@ -74,15 +75,50 @@ const previewUrl = computed(() => {
   if (!preview.value) return ''
   return viewMode.value === 'overlay'
     ? fileUrl(preview.value.image.overlay)
-    : inputUrl(preview.value.index)
+    : inputUrl(preview.value.image)
 })
 const modelSummary = computed(() => {
   const model = job.value?.results?.model
   if (!model) return ''
   return `${model.display_name ?? model.default_model} · 输入 ${model.input_size}px`
 })
+function hasSuspectedWater(image: PhotoAnalysisResultImage): boolean {
+  return (image.suspected_pixels ?? 0) > 0
+}
+
 const imageAssessments = computed(() => (job.value?.results?.images ?? [])
-  .map(image => ({ image, assessment: assessWaterAlert(image, props.thresholds) })))
+  .map(image => ({ image, assessment: assessWaterAlert(image, props.thresholds) }))
+  .sort((left, right) => {
+    const suspectedOrder = Number(hasSuspectedWater(right.image)) - Number(hasSuspectedWater(left.image))
+    if (suspectedOrder !== 0) return suspectedOrder
+    return (right.image.estimated_area_m2 ?? 0) - (left.image.estimated_area_m2 ?? 0)
+  }))
+const visibleImageAssessments = computed(() => imageAssessments.value
+  .filter(({ image }) => !hiddenNoWaterNames.value.includes(image.name)))
+const noWaterCount = computed(() => imageAssessments.value.filter(({ image }) => !hasSuspectedWater(image)).length)
+const hiddenNoWaterCount = computed(() => hiddenNoWaterNames.value.length)
+
+watch(() => job.value?.job_id, () => {
+  hiddenNoWaterNames.value = []
+})
+
+function hideNoWaterImage(image: PhotoAnalysisResultImage) {
+  if (hasSuspectedWater(image) || hiddenNoWaterNames.value.includes(image.name)) return
+  hiddenNoWaterNames.value = [...hiddenNoWaterNames.value, image.name]
+  if (preview.value?.image.name === image.name) closePreview()
+}
+
+function hideAllNoWaterImages() {
+  const names = imageAssessments.value
+    .filter(({ image }) => !hasSuspectedWater(image))
+    .map(({ image }) => image.name)
+  hiddenNoWaterNames.value = [...new Set([...hiddenNoWaterNames.value, ...names])]
+  if (preview.value && !hasSuspectedWater(preview.value.image)) closePreview()
+}
+
+function restoreHiddenNoWaterImages() {
+  hiddenNoWaterNames.value = []
+}
 // 复检 job：输入帧均已被第一遍模型检出，这里再检出即双模型确认。
 const isRecheckJob = computed(() => Boolean(job.value?.context?.recheck_of_job_id))
 const recheckConfirmedCount = computed(() => (job.value?.results?.images ?? [])
@@ -492,12 +528,12 @@ function fileUrl(name: string): string {
   return job.value ? photoAnalysisFileUrl(job.value.job_id, name) : ''
 }
 
-function inputUrl(index: number): string {
+function inputUrl(image: PhotoAnalysisResultImage): string {
   const current = job.value
   if (!current) return ''
-  const record = current.inputs?.[index]
+  const index = current.results?.images?.findIndex(item => item.name === image.name) ?? -1
+  const record = index >= 0 ? current.inputs?.[index] : undefined
   if (record) return photoAnalysisFileUrl(current.job_id, `inputs/${record.name}`)
-  const image = current.results?.images?.[index]
   const frameId = image ? frameIdByItemName.value.get(image.name) : undefined
   return frameId ? taskFrameUrl(frameId) : ''
 }
@@ -641,7 +677,7 @@ function onDocumentPointerdown(event: PointerEvent) {
         <ul class="photo-grid">
           <li v-for="{ image, assessment }, index in imageAssessments" :key="image.name">
             <button type="button" class="photo-thumbnail" :aria-label="`放大查看 ${image.name}`" @click="openPreview(image, index)">
-              <img :src="viewMode === 'overlay' ? fileUrl(image.overlay) : inputUrl(index)" :alt="`${viewMode === 'overlay' ? '疑似积水叠图' : '原始照片'} ${image.name}`" loading="lazy" />
+              <img :src="viewMode === 'overlay' ? fileUrl(image.overlay) : inputUrl(image)" :alt="`${viewMode === 'overlay' ? '疑似积水叠图' : '原始照片'} ${image.name}`" loading="lazy" />
             </button>
             <div class="photo-meta">
               <strong :title="image.name">{{ image.name }}</strong>
