@@ -48,8 +48,9 @@ const loading = ref(false)
 const busyTarget = ref(false)
 const capturingFrame = ref(false)
 const selectingFrames = ref(false)
-const straightOverlapPercent = ref(12)
-const turnOverlapPercent = ref(60)
+// 默认"边挨着边"：相邻帧零重叠，不重复浪费识别；需要留冗余时在界面调回。
+const straightOverlapPercent = ref(0)
+const turnOverlapPercent = ref(0)
 const scanFps = ref(2)
 const turnAngleDegrees = ref(18)
 const cameraChangeDegrees = ref(12)
@@ -791,7 +792,7 @@ watch(() => props.taskId, () => resetSurveyState())
           {{ queueStatusLabel }}
           <button type="button" class="adaptive-queue-jump" @click="emit('open-queue')">查看识别队列</button>
         </p>
-        <small class="adaptive-selector-note">系统用画面变化估算相邻覆盖，用 SRT 轨迹变化识别转弯；匹配不确定时会保留画面以降低漏区风险。有本地视频时自动截帧在浏览器里直接处理，不上传完整视频；重叠值是筛选目标，不代表地面覆盖的测绘级保证。“自动截帧并排队识别”会边截边传：每选出一张立即入队识别，结果逐张返回，失败帧会自动重试且不拖累整批；<strong>所有截图帧都会保存到任务关键帧（本机任务目录），识别后不会自动删除，需手动移除</strong>。</small>
+        <small class="adaptive-selector-note">系统用画面变化估算相邻覆盖，用 SRT 轨迹的前后航向夹角识别转弯（低速/悬停不误判）。默认重叠 0%＝“边挨着边”：相邻帧不带连接点、不重复送识别，需要留覆盖冗余时在上方把重叠调回大于 0。有本地视频时自动截帧在浏览器里直接处理，不上传完整视频；重叠值是筛选目标，不代表地面覆盖的测绘级保证。“自动截帧并排队识别”会边截边传：每选出一张立即入队识别，结果逐张返回，失败帧会自动重试且不拖累整批；<strong>所有截图帧都会保存到任务关键帧（本机任务目录），识别后不会自动删除，需手动移除</strong>。</small>
       </section>
 
       <ul v-if="survey.targets.length" class="video-survey-target-list">

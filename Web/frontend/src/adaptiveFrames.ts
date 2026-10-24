@@ -135,11 +135,23 @@ function bearingDeg(first: VideoTelemetryPoint, second: VideoTelemetryPoint): nu
   return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360
 }
 
+function distanceMetres(first: VideoTelemetryPoint, second: VideoTelemetryPoint): number {
+  const meanLatitude = ((first.latitude + second.latitude) / 2) * Math.PI / 180
+  const dx = (second.longitude - first.longitude) * Math.cos(meanLatitude) * 111320
+  const dy = (second.latitude - first.latitude) * 111320
+  return Math.hypot(dx, dy)
+}
+
 function bearingChange(points: VideoTelemetryPoint[], seconds: number, window = 1.5): number | null {
+  // 转弯 = 前后两段航向的夹角；低速/悬停（一段不足 1 米）时方位角全是噪声，判为直线。
   const before = interpolateVideoPosition(points, seconds - window)
+  const middle = interpolateVideoPosition(points, seconds)
   const after = interpolateVideoPosition(points, seconds + window)
-  if (!before || !after) return null
-  return Math.abs((bearingDeg(before, after) + 180) % 360 - 180)
+  if (!before || !middle || !after) return null
+  if (distanceMetres(before, middle) < 1 || distanceMetres(middle, after) < 1) return null
+  const firstLeg = bearingDeg(before, middle)
+  const secondLeg = bearingDeg(middle, after)
+  return Math.abs((secondLeg - firstLeg + 180) % 360 - 180)
 }
 
 function seekOnce(video: HTMLVideoElement, seconds: number, timeoutMs: number): Promise<void> {
