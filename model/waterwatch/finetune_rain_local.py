@@ -40,8 +40,11 @@ VAL_POOLS = [
     ("fred", ROOT / "data" / "fred_ft" / "val", 30),
     ("floodnet", ROOT / "data" / "floodnet" / "val", 20),
 ]
-RAIN_PHOTOS = ["rain_photo_campus", "rain_photo_avenue"]
-OVERSAMPLE = 40  # per rain photo, plus mirrored copies
+RAIN_PHOTOS = ["rain_photo_campus", "rain_photo_avenue", "rain_photo_street"]
+RAIN_FRAMES = ["rain_concat_001", "rain_concat_006", "rain_concat_011", "rain_concat_016",
+               "rain_snow_001", "rain_snow_004", "rain_snow_011"]
+OVERSAMPLE_PHOTOS = 30  # per rain photo, plus mirrored copies
+OVERSAMPLE_FRAMES = 10  # per video frame (frames within one video are near-duplicates)
 
 
 def _pairs(images_dir: Path, masks_dir: Path, limit: int, rng: random.Random) -> list[Path]:
@@ -69,12 +72,21 @@ def build_mix(work: Path) -> dict[str, Path]:
         (folder / "masks").mkdir(parents=True)
 
     train_count = 0
-    # 雨图 ×40 + 水平翻转 ×40：新域要占梯度大头但不压垮回放。
+    # 照片 ×30 + 水平翻转 ×30：照片是独立场景，新域梯度主力。
     for name in RAIN_PHOTOS:
         image = cv2.imdecode(np.frombuffer((RAIN_SEED / "images" / f"{name}.png").read_bytes(), np.uint8), cv2.IMREAD_COLOR)
         mask = load_mask(RAIN_SEED / "masks" / f"{name}.png")
         flipped = (image[:, ::-1].copy(), mask[:, ::-1].copy())
-        for copy_index in range(OVERSAMPLE):
+        for copy_index in range(OVERSAMPLE_PHOTOS):
+            _stage_entry(train_dir / "images", train_dir / "masks", f"{name}_r{copy_index:02d}", image, mask)
+            _stage_entry(train_dir / "images", train_dir / "masks", f"{name}_f{copy_index:02d}", *flipped)
+            train_count += 2
+    # 视频帧 ×10 + 翻转 ×10：同视频帧近似重复，系数压低。
+    for name in RAIN_FRAMES:
+        image = cv2.imdecode(np.frombuffer((RAIN_SEED / "images" / f"{name}.png").read_bytes(), np.uint8), cv2.IMREAD_COLOR)
+        mask = load_mask(RAIN_SEED / "masks" / f"{name}.png")
+        flipped = (image[:, ::-1].copy(), mask[:, ::-1].copy())
+        for copy_index in range(OVERSAMPLE_FRAMES):
             _stage_entry(train_dir / "images", train_dir / "masks", f"{name}_r{copy_index:02d}", image, mask)
             _stage_entry(train_dir / "images", train_dir / "masks", f"{name}_f{copy_index:02d}", *flipped)
             train_count += 2
@@ -137,7 +149,7 @@ def train(data_yaml: Path, epochs: int, batch: int) -> Path:
     started = time.perf_counter()
     model.train(data=str(data_yaml), epochs=epochs, imgsz=640, batch=batch, device=0,
                 lr0=0.001, lrf=0.01, warmup_epochs=3, workers=8, cache=False, seed=20261024,
-                project=str(run_dir), name="rain2_mix", exist_ok=True, deterministic=True)
+                project=str(run_dir), name="rain3_mix", exist_ok=True, deterministic=True)
     best = Path(model.trainer.best)
     print(json.dumps({"best": str(best), "elapsed_seconds": round(time.perf_counter() - started, 1),
                       "metrics": {key: float(value) for key, value in model.trainer.metrics.items()}},
@@ -152,7 +164,8 @@ def preview(best: Path, work: Path) -> None:
     out = work / "preview"
     out.mkdir(parents=True, exist_ok=True)
     targets = [(RAIN_SEED / "images" / f"{name}.png", RAIN_SEED / "masks" / f"{name}.png") for name in RAIN_PHOTOS]
-    targets += [(ROOT / "data" / "rain_raw" / f"{stem}.jpg", None) for stem in ("concat_011", "snow_006")]
+    # 未参与训练的留出帧：泛化观察用（无标注，只看预测叠图）。
+    targets += [(ROOT / "data" / "rain_raw" / f"{stem}.jpg", None) for stem in ("snow_006", "concat_017")]
     for image_path, mask_path in targets:
         image = cv2.imdecode(np.frombuffer(image_path.read_bytes(), np.uint8), cv2.IMREAD_COLOR)
         result = model.predict(image, conf=0.25, imgsz=640, verbose=False)[0]
@@ -185,7 +198,7 @@ def main() -> None:
     work.mkdir(parents=True, exist_ok=True)
     data_yaml = build_mix(work)
     if args.skip_train:
-        best = ROOT / "output" / "rain_ft" / "rain2_mix" / "weights" / "best.pt"
+        best = ROOT / "output" / "rain_ft" / "rain3_mix" / "weights" / "best.pt"
     else:
         best = train(data_yaml, args.epochs, args.batch)
     preview(best, ROOT / "output" / "rain_ft")
