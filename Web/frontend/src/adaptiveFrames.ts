@@ -24,8 +24,8 @@ export type ClientAdaptiveOptions = {
 export type ClientSelectedFrame = {
   file: File
   time_seconds: number
-  latitude: number
-  longitude: number
+  latitude: number | null
+  longitude: number | null
   altitude_m: number | null
   gimbal_pitch_deg: number | null
   selection_reason: string
@@ -46,6 +46,128 @@ export type ClientAdaptiveProgress = {
 export class ExtractionCancelled extends Error {
   constructor() {
     super('cancelled')
+  }
+}
+
+export type ClientFixedIntervalOptions = {
+  maxFrames: number
+  intervalSeconds: number
+  blurFilterEnabled: boolean
+  minimumSharpnessPercent: number
+}
+
+// 无 GPS 时的降级抽取：按固定时间间隔逐点截帧，保留黑帧与模糊过滤，
+// 不做重叠/转弯判断（那些依赖飞行轨迹）。帧不带坐标，reason 单独标记。
+export async function extractFixedIntervalFramesClient(
+  video: File,
+  options: ClientFixedIntervalOptions,
+  onProgress: (progress: ClientAdaptiveProgress) => void,
+  isCancelled: () => boolean,
+  onFrameSelected?: (frame: ClientSelectedFrame) => void,
+): Promise<ClientSelectedFrame[]> {
+  const interval = Math.max(0.5, options.intervalSeconds)
+  const url = URL.createObjectURL(video)
+  const element = document.createElement('video')
+  element.muted = true
+  element.preload = 'auto'
+  element.src = url
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = window.setTimeout(() => reject(new Error('无法读取本地视频。')), 12000)
+      element.addEventListener('loadedmetadata', () => { window.clearTimeout(timer); resolve() }, { once: true })
+      element.addEventListener('error', () => { window.clearTimeout(timer); reject(new Error('无法读取本地视频。')) }, { once: true })
+    })
+    const duration = Number.isFinite(element.duration) ? element.duration : 0
+    if (duration <= 0) throw new Error('无法读取本地视频时长。')
+    const videoWidth = element.videoWidth || 1920
+    const videoHeight = element.videoHeight || 1080
+    const midCanvas = makeCanvas(960, Math.max(2, Math.round(960 * videoHeight / videoWidth)))
+    const midContext = midCanvas.getContext('2d', { willReadFrequently: true })!
+    const workCanvas = makeCanvas(480, Math.max(2, Math.round(480 * videoHeight / videoWidth)))
+    const workContext = workCanvas.getContext('2d', { willReadFrequently: true })!
+
+    async function settleAfterSeek(target: HTMLVideoElement): Promise<void> {
+      const anyVideo = target as HTMLVideoElement & {
+        requestVideoFrameCallback?: (callback: () => void) => number
+      }
+      if (typeof anyVideo.requestVideoFrameCallback === 'function') {
+        await new Promise<void>(resolve => {
+          const timer = window.setTimeout(resolve, 350)
+          anyVideo.requestVideoFrameCallback(() => { window.clearTimeout(timer); resolve() })
+        })
+      }
+      await new Promise(resolve => window.setTimeout(resolve, 50))
+    }
+
+    const maxCandidateSeconds = Math.max(0, duration - 1 / 30)
+    const total = Math.min(options.maxFrames, Math.max(1, Math.ceil(duration / interval)))
+    const saveScale = Math.min(1, 1920 / Math.max(videoWidth, videoHeight))
+    const saveCanvas = makeCanvas(Math.max(2, Math.round(videoWidth * saveScale)), Math.max(2, Math.round(videoHeight * saveScale)))
+    const saveContext = saveCanvas.getContext('2d', { willReadFrequently: true })
+    if (!saveContext) return []
+
+    const selected: ClientSelectedFrame[] = []
+    const sharpnessHistory: number[] = []
+    let blurred = 0
+    let blank = 0
+    for (let index = 0; index < total; index += 1) {
+      if (isCancelled()) throw new ExtractionCancelled()
+      const seconds = Math.min(index * interval, maxCandidateSeconds)
+      if (!(await seekTo(element, seconds))) continue
+      await settleAfterSeek(element)
+      midContext.drawImage(element, 0, 0, midCanvas.width, midCanvas.height)
+      workContext.drawImage(midCanvas, 0, 0, workCanvas.width, workCanvas.height)
+      const workGray = grayData(workCanvas)
+
+      let brightness = 0
+      for (let pixel = 0; pixel < workGray.length; pixel += 1) brightness += workGray[pixel]
+      brightness /= workGray.length
+      if (brightness < 14) {
+        blank += 1
+        onProgress({ scanned: index + 1, total, selected: selected.length, blurred, blank, exported: selected.length })
+        await yieldToMainThread()
+        continue
+      }
+
+      const sharpness = laplacianVariance(workGray, workCanvas.width, workCanvas.height)
+      const baseline = sharpnessHistory.length
+        ? [...sharpnessHistory].sort((a, b) => a - b)[Math.floor(sharpnessHistory.length / 2)]
+        : sharpness
+      const sharpnessRatio = sharpness / Math.max(baseline, 1e-6) * 100
+      const isBlurry = options.blurFilterEnabled && sharpnessHistory.length > 0
+        && sharpnessRatio < options.minimumSharpnessPercent
+      sharpnessHistory.push(sharpness)
+      if (isBlurry) {
+        blurred += 1
+        onProgress({ scanned: index + 1, total, selected: selected.length, blurred, blank, exported: selected.length })
+        await yieldToMainThread()
+        continue
+      }
+
+      saveContext.drawImage(element, 0, 0, saveCanvas.width, saveCanvas.height)
+      try {
+        const blob = await new Promise<Blob>((resolve, reject) => saveCanvas.toBlob(
+          value => value ? resolve(value) : reject(new Error('截取视频帧失败。')), 'image/jpeg', 0.92))
+        selected.push({
+          file: new File([blob], `frame-${String(Math.floor(seconds / 60)).padStart(2, '0')}m${String(Math.round(seconds % 60)).padStart(2, '0')}s.jpg`, { type: 'image/jpeg' }),
+          time_seconds: Math.round(seconds * 1000) / 1000,
+          latitude: null,
+          longitude: null,
+          altitude_m: null,
+          gimbal_pitch_deg: null,
+          selection_reason: '固定间隔截帧（无 GPS）',
+          estimated_overlap_percent: null,
+          turn_angle_deg: null,
+          sharpness_ratio_percent: Math.round(sharpnessRatio * 10) / 10,
+        })
+        onFrameSelected?.(selected[selected.length - 1])
+      } catch { /* 单帧导出失败跳过 */ }
+      onProgress({ scanned: index + 1, total, selected: selected.length, blurred, blank, exported: selected.length })
+      await yieldToMainThread()
+    }
+    return selected
+  } finally {
+    URL.revokeObjectURL(url)
   }
 }
 

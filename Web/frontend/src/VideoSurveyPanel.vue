@@ -13,7 +13,7 @@ import type { PhotoAnalysisJob, PhotoAnalysisModelOption, TaskVideoFrame } from 
 import { appendPhotoAnalysisFrames, closePhotoAnalysisJob, fetchPhotoAnalysisHealth, submitPhotoAnalysisJob } from './photoAnalysis'
 import { PIPELINE_STAGES, onPipelineEvent, pipelineState, startChain } from './analysisPipeline'
 import { saveMissionTaskFrame } from './missionTasks'
-import { ExtractionCancelled, extractAdaptiveFramesClient } from './adaptiveFrames'
+import { ExtractionCancelled, extractAdaptiveFramesClient, extractFixedIntervalFramesClient } from './adaptiveFrames'
 import type { ClientAdaptiveProgress, ClientSelectedFrame } from './adaptiveFrames'
 import {
   countSrtTelemetry,
@@ -57,6 +57,8 @@ const turnAngleDegrees = ref(18)
 const cameraChangeDegrees = ref(12)
 const blurFilterEnabled = ref(true)
 const minimumSharpnessPercent = ref(40)
+// 无 GPS 时的固定抽帧间隔（秒）；有 GPS 时仍走零重叠/转弯算法。
+const fixedIntervalSeconds = ref(3)
 const error = ref('')
 const status = ref('')
 
@@ -155,16 +157,18 @@ const FRAME_LIMIT = 300
 
 const canCaptureFrame = computed(() => Boolean(survey.value && currentPosition.value && videoElement.value?.videoWidth
   && props.frameCount < FRAME_LIMIT && !capturingFrame.value))
-const canSelectAdaptiveFrames = computed(() => Boolean(props.taskId && survey.value?.has_gps
+// 无 GPS 也能自动截帧：退化为固定时间间隔（坐标为空，地图不显示轨迹）。
+const canSelectAdaptiveFrames = computed(() => Boolean(props.taskId && survey.value
   && props.frameCount < FRAME_LIMIT && !selectingFrames.value && !loading.value && !extractingLocal.value))
+const hasGpsTelemetry = computed(() => Boolean(survey.value?.has_gps))
 const adaptiveButtonLabel = computed(() => {
   if (extractingLocal.value) {
     const progress = extractionProgress.value
     return progress ? `本地自动截帧中 ${progress.scanned}/${progress.total} · 已选 ${progress.selected}…` : '正在本地自动截帧…'
   }
   if (selectingFrames.value) return '正在自适应筛帧…'
-  if (survey.value && !survey.value.has_gps) return '需要带 GPS 的 SRT'
   if (props.frameCount >= FRAME_LIMIT) return '关键帧已达上限'
+  if (survey.value && !survey.value.has_gps) return '按固定间隔自动截帧（无 GPS）'
   if (survey.value && !survey.value.has_video) return '自动筛选关键帧（本地处理）'
   return '自动筛选并保存关键帧'
 })
@@ -402,23 +406,38 @@ async function selectAdaptiveFrames() {
       videoElement.value?.pause()
       extractingLocal.value = true
       extractionCancel.value = false
-      status.value = '正在本地扫描视频画面、估算重叠并识别转弯；不会逐帧运行水坑模型…'
-      const frames = await extractAdaptiveFramesClient(
-        localVideo.value.file,
-        survey.value.telemetry,
-        {
-          maxFrames: remaining,
-          scanFps: scanFps.value,
-          straightOverlapPercent: straightOverlapPercent.value,
-          turnOverlapPercent: turnOverlapPercent.value,
-          turnAngleDegrees: turnAngleDegrees.value,
-          cameraChangeDegrees: cameraChangeDegrees.value,
-          blurFilterEnabled: blurFilterEnabled.value,
-          minimumSharpnessPercent: minimumSharpnessPercent.value,
-        },
-        progress => { extractionProgress.value = progress },
-        () => extractionCancel.value,
-      )
+      // 有 GPS 走零重叠/转弯算法；无 GPS 退化为固定时间间隔抽帧。
+      status.value = hasGpsTelemetry.value
+        ? '正在本地扫描视频画面、估算重叠并识别转弯；不会逐帧运行水坑模型…'
+        : `正在按固定间隔（每 ${fixedIntervalSeconds.value} 秒）扫描视频画面并过滤模糊帧…`
+      const frames = hasGpsTelemetry.value
+        ? await extractAdaptiveFramesClient(
+            localVideo.value.file,
+            survey.value.telemetry,
+            {
+              maxFrames: remaining,
+              scanFps: scanFps.value,
+              straightOverlapPercent: straightOverlapPercent.value,
+              turnOverlapPercent: turnOverlapPercent.value,
+              turnAngleDegrees: turnAngleDegrees.value,
+              cameraChangeDegrees: cameraChangeDegrees.value,
+              blurFilterEnabled: blurFilterEnabled.value,
+              minimumSharpnessPercent: minimumSharpnessPercent.value,
+            },
+            progress => { extractionProgress.value = progress },
+            () => extractionCancel.value,
+          )
+        : await extractFixedIntervalFramesClient(
+            localVideo.value.file,
+            {
+              maxFrames: remaining,
+              intervalSeconds: fixedIntervalSeconds.value,
+              blurFilterEnabled: blurFilterEnabled.value,
+              minimumSharpnessPercent: minimumSharpnessPercent.value,
+            },
+            progress => { extractionProgress.value = progress },
+            () => extractionCancel.value,
+          )
       for (const frame of frames) {
         const saved = await saveMissionTaskFrame(props.taskId, {
           file: frame.file,
@@ -436,8 +455,12 @@ async function selectAdaptiveFrames() {
       }
       const progress = extractionProgress.value
       status.value = frames.length
-        ? `本地自动截帧完成：扫描 ${progress?.scanned ?? frames.length} 个候选时刻，跳过 ${progress?.blurred ?? 0} 张模糊帧，自动选出 ${frames.length} 张并保存到任务。`
-        : `本地扫描了 ${progress?.scanned ?? 0} 个候选时刻，跳过 ${progress?.blurred ?? 0} 张模糊帧；没有需要新增的关键帧。`
+        ? hasGpsTelemetry.value
+          ? `本地自动截帧完成：扫描 ${progress?.scanned ?? frames.length} 个候选时刻，跳过 ${progress?.blurred ?? 0} 张模糊帧，自动选出 ${frames.length} 张并保存到任务。`
+          : `固定间隔截帧完成：检查 ${progress?.scanned ?? frames.length} 个时刻，跳过 ${progress?.blurred ?? 0} 张模糊帧，保存 ${frames.length} 张（无 GPS，帧不带坐标）。`
+        : hasGpsTelemetry.value
+          ? `本地扫描了 ${progress?.scanned ?? 0} 个候选时刻，跳过 ${progress?.blurred ?? 0} 张模糊帧；没有需要新增的关键帧。`
+          : `按固定间隔检查了 ${progress?.scanned ?? 0} 个时刻，跳过 ${progress?.blurred ?? 0} 张模糊帧；没有保存关键帧。`
       return
     }
     // 服务器端逐帧分析需要完整视频；本机没有绑定视频时提示重新选择。
@@ -514,53 +537,71 @@ async function selectAdaptiveFramesWithAnalysis() {
     // 推进（YOLO done → 提交 GLM 复检）与轮询都在全局单例里，切任务/切模块不断链；
     // stagesCount 传当前可用的级数：GLM 未配置时止步于 YOLO，不对着不可用模型提交。
     startChain(chainTaskId, jobId, 0, queueStages.value.length)
-    status.value = '正在本地扫描视频画面；选出的帧会立即上传并排队识别，无需等全部截帧结束…'
-    await extractAdaptiveFramesClient(
-      localVideo.value.file,
-      survey.value.telemetry,
-      {
-        maxFrames: FRAME_LIMIT - props.frameCount,
-        scanFps: scanFps.value,
-        straightOverlapPercent: straightOverlapPercent.value,
-        turnOverlapPercent: turnOverlapPercent.value,
-        turnAngleDegrees: turnAngleDegrees.value,
-        cameraChangeDegrees: cameraChangeDegrees.value,
-        blurFilterEnabled: blurFilterEnabled.value,
-        minimumSharpnessPercent: minimumSharpnessPercent.value,
-      },
-      progress => { extractionProgress.value = progress },
-      () => extractionCancel.value,
-      frame => {
-        // 串行上传链：不阻塞扫描循环，也不会同时发起大量上传。
-        uploadChain = uploadChain.then(async () => {
-          // 抽帧中途切了任务：立即停止保存，避免帧落进新任务；已入队的照常识别。
-          if (props.taskId !== chainTaskId) {
-            extractionCancel.value = true
-            return
-          }
-          try {
-            const saved = await saveMissionTaskFrame(chainTaskId, {
-              file: frame.file,
-              time_seconds: frame.time_seconds,
-              latitude: frame.latitude,
-              longitude: frame.longitude,
-              altitude_m: frame.altitude_m,
-              gimbal_pitch_deg: frame.gimbal_pitch_deg,
-              selection_reason: frame.selection_reason,
-              estimated_overlap_percent: frame.estimated_overlap_percent,
-              turn_angle_deg: frame.turn_angle_deg,
-              sharpness_ratio_percent: frame.sharpness_ratio_percent,
-            })
-            emit('frame-saved', { ...saved, file: frame.file })
-            await appendPhotoAnalysisFrames(jobId, [saved.frame_id])
-            enqueuedCount += 1
-          } catch {
-            // 单帧上传/入队失败只跳过计数，不中断抽帧。
-            queueSkipped.value += 1
-          }
-        })
-      },
-    )
+    status.value = hasGpsTelemetry.value
+      ? '正在本地扫描视频画面；选出的帧会立即上传并排队识别，无需等全部截帧结束…'
+      : `正在按固定间隔（每 ${fixedIntervalSeconds.value} 秒）扫描视频画面；选出的帧会立即上传并排队识别…`
+    const uploadSelectedFrame = (frame: ClientSelectedFrame) => {
+      // 串行上传链：不阻塞扫描循环，也不会同时发起大量上传。
+      uploadChain = uploadChain.then(async () => {
+        // 抽帧中途切了任务：立即停止保存，避免帧落进新任务；已入队的照常识别。
+        if (props.taskId !== chainTaskId) {
+          extractionCancel.value = true
+          return
+        }
+        try {
+          const saved = await saveMissionTaskFrame(chainTaskId, {
+            file: frame.file,
+            time_seconds: frame.time_seconds,
+            latitude: frame.latitude,
+            longitude: frame.longitude,
+            altitude_m: frame.altitude_m,
+            gimbal_pitch_deg: frame.gimbal_pitch_deg,
+            selection_reason: frame.selection_reason,
+            estimated_overlap_percent: frame.estimated_overlap_percent,
+            turn_angle_deg: frame.turn_angle_deg,
+            sharpness_ratio_percent: frame.sharpness_ratio_percent,
+          })
+          emit('frame-saved', { ...saved, file: frame.file })
+          await appendPhotoAnalysisFrames(jobId, [saved.frame_id])
+          enqueuedCount += 1
+        } catch {
+          // 单帧上传/入队失败只跳过计数，不中断抽帧。
+          queueSkipped.value += 1
+        }
+      })
+    }
+    if (hasGpsTelemetry.value) {
+      await extractAdaptiveFramesClient(
+        localVideo.value.file,
+        survey.value.telemetry,
+        {
+          maxFrames: FRAME_LIMIT - props.frameCount,
+          scanFps: scanFps.value,
+          straightOverlapPercent: straightOverlapPercent.value,
+          turnOverlapPercent: turnOverlapPercent.value,
+          turnAngleDegrees: turnAngleDegrees.value,
+          cameraChangeDegrees: cameraChangeDegrees.value,
+          blurFilterEnabled: blurFilterEnabled.value,
+          minimumSharpnessPercent: minimumSharpnessPercent.value,
+        },
+        progress => { extractionProgress.value = progress },
+        () => extractionCancel.value,
+        uploadSelectedFrame,
+      )
+    } else {
+      await extractFixedIntervalFramesClient(
+        localVideo.value.file,
+        {
+          maxFrames: FRAME_LIMIT - props.frameCount,
+          intervalSeconds: fixedIntervalSeconds.value,
+          blurFilterEnabled: blurFilterEnabled.value,
+          minimumSharpnessPercent: minimumSharpnessPercent.value,
+        },
+        progress => { extractionProgress.value = progress },
+        () => extractionCancel.value,
+        uploadSelectedFrame,
+      )
+    }
   } catch (cause) {
     if (cause instanceof ExtractionCancelled) {
       status.value = '已取消本地自动截帧；已入队的帧会继续识别。'
@@ -743,16 +784,26 @@ watch(() => props.taskId, () => {
       </button>
 
       <section class="adaptive-selector" aria-label="自适应筛选视频关键帧">
-        <header><strong>自适应筛选关键帧</strong><small>按画面重叠和 SRT 转弯状态选帧，不使用固定抽帧间隔。</small></header>
-        <div class="adaptive-selector-fields">
-          <label>直线段最大重叠 · %<input v-model.number="straightOverlapPercent" type="number" min="0" max="50" step="1" :disabled="selectingFrames" /></label>
-          <label>转弯处保留重叠 · %<input v-model.number="turnOverlapPercent" type="number" min="20" max="90" step="1" :disabled="selectingFrames" /></label>
-          <label>画面扫描频率<CustomSelect v-model="scanFps" :options="[{ value: 1, label: '1 次 / 秒' }, { value: 2, label: '2 次 / 秒' }, { value: 4, label: '4 次 / 秒' }]" :disabled="selectingFrames" aria-label="画面扫描频率" /></label>
-          <label>转弯识别角度 · °<input v-model.number="turnAngleDegrees" type="number" min="10" max="90" step="5" :disabled="selectingFrames" /></label>
-          <label>镜头角度变化阈值 · °<input v-model.number="cameraChangeDegrees" type="number" min="5" max="45" step="1" :disabled="selectingFrames" /></label>
-          <label class="adaptive-blur-toggle"><input v-model="blurFilterEnabled" type="checkbox" :disabled="selectingFrames" />过滤明显模糊帧</label>
-          <label>最低清晰度 · 近期中位数 %<input v-model.number="minimumSharpnessPercent" type="number" min="0" max="100" step="5" :disabled="selectingFrames || !blurFilterEnabled" /></label>
-        </div>
+        <header><strong>自适应筛选关键帧</strong><small>{{ hasGpsTelemetry ? '按画面重叠和 SRT 转弯状态选帧，不使用固定抽帧间隔。' : '当前视频无 GPS 轨迹：按固定时间间隔截帧，帧不带坐标。' }}</small></header>
+        <details class="adaptive-settings-group overview-group">
+          <summary><span>抽帧参数设置</span><small>{{ hasGpsTelemetry ? '重叠 / 转弯 / 扫描频率' : `每 ${fixedIntervalSeconds} 秒一帧` }}</small></summary>
+          <div class="overview-group-body">
+            <div v-if="hasGpsTelemetry" class="adaptive-selector-fields">
+              <label>直线段最大重叠 · %<input v-model.number="straightOverlapPercent" type="number" min="0" max="50" step="1" :disabled="selectingFrames" /></label>
+              <label>转弯处保留重叠 · %<input v-model.number="turnOverlapPercent" type="number" min="20" max="90" step="1" :disabled="selectingFrames" /></label>
+              <label>画面扫描频率<CustomSelect v-model="scanFps" :options="[{ value: 1, label: '1 次 / 秒' }, { value: 2, label: '2 次 / 秒' }, { value: 4, label: '4 次 / 秒' }]" :disabled="selectingFrames" aria-label="画面扫描频率" /></label>
+              <label>转弯识别角度 · °<input v-model.number="turnAngleDegrees" type="number" min="10" max="90" step="5" :disabled="selectingFrames" /></label>
+              <label>镜头角度变化阈值 · °<input v-model.number="cameraChangeDegrees" type="number" min="5" max="45" step="1" :disabled="selectingFrames" /></label>
+              <label class="adaptive-blur-toggle"><input v-model="blurFilterEnabled" type="checkbox" :disabled="selectingFrames" />过滤明显模糊帧</label>
+              <label>最低清晰度 · 近期中位数 %<input v-model.number="minimumSharpnessPercent" type="number" min="0" max="100" step="5" :disabled="selectingFrames || !blurFilterEnabled" /></label>
+            </div>
+            <div v-else class="adaptive-selector-fields">
+              <label>抽帧间隔<CustomSelect v-model="fixedIntervalSeconds" :options="[{ value: 2, label: '每 2 秒一帧' }, { value: 3, label: '每 3 秒一帧' }, { value: 5, label: '每 5 秒一帧' }]" :disabled="selectingFrames" aria-label="固定抽帧间隔" /></label>
+              <label class="adaptive-blur-toggle"><input v-model="blurFilterEnabled" type="checkbox" :disabled="selectingFrames" />过滤明显模糊帧</label>
+              <label>最低清晰度 · 近期中位数 %<input v-model.number="minimumSharpnessPercent" type="number" min="0" max="100" step="5" :disabled="selectingFrames || !blurFilterEnabled" /></label>
+            </div>
+          </div>
+        </details>
         <div class="adaptive-selector-fields adaptive-queue-row">
           <small class="adaptive-pipeline-note">识别流水线（自动复检，无需选模型）：YOLO 全量初筛 → GLM 终审，GLM 只复查 YOLO 检出的疑似帧，两遍都检出才确认。</small>
           <small v-if="queueHealthLoaded && !queueStages.length">识别服务未就绪，只能先截帧。</small>
@@ -770,7 +821,7 @@ watch(() => props.taskId, () => {
           {{ queueStatusLabel }}
           <button type="button" class="adaptive-queue-jump" @click="emit('open-queue')">查看识别队列</button>
         </p>
-        <small class="adaptive-selector-note">系统用画面变化估算相邻覆盖，用 SRT 轨迹的前后航向夹角识别转弯（低速/悬停不误判）。默认重叠 0%＝“边挨着边”：相邻帧不带连接点、不重复送识别，需要留覆盖冗余时在上方把重叠调回大于 0。有本地视频时自动截帧在浏览器里直接处理，不上传完整视频；重叠值是筛选目标，不代表地面覆盖的测绘级保证。“自动截帧并排队识别”会边截边传：每选出一张立即入队识别，结果逐张返回，失败帧会自动重试且不拖累整批；<strong>所有截图帧都会保存到任务关键帧（本机任务目录），识别后不会自动删除，需手动移除</strong>。</small>
+        <small class="adaptive-selector-note">{{ hasGpsTelemetry ? '系统用画面变化估算相邻覆盖，用 SRT 轨迹的前后航向夹角识别转弯（低速/悬停不误判）。默认重叠 0%＝“边挨着边”：相邻帧不带连接点、不重复送识别，需要留覆盖冗余时在上方把重叠调回大于 0。' : '当前视频没有 GPS 轨迹：无法按重叠和转弯选帧，自动截帧退化为固定时间间隔；识别出的积水将没有坐标（显示“坐标待补充”），地图上不会显示位置。' }}有本地视频时自动截帧在浏览器里直接处理，不上传完整视频；重叠值是筛选目标，不代表地面覆盖的测绘级保证。“自动截帧并排队识别”会边截边传：每选出一张立即入队识别，结果逐张返回，失败帧会自动重试且不拖累整批；<strong>所有截图帧都会保存到任务关键帧（本机任务目录），识别后不会自动删除，需手动移除</strong>。</small>
       </section>
 
       <ul v-if="survey.targets.length" class="video-survey-target-list">
@@ -915,6 +966,11 @@ watch(() => props.taskId, () => {
 .adaptive-selector header strong { color: #27364a; font-size: 11px; }
 .adaptive-selector header small, .adaptive-selector-note { color: var(--ui-muted); font-size: 10px; line-height: 1.4; }
 .adaptive-selector-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.adaptive-settings-group { border: 1px solid var(--ui-line); border-radius: 7px; background: #fff; }
+.adaptive-settings-group > summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 9px; cursor: pointer; font-size: 11px; }
+.adaptive-settings-group > summary span { min-width: 0; color: #526273; }
+.adaptive-settings-group > summary small { margin-left: auto; color: var(--ui-muted); font-size: 10px; }
+.adaptive-settings-group .overview-group-body { padding: 0 9px 8px; }
 .adaptive-selector-fields label { display: grid; min-width: 0; gap: 3px; color: #526273; font-size: 10px; }
 .adaptive-selector-fields input, .adaptive-selector-fields select { width: 100%; min-width: 0; min-height: 28px; padding: 3px 5px; border: 1px solid #d7dfe8; border-radius: 5px; background-color: #fff; color: #27364a; font-size: 11px; }
 .adaptive-selector-fields select { padding-right: 30px; }
