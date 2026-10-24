@@ -828,7 +828,7 @@ watch(() => props.taskId, () => {
         <li v-for="target in survey.targets" :key="target.id">
           <button class="video-survey-target-summary" type="button" @click="seekTarget(target)">
             <strong>{{ target.label }}</strong>
-            <small>{{ formatVideoTime(target.time_seconds) }} · {{ target.latitude.toFixed(6) }}, {{ target.longitude.toFixed(6) }}<template v-if="target.altitude_m !== null"> · {{ target.altitude_m.toFixed(0) }} m</template></small>
+            <small>{{ formatVideoTime(target.time_seconds) }} · {{ target.latitude !== null && target.longitude !== null ? `${target.latitude.toFixed(6)}, ${target.longitude.toFixed(6)}` : '坐标待补充' }}<template v-if="target.altitude_m !== null"> · {{ target.altitude_m.toFixed(0) }} m</template></small>
           </button>
           <button class="video-survey-remove" type="button" :disabled="busyTarget" :aria-label="`删除${target.label}`" @click="removeTarget(target)">删除</button>
         </li>

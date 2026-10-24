@@ -98,8 +98,11 @@ function parseLocation(target: TargetRecord): { roadLabel: string; locationLabel
 }
 
 function makeAlert(job: PhotoAnalysisJob, image: PhotoAnalysisResultImage, target: TargetRecord): FieldAlert {
-  const latitude = Number(target.latitude)
-  const longitude = Number(target.longitude)
+  // 无 GPS 视频下发的目标坐标为 null；Number(null) 会得到 0，必须先判类型。
+  const hasCoords = typeof target.latitude === 'number' && typeof target.longitude === 'number'
+    && Number.isFinite(target.latitude) && Number.isFinite(target.longitude)
+  const latitude = hasCoords ? (target.latitude as number) : null
+  const longitude = hasCoords ? (target.longitude as number) : null
   const { roadLabel, locationLabel } = parseLocation(target)
   return {
     id: String(target.id || `analysis-${job.job_id}-${image.name}`),
@@ -112,9 +115,7 @@ function makeAlert(job: PhotoAnalysisJob, image: PhotoAnalysisResultImage, targe
     overlayUrl: image.overlay ? photoAnalysisFileUrl(job.job_id, image.overlay) : photoAnalysisFileUrl(job.job_id, image.name),
     roadLabel,
     locationLabel,
-    coordinates: Number.isFinite(latitude) && Number.isFinite(longitude)
-      ? `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`
-      : '坐标待补充',
+    coordinates: hasCoords ? `${latitude!.toFixed(6)}, ${longitude!.toFixed(6)}` : '坐标待补充',
     areaLabel: formatArea(image),
     confidenceLabel: formatConfidence(image),
     altitudeLabel: typeof target.altitude_m === 'number' ? `拍摄高度 ${target.altitude_m.toFixed(0)} m` : '拍摄高度未知',
@@ -146,15 +147,18 @@ function buildAlerts(taskValue: MissionTask, taskJobs: PhotoAnalysisJob[]): Fiel
     return secondArea - firstArea
   })
   // 连续航拍帧可能指向同一个积水点。现场端按约 12 米合并，保留面积更大的
-  // 一张照片，避免处理人员收到一长串几乎相同的卡片。
+  // 一张照片，避免处理人员收到一长串几乎相同的卡片。无坐标（无 GPS 视频）
+  // 的卡片不参与距离合并——Number(null) 是 0，会把它们全部误判到同一点。
+  const asCoordinate = (value: unknown): number | null =>
+    typeof value === 'number' && Number.isFinite(value) ? value : null
   const deduped: FieldAlert[] = []
   for (const candidate of sorted) {
-    const latitude = Number(candidate.target.latitude)
-    const longitude = Number(candidate.target.longitude)
+    const latitude = asCoordinate(candidate.target.latitude)
+    const longitude = asCoordinate(candidate.target.longitude)
     const duplicate = deduped.find(existing => {
-      const existingLatitude = Number(existing.target.latitude)
-      const existingLongitude = Number(existing.target.longitude)
-      if (![latitude, longitude, existingLatitude, existingLongitude].every(Number.isFinite)) return false
+      const existingLatitude = asCoordinate(existing.target.latitude)
+      const existingLongitude = asCoordinate(existing.target.longitude)
+      if (latitude === null || longitude === null || existingLatitude === null || existingLongitude === null) return false
       const latMetres = (latitude - existingLatitude) * 111_320
       const lonMetres = (longitude - existingLongitude) * 111_320 * Math.cos(latitude * Math.PI / 180)
       return Math.hypot(latMetres, lonMetres) <= 12
@@ -186,14 +190,17 @@ const taskOptions = computed(() => summaries.value.map(item => ({
 })))
 
 function hasCoordinates(alert: FieldAlert): boolean {
-  return Number.isFinite(Number(alert.target.latitude)) && Number.isFinite(Number(alert.target.longitude))
+  return typeof alert.target.latitude === 'number' && typeof alert.target.longitude === 'number'
+    && Number.isFinite(alert.target.latitude) && Number.isFinite(alert.target.longitude)
 }
 
 const mapTargetId = ref<string | null>(null)
 const mapPoints = computed<FieldMapPoint[]>(() => visibleAlerts.value.flatMap((alert, index) => {
-  const latitude = Number(alert.target.latitude)
-  const longitude = Number(alert.target.longitude)
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return []
+  // 无 GPS 卡片（坐标 null）不上地图点；Number(null) 是 0，必须先判类型。
+  if (typeof alert.target.latitude !== 'number' || typeof alert.target.longitude !== 'number'
+    || !Number.isFinite(alert.target.latitude) || !Number.isFinite(alert.target.longitude)) return []
+  const latitude = alert.target.latitude
+  const longitude = alert.target.longitude
   return [{
     id: alert.id,
     badge: String(index + 1).padStart(2, '0'),

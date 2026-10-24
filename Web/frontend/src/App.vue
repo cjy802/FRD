@@ -421,9 +421,10 @@ const videoCaptureTargets = ref<VideoCaptureTarget[]>([])
 function setVideoTelemetryTrack(track: number[][]) { videoTelemetryTrack.value = track }
 function setVideoTelemetryPosition(position: VideoTelemetryPoint | null) { videoTelemetryPosition.value = position }
 function setVideoCaptureTargets(targets: VideoCaptureTarget[]) { videoCaptureTargets.value = targets }
-// 地图只呈现终审确认点。旧版页面写入的标记没有 analysis_kind 字段，
-// 一律不再上图；重跑一遍分析（或点“清除积水标记”）后存储里就只剩确认点。
-const mapAnalysisTargets = computed(() => analysisMapTargets.value.filter(target => target.analysis_kind === 'confirmed'))
+// 地图只呈现有坐标的终审确认点（无 GPS 帧不上图，仍可下发到现场端）。
+// 旧版页面写入的标记没有 analysis_kind 字段，一律不再上图。
+const mapAnalysisTargets = computed(() => analysisMapTargets.value.filter(target =>
+  target.analysis_kind === 'confirmed' && Number.isFinite(target.latitude) && Number.isFinite(target.longitude)))
 const mapCaptureTargets = computed(() => showAnalysisTargets.value
   ? [...videoCaptureTargets.value, ...mapAnalysisTargets.value]
   : [...videoCaptureTargets.value])
@@ -620,24 +621,23 @@ async function openActiveTaskAnalysisQueue() {
   }
 }
 
-type AnalysisFrameMeta = { time_seconds?: number | null; latitude: number; longitude: number; altitude_m?: number | null; gimbal_pitch_deg?: number | null }
+type AnalysisFrameMeta = { time_seconds?: number | null; latitude?: number | null; longitude?: number | null; altitude_m?: number | null; gimbal_pitch_deg?: number | null }
 
 function analysisTargetsFromJob(job: PhotoAnalysisJob): VideoCaptureTarget[] {
   const images = job.results?.images ?? []
+  // 无 GPS 视频的帧没有坐标，也要进人工复核——现场端对无坐标点显示“坐标待补充”。
   if (job.mode !== 'frames') {
     // legacy 任务：帧元数据按提交顺序放在 context.frames 里。
     const frames = job.context.frames ?? []
     const pairs = images.map((image, index) => ({
       image, meta: frames[index] as AnalysisFrameMeta | undefined,
     }))
-    return buildTargets(pairs.filter((pair): pair is { image: PhotoAnalysisResultImage; meta: AnalysisFrameMeta } =>
-      Boolean(pair.meta && Number.isFinite(pair.meta.latitude) && Number.isFinite(pair.meta.longitude))), job)
+    return buildTargets(pairs.filter((pair): pair is { image: PhotoAnalysisResultImage; meta: AnalysisFrameMeta } => Boolean(pair.meta)), job)
   }
   // 队列任务：每个 item 自带帧元数据，按 name 对应识别结果。
   const metaByName = new Map((job.items ?? []).map(item => [item.name, item]))
   const pairs = images.map(image => ({ image, meta: metaByName.get(image.name)?.meta }))
-  return buildTargets(pairs.filter((pair): pair is { image: PhotoAnalysisResultImage; meta: AnalysisFrameMeta } =>
-    Boolean(pair.meta && Number.isFinite(pair.meta.latitude as number) && Number.isFinite(pair.meta.longitude as number))), job)
+  return buildTargets(pairs.filter((pair): pair is { image: PhotoAnalysisResultImage; meta: AnalysisFrameMeta } => Boolean(pair.meta)), job)
 }
 
 function buildTargets(pairs: { image: PhotoAnalysisResultImage; meta: AnalysisFrameMeta }[], job: PhotoAnalysisJob): VideoCaptureTarget[] {
@@ -647,22 +647,23 @@ function buildTargets(pairs: { image: PhotoAnalysisResultImage; meta: AnalysisFr
   // 不再生成候选标记，避免“复检未检出”的帧堆在地图上。
   if (!isRecheck) return []
   const confirmWord = '双模型确认'
+  // 不设数量上限：全部确认帧交给管理员逐张复核勾选。
   return pairs
     .filter(({ image }) => (image.suspected_pixels ?? 0) > 0)
     .sort((first, second) => (second.image.estimated_area_m2 ?? 0) - (first.image.estimated_area_m2 ?? 0))
-    .slice(0, 5)
     .map(({ image, meta }, index): VideoCaptureTarget => {
-      const positionText = describeRoutePosition(meta.latitude, meta.longitude)
+      const hasCoords = Number.isFinite(meta.latitude) && Number.isFinite(meta.longitude)
+      const positionText = hasCoords ? describeRoutePosition(meta.latitude as number, meta.longitude as number) : ''
       const areaText = `占比 ${(image.suspected_fraction * 100).toFixed(1)}%`
       return {
         id: `analysis-${job.job_id}-${image.name}`,
-        label: `疑似积水（${confirmWord}）${index + 1}${positionText ? ` · ${positionText}` : ''} · ${meta.latitude.toFixed(5)}, ${meta.longitude.toFixed(5)} · ${areaText}`,
+        label: `疑似积水（${confirmWord}）${index + 1}${positionText ? ` · ${positionText}` : ''} · ${hasCoords ? `${(meta.latitude as number).toFixed(5)}, ${(meta.longitude as number).toFixed(5)}` : '坐标待补充'} · ${areaText}`,
         created_at: new Date().toISOString(),
         analysis_kind: 'confirmed',
         badge: '✓',
         time_seconds: meta.time_seconds ?? 0,
-        latitude: meta.latitude,
-        longitude: meta.longitude,
+        latitude: hasCoords ? meta.latitude as number : null,
+        longitude: hasCoords ? meta.longitude as number : null,
         altitude_m: meta.altitude_m ?? null,
         heading_deg: null,
         gimbal_pitch_deg: meta.gimbal_pitch_deg ?? null,
@@ -3051,7 +3052,7 @@ onBeforeUnmount(() => {
   <div class="shell">
     <header class="topbar">
       <div class="brand"><span class="brand-mark" aria-hidden="true"><span class="svg-icon icon-route"></span></span><div class="brand-copy"><strong>低空飞行决策工作台</strong><small>航线规划与天气评估</small></div></div>
-      <div class="top-actions"><a class="field-client-entry" href="/field"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>现场处理端</a><span class="prototype-tag"><span class="svg-icon icon-route" aria-hidden="true"></span>道路参考路线</span><span class="connection">原型阶段</span><span v-if="session" class="session-badge">管理员 · {{ session.username }}</span><button type="button" class="session-logout" @click="signOut">退出</button></div>
+      <div class="top-actions"><span class="prototype-tag"><span class="svg-icon icon-route" aria-hidden="true"></span>道路参考路线</span><span class="connection">原型阶段</span><span v-if="session" class="session-badge">管理员 · {{ session.username }}</span><button type="button" class="session-logout" @click="signOut">退出</button></div>
     </header>
 
     <nav class="workspace-tabs" aria-label="工作区面板">

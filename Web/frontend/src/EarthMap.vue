@@ -197,6 +197,8 @@ function renderOverlay() {
     ? { x: position.x, top: position.y, height: groundPixel.y - position.y }
     : null
   const captureTargets = (props.captureTargets ?? []).flatMap((target, index) => {
+    // 无坐标目标（无 GPS 视频的确认点）无法投影到地图，跳过。
+    if (target.latitude === null || target.longitude === null) return []
     const pixel = scene!.project([target.longitude, target.latitude, props.viewMode === '2d' ? 2 : (target.altitude_m ?? 2)])
     const label = target.label || `近拍点 ${index + 1}`
     // 确认点带 badge（✓）；旧数据没有 badge 时从 label 推断。注意“积水候选 10-24 N”

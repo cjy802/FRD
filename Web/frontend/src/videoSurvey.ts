@@ -8,7 +8,8 @@ export type VideoTelemetryPoint = {
   interpolation_gap_seconds?: number
 }
 
-export type VideoCaptureTarget = VideoTelemetryPoint & {
+// 坐标可空：无 GPS 视频的识别确认点也走这个类型（地图不落点，仅进复核/下发）。
+export type VideoCaptureTarget = Omit<VideoTelemetryPoint, 'latitude' | 'longitude'> & {
   id: string
   label: string
   created_at: string
@@ -16,6 +17,8 @@ export type VideoCaptureTarget = VideoTelemetryPoint & {
   analysis_kind?: 'candidate' | 'confirmed'
   /** 地图徽章文字；缺省时 EarthMap 从 label 推断。 */
   badge?: string
+  latitude: number | null
+  longitude: number | null
 }
 
 export type VideoRecordingWindow = {
