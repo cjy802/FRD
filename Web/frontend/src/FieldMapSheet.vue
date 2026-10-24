@@ -81,7 +81,11 @@ onMounted(async () => {
     }
     if (unmounted) { scene.dispose(); scene = null; return }
     stopFrame = scene.onFrame(syncMarkers)
-    scene.setView('2d', coordinates())
+    // 保持默认 ecef 投影，不做 2D 切换：setProjection 会异步重建地图并丢掉
+    // 同帧设置的相机，现场端出现过取景丢失、标点全部消失。这里只锁旋转和
+    // 倾斜，固定俯视，配合 fit/focus 一次取景到位。
+    scene.engine.controller.enableTilt = false
+    scene.engine.controller.enableRotate = false
     fitAll()
     if (selected.value) focusPoint(selected.value)
     status.value = 'ready'
@@ -167,11 +171,12 @@ onBeforeUnmount(() => {
 .field-map-close:hover { border-color: var(--ui-accent); background: #eff6ff; color: var(--ui-accent); }
 .field-map-body { position: relative; flex: 1; min-height: 0; overflow: hidden; background: #eaf0f6; }
 .field-map-canvas { position: absolute; inset: 0; }
-.field-map-markers { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+/* SDK 画布自带 z-index:2（widgets 面板 15），覆盖层必须显式压到它上面。 */
+.field-map-markers { position: absolute; inset: 0; z-index: 3; overflow: hidden; pointer-events: none; }
 .field-map-marker { position: absolute; display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 2px solid #fff; border-radius: 999px; background: #d0342c; color: #fff; font-size: 11px; font-weight: 700; transform: translate(-50%, -100%); box-shadow: 0 2px 8px rgb(15 23 42 / .3); pointer-events: auto; }
 .field-map-marker::after { content: ''; position: absolute; bottom: -5px; left: 50%; width: 8px; height: 8px; border-right: 2px solid #fff; border-bottom: 2px solid #fff; background: inherit; transform: translateX(-50%) rotate(45deg); }
 .field-map-marker.selected { z-index: 1; width: 34px; height: 34px; border-color: #fff; background: var(--ui-accent); font-size: 13px; }
-.field-map-state { position: absolute; top: 50%; left: 50%; display: grid; justify-items: center; gap: 8px; padding: 26px 30px; border: 1px solid #e1e6eb; border-radius: var(--ui-radius); background: #fffffff2; box-shadow: 0 12px 36px rgb(15 23 42 / .2); color: var(--ui-muted); text-align: center; transform: translate(-50%, -50%); }
+.field-map-state { position: absolute; top: 50%; left: 50%; z-index: 5; display: grid; justify-items: center; gap: 8px; padding: 26px 30px; border: 1px solid #e1e6eb; border-radius: var(--ui-radius); background: #fffffff2; box-shadow: 0 12px 36px rgb(15 23 42 / .2); color: var(--ui-muted); text-align: center; transform: translate(-50%, -50%); }
 .field-map-state strong { color: #242424; font-size: var(--font-heading); font-weight: 600; }
 .field-map-state small { max-width: 260px; font-size: var(--font-caption); line-height: 1.6; }
 .field-loader { width: 30px; height: 30px; border: 3px solid #c7ddf1; border-top-color: var(--ui-accent); border-radius: 50%; animation: field-map-spin .8s linear infinite; }
