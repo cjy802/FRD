@@ -379,7 +379,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 :global(body) { background: #f3f5f7; }
-.field-shell { min-height: 100dvh; overflow-y: auto; color: #111827; background: #f3f5f7; }
+.field-shell { height: 100dvh; overflow-y: auto; overscroll-behavior: contain; color: #111827; background: #f3f5f7; }
 .field-topbar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 68px; padding: 12px max(20px, calc((100vw - 720px) / 2 + 20px)); background: #fff; border-bottom: 1px solid var(--ui-line); }
 .field-brand { display: inline-flex; align-items: center; gap: 10px; color: #111827; text-decoration: none; }
 .field-brand-mark { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 10px; background: #e8f3fc; color: var(--ui-accent); font-size: 15px; font-weight: 700; }
