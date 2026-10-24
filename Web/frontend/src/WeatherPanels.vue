@@ -369,6 +369,11 @@ onBeforeUnmount(() => {
   <div class="weather-reference-slot">
     <div class="status-block weather-risk-panel" aria-label="路线中点参考天气">
       <div class="status-title"><span>路线中点参考天气</span><b :class="pointRisk ? `risk-${pointRisk.level}` : 'pending'">{{ pointRisk ? riskLabel(pointRisk.level, pointRisk.label) : (loading ? '等待预测' : '待评估') }}</b></div>
+      <div class="weather-live-actions weather-cache-toolbar">
+        <small v-if="forecast">上次预测：{{ localTime(forecast.generated_at_utc) }} · {{ forecastAgeLabel }}{{ cacheHit ? ' · 已复用缓存' : '' }}</small>
+        <small v-else>首次预测会自动运行；之后优先复用六小时内的数据。</small>
+        <button type="button" class="weather-refresh" :disabled="loading" @click="predictWeather(true)">{{ loading ? '刷新中…' : '刷新天气' }}</button>
+      </div>
       <template v-if="forecast">
         <p class="plain-summary">{{ groundSummary }}</p>
         <div class="weather-mini-grid"><div :class="metricTone('temperature')"><span>温度</span><strong>{{ (forecast.values.t2m_K - 273.15).toFixed(1) }}°C</strong></div><div :class="metricTone('wind')"><span>地面风</span><strong>{{ forecast.derived.wind_speed_10m_m_s.toFixed(1) }} m/s</strong></div><div :class="metricTone('rain')"><span>6 小时降雨</span><strong>{{ forecast.values.tp_6h_mm.toFixed(1) }} mm</strong></div></div>
@@ -391,11 +396,6 @@ onBeforeUnmount(() => {
 
   <div class="status-block weather-data-panel" aria-label="详细天气">
     <div class="status-title"><span>详细天气</span><b class="weather-state">{{ weatherLabel }}</b></div>
-    <div class="weather-live-actions weather-cache-toolbar">
-      <small v-if="forecast">上次预测：{{ localTime(forecast.generated_at_utc) }} · {{ forecastAgeLabel }}{{ cacheHit ? ' · 已复用缓存' : '' }}</small>
-      <small v-else>首次预测会自动运行；之后优先复用六小时内的数据。</small>
-      <button type="button" class="weather-refresh" :disabled="loading" @click="predictWeather(true)">{{ loading ? '刷新中…' : '刷新天气' }}</button>
-    </div>
     <p v-if="forecast && loading" class="weather-refreshing" role="status">正在获取新预测，旧数据会暂时保留。</p>
     <p v-if="forecast && error" class="weather-cache-error" role="alert">{{ error }}；当前仍显示上一次结果。</p>
     <p v-if="!forecast" :role="jobStatus === 'failed' || error ? 'alert' : 'status'">{{ error || (sampling ? '正在查询航线位置的区域天气…' : message) }}</p>
