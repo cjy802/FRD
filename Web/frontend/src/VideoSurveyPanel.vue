@@ -9,9 +9,8 @@ import {
   selectAdaptiveTaskFrames,
 } from './videoSurvey'
 import type { VideoCaptureTarget, VideoSurvey, VideoTelemetryPoint } from './videoSurvey'
-import type { TaskVideoFrame } from './photoAnalysis'
+import type { PhotoAnalysisJob, PhotoAnalysisModelOption, TaskVideoFrame } from './photoAnalysis'
 import { appendPhotoAnalysisFrames, closePhotoAnalysisJob, fetchPhotoAnalysisHealth, fetchPhotoAnalysisJob, submitPhotoAnalysisJob } from './photoAnalysis'
-import type { PhotoAnalysisModelOption } from './photoAnalysis'
 import { saveMissionTaskFrame } from './missionTasks'
 import { ExtractionCancelled, extractAdaptiveFramesClient } from './adaptiveFrames'
 import type { ClientAdaptiveProgress, ClientSelectedFrame } from './adaptiveFrames'
@@ -22,7 +21,7 @@ import {
   formatDateTime,
   formatDurationBetween,
   groupVideoFiles,
-  makeVideoThumbnail,
+  makeGroupThumbnail,
 } from './videoLibrary'
 import type { VideoLibraryGroup } from './videoLibrary'
 
@@ -84,6 +83,10 @@ const queueModels = ref<PhotoAnalysisModelOption[]>([])
 const queueModel = ref('')
 const queueHealthLoaded = ref(false)
 const queueJobId = ref('')
+// 第一遍（YOLO 等队列模型）跑完后，疑似积水帧自动用 GLM 再识别一遍原图；
+// 复检结果里仍检出的帧才算“双模型确认”。
+const RECHECK_MODEL_ID = 'remote-glm-puddle'
+const queuePhase = ref<'first' | 'recheck'>('first')
 const queueCounts = ref({ enqueued: 0, done: 0, failed: 0 })
 const queueSkipped = ref(0)
 let queuePollTimer: number | null = null
@@ -106,7 +109,7 @@ const queueStatusLabel = computed(() => {
   const parts = [`已入队 ${counts.enqueued}`, `已识别 ${counts.done}`]
   if (counts.failed) parts.push(`失败 ${counts.failed}`)
   if (queueSkipped.value) parts.push(`上传跳过 ${queueSkipped.value}`)
-  return parts.join(' · ')
+  return `${queuePhase.value === 'recheck' ? 'GLM 复检 · ' : ''}${parts.join(' · ')}`
 })
 
 function stopQueuePolling() {
@@ -123,11 +126,53 @@ function startQueuePolling(jobId: string) {
       const job = await fetchPhotoAnalysisJob(jobId)
       queueCounts.value = { ...queueCounts.value, done: job.counts?.done ?? 0, failed: job.counts?.failed ?? 0 }
       if (job.state === 'pending' || job.state === 'running') startQueuePolling(jobId)
-      else queuePollTimer = null
+      else {
+        queuePollTimer = null
+        if (job.state === 'done') void onQueueJobDone(jobId, job)
+      }
     } catch {
       queuePollTimer = null
     }
   }, 2000)
+}
+
+async function onQueueJobDone(jobId: string, job: PhotoAnalysisJob) {
+  if (queuePhase.value === 'first') {
+    await startRecheckJob(jobId, job)
+    return
+  }
+  const images = job.results?.images ?? []
+  const confirmed = images.filter(image => (image.suspected_pixels ?? 0) > 0).length
+  const singleOnly = Math.max(0, (job.counts?.done ?? images.length) - confirmed)
+  status.value = `GLM 复检完成：双模型确认疑似积水 ${confirmed} 帧${singleOnly ? `（另有 ${singleOnly} 帧仅第一遍模型检出，未确认）` : ''}；确认帧已生成地图积水目标，含经纬度与所在道路位置。`
+}
+
+async function startRecheckJob(firstJobId: string, job: PhotoAnalysisJob) {
+  if (!props.taskId) return
+  const suspectedNames = new Set((job.results?.images ?? [])
+    .filter(image => (image.suspected_pixels ?? 0) > 0).map(image => image.name))
+  const frameIds = (job.items ?? []).filter(item => suspectedNames.has(item.name)).map(item => item.frame_id)
+  if (!frameIds.length) {
+    status.value = '第一遍识别完成：未检出疑似积水帧，跳过 GLM 复检。'
+    return
+  }
+  if (!queueModels.value.some(model => model.id === RECHECK_MODEL_ID)) {
+    status.value = `第一遍识别完成：检出 ${frameIds.length} 张疑似积水帧，但 GLM 复检模型当前不可用（未配置或离线），已跳过复检。`
+    return
+  }
+  try {
+    status.value = `第一遍识别完成：检出 ${frameIds.length} 张疑似积水帧，正在提交 GLM 复检（喂原图）…`
+    const submitted = await submitPhotoAnalysisJob({
+      taskId: props.taskId, frameIds, modelId: RECHECK_MODEL_ID, recheckOfJobId: firstJobId,
+    })
+    queuePhase.value = 'recheck'
+    queueJobId.value = submitted.job_id
+    queueCounts.value = { enqueued: frameIds.length, done: 0, failed: 0 }
+    emit('job-started', submitted.job_id)
+    startQueuePolling(submitted.job_id)
+  } catch (cause) {
+    status.value = `第一遍识别完成，但 GLM 复检提交失败：${cause instanceof Error ? cause.message : '未知错误'}。疑似帧仍保留在任务关键帧。`
+  }
 }
 
 const reviewVideoSrc = computed(() => {
@@ -258,18 +303,25 @@ function onFolderPicked(event: Event) {
 }
 
 async function loadGroupPreviews(groups: VideoLibraryGroup[]) {
-  for (const group of groups) {
-    // 重新选择文件夹后，旧队列立即失效。
-    if (libraryGroups.value !== groups) return
-    const thumbnail = await makeVideoThumbnail(group.video)
-    if (libraryGroups.value !== groups) return
-    if (thumbnail) thumbnails.value = { ...thumbnails.value, [group.key]: thumbnail }
-    if (group.srt && srtCounts.value[group.key] === undefined) {
-      const count = await countSrtTelemetry(group.srt)
+  // 有限并发：大文件夹几十段素材不能同时开几十路视频解码。
+  const concurrency = 4
+  let cursor = 0
+  const workers = Array.from({ length: Math.min(concurrency, groups.length) }, async () => {
+    while (cursor < groups.length) {
+      const group = groups[cursor++]
+      // 重新选择文件夹后，旧队列立即失效。
       if (libraryGroups.value !== groups) return
-      srtCounts.value = { ...srtCounts.value, [group.key]: count }
+      const thumbnail = await makeGroupThumbnail(group)
+      if (libraryGroups.value !== groups) return
+      if (thumbnail) thumbnails.value = { ...thumbnails.value, [group.key]: thumbnail }
+      if (group.srt && srtCounts.value[group.key] === undefined) {
+        const count = await countSrtTelemetry(group.srt)
+        if (libraryGroups.value !== groups) return
+        srtCounts.value = { ...srtCounts.value, [group.key]: count }
+      }
     }
-  }
+  })
+  await Promise.all(workers)
 }
 
 function openPreview(group: VideoLibraryGroup) {
@@ -475,6 +527,7 @@ async function selectAdaptiveFramesWithAnalysis() {
   extractionCancel.value = false
   error.value = ''
   queueJobId.value = ''
+  queuePhase.value = 'first'
   queueSkipped.value = 0
   queueCounts.value = { enqueued: 0, done: 0, failed: 0 }
   let uploadChain: Promise<void> = Promise.resolve()

@@ -101,6 +101,15 @@ export async function countSrtTelemetry(file: File): Promise<number> {
 }
 
 // Capture a poster frame near the clip start for the library grid.
+// DJI 主片可能是 HEVC，部分浏览器解不了；LRF 代理始终是 H.264，优先用它出封面。
+export async function makeGroupThumbnail(group: Pick<VideoLibraryGroup, 'video' | 'lrf'>): Promise<string | null> {
+  if (group.lrf) {
+    const fromLrf = await makeVideoThumbnail(group.lrf)
+    if (fromLrf) return fromLrf
+  }
+  return makeVideoThumbnail(group.video)
+}
+
 export function makeVideoThumbnail(file: File): Promise<string | null> {
   return new Promise(resolve => {
     const url = URL.createObjectURL(file)
@@ -120,7 +129,7 @@ export function makeVideoThumbnail(file: File): Promise<string | null> {
     video.preload = 'metadata'
     video.addEventListener('loadedmetadata', () => {
       const duration = Number.isFinite(video.duration) ? video.duration : 1
-      video.currentTime = Math.min(1, duration * 0.1)
+      video.currentTime = Math.min(0.1, duration * 0.1)
     })
     video.addEventListener('seeked', () => {
       try {
