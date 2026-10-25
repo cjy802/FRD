@@ -69,8 +69,10 @@ onBeforeUnmount(leave)
 </script>
 
 <style scoped>
-.info-hint { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; margin-left: 2px; flex: none; border-radius: 50%; color: #8a97a8; cursor: help; outline-offset: 2px; }
+.info-hint { display: inline-flex; vertical-align: middle; align-items: center; justify-content: center; width: 16px; height: 16px; margin-left: 2px; flex: none; border-radius: 50%; color: #8a97a8; cursor: help; outline-offset: 2px; }
 .info-hint:hover, .info-hint:focus-visible { color: #4b5563; }
+.primary-button .info-hint { color: rgb(255 255 255 / .78); }
+.primary-button .info-hint:hover, .primary-button .info-hint:focus-visible { color: #fff; }
 .info-hint-icon { width: 14px; height: 14px; }
 .info-hint-bubble { position: fixed; z-index: 14000; width: max-content; max-width: 280px; padding: 8px 11px; border-radius: 8px; background: #253445; color: #fff; font-size: 12px; line-height: 1.55; text-align: left; box-shadow: 0 6px 20px rgb(15 23 42 / .28); pointer-events: none; }
 .info-hint-fade-enter-active, .info-hint-fade-leave-active { transition: opacity .12s ease; }

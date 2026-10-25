@@ -48,7 +48,7 @@ function riskLabel(level: string, fallback: string) {
 }
 function riskDescription(level: string, complete: boolean) {
   if (!complete || level === 'incomplete') return '部分路线缺少可用天气资料，当前结果不能作为完整判断。'
-  if (level === 'no_trigger') return '已覆盖的风、降雨、阵风和能见度没有超过当前提醒线。'
+  if (level === 'no_trigger') return '已覆盖的指标均未超过当前提醒线。'
   if (level === 'elevated') return '有指标达到较强提醒线，已在上方红框标出；可打开地图逐点复核。'
   return '有指标接近提醒线，已在上方橙框标出；可打开地图逐点复核。'
 }

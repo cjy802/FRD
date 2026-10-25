@@ -129,8 +129,8 @@ function riskLabel(level: string, fallback: string) {
 const groundSummary = computed(() => {
   if (!forecast.value) return '等待未来天气预报生成后评估路线中点附近天气。'
   if (pointThresholdError.value) return `中点天气阈值配置有误：${pointThresholdError.value}`
-  const summary = pointRisk.value?.triggers.length ? '路线中点附近有天气因素需要留意' : '路线中点附近暂未发现超过当前提醒线的天气因素'
-  return `${summary}；此处只是起终点之间的地面参考位置，整条路线和飞行高度请看“沿线天气检查”。`
+  const summary = pointRisk.value?.triggers.length ? '中点天气需要留意' : '中点天气未超提醒线'
+  return `${summary}；这里只是地面参考点，整条航线请看下方“沿线天气检查”。`
 })
 function restorePointThresholds() {
   try {

@@ -1404,7 +1404,7 @@ const decisionDescription = computed(() => {
   if (routePhase.value.error) return routePhase.value.error
   if (routePhase.value.pending) return '系统正在按出发时间、飞行高度和路线逐点检查天气。'
   if (!routeAssessment.value) return '结果出来后，这里会先告诉你是否有需要留意的天气因素。'
-  if (decisionLevel.value === 'no_trigger') return '整条路线天气资料覆盖完整，风、降雨、阵风和能见度均未触发当前提醒线。仍需结合机型和现场情况核验。'
+  if (decisionLevel.value === 'no_trigger') return '风、降雨、阵风和能见度均未触发提醒线，仍需结合现场情况核验。'
   if (decisionLevel.value === 'incomplete') return '部分路线缺少可用的高度或时间资料，当前判断不完整，不能把“没有提醒”理解为安全。'
   return '较强提醒指标已用红框标出，接近提醒线的指标用橙框标出；可展开沿线天气查看地图点位。这个结果只是天气初筛。'
 })
@@ -3269,7 +3269,7 @@ onBeforeUnmount(() => {
           <div class="analysis-target-tools"><label class="route-export-record"><input v-model="showAnalysisTargets" type="checkbox" />显示已下发积水点（{{ mapAnalysisTargets.length }} 个 · 现场端可见）</label><button type="button" class="weather-refresh" :disabled="!analysisMapTargets.length" @click="clearAnalysisTargets">撤销全部下发</button></div>
           </div>
           </div>
-            <div v-if="activeModule === 'route'" class="primary-action-row"><fluent-button class="primary-button" appearance="primary" type="button" :disabled="!weatherCoordinates || loading || checkingPoint || locatingPoint !== null" @click="selectModule('status')"><span class="svg-icon icon-cloud-rain" aria-hidden="true"></span><span>继续查看天气</span></fluent-button><InfoHint text="路线和天气阶段可以继续返回修改；完成后到“命名 / 导出”阶段创建任务。" /></div>
+            <div v-if="activeModule === 'route'" class="primary-action-row"><fluent-button class="primary-button" appearance="primary" type="button" :disabled="!weatherCoordinates || loading || checkingPoint || locatingPoint !== null" @click="selectModule('status')"><span class="svg-icon icon-cloud-rain" aria-hidden="true"></span><span>继续查看天气</span><InfoHint text="路线和天气阶段可以继续返回修改；完成后到“命名 / 导出”阶段创建任务。" /></fluent-button></div>
            <p v-if="taskError && activeModule === 'route'" class="form-error" role="alert">{{ taskError }}</p>
            <p v-if="error && activeModule === 'route' && !locationFeedback?.error && !placeSelectionFeedback?.error" class="form-error" role="alert">{{ error }}</p>
         </form>
