@@ -174,6 +174,14 @@ function draw(im) {
       ctx.restore();
     }
   }
+  if (drag && drag.mode === "new" && drag.rect) {   // 拖拽中的预览虚线
+    const r = drag.rect;
+    ctx.save();
+    ctx.setLineDash([5, 4]);
+    ctx.strokeStyle = "rgba(130,180,255,0.9)";
+    ctx.strokeRect(r.x * scale + .5, r.y * scale + .5, r.w * scale, r.h * scale);
+    ctx.restore();
+  }
   ctx.restore();
 }
 
@@ -233,8 +241,9 @@ function hitRect(p) {
   return -1;
 }
 
-cv.addEventListener("mousedown", e => {
+cv.addEventListener("pointerdown", e => {
   if (e.button !== 0) return;
+  try { cv.setPointerCapture(e.pointerId); } catch {}
   const p = toImg(e);
   const hit = hitRect(p);
   if (hit >= 0) {
@@ -247,43 +256,35 @@ cv.addEventListener("mousedown", e => {
   }
   redraw();
 });
-cv.addEventListener("mousemove", e => {
+cv.addEventListener("pointermove", e => {
   if (!drag) return;
   const p = toImg(e);
   if (drag.mode === "new") {
-    const x = Math.min(drag.x0, p.x), y = Math.min(drag.y0, p.y);
-    const w = Math.abs(p.x - drag.x0), h = Math.abs(p.y - drag.y0);
-    drag.rect = { x, y, w, h };
-    // 临时预览:画在 selected 位置
-    const rects = curRects();
-    if (selected === -1 || rects[selected] !== drag.rect) {
-      if (selected >= 0 && rects[selected] !== drag.rect) selected = -1;
-      rects.push(drag.rect);
-      selected = rects.length - 1;
-    } else {
-      rects[selected] = drag.rect;
-    }
-  } else if (drag.mode === "move") {
+    // 预览只存 drag.rect,不进框列表,松手时才正式生成
+    drag.rect = {
+      x: Math.min(drag.x0, p.x), y: Math.min(drag.y0, p.y),
+      w: Math.abs(p.x - drag.x0), h: Math.abs(p.y - drag.y0),
+    };
+  } else {
     const r = drag.rect;
     r.x = drag.orig.x + (p.x - drag.x0);
     r.y = drag.orig.y + (p.y - drag.y0);
   }
   redraw();
 });
-window.addEventListener("mouseup", e => {
+function endDrag() {
   if (!drag) return;
   let changed = false;
   if (drag.mode === "new") {
     const r = drag.rect;
-    if (!r || r.w < 5 || r.h < 4) {
-      const rects = curRects();
-      if (selected >= 0 && rects[selected] === r) { rects.splice(selected, 1); selected = -1; }
-    } else {
+    if (r && r.w >= 5 && r.h >= 4) {
       r.x = Math.round(r.x); r.y = Math.round(r.y);
       r.w = Math.round(r.w); r.h = Math.round(r.h);
+      curRects().push(r);
+      selected = curRects().length - 1;
       changed = true;
     }
-  } else if (drag.mode === "move") {
+  } else {
     const r = drag.rect;
     r.x = Math.round(r.x); r.y = Math.round(r.y);
     changed = r.x !== drag.orig.x || r.y !== drag.orig.y;
@@ -292,7 +293,9 @@ window.addEventListener("mouseup", e => {
   drag = null;
   if (changed) markDirty();
   redraw();
-});
+}
+cv.addEventListener("pointerup", endDrag);
+cv.addEventListener("pointercancel", () => { drag = null; redraw(); });
 cv.addEventListener("contextmenu", e => {
   e.preventDefault();
   const hit = hitRect(toImg(e));
