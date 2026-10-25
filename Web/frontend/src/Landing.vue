@@ -53,7 +53,10 @@ const pillLabel = computed(() => {
 <style scoped>
 .landing {
   --hero-accent: #ddf25b;
-  min-height: 100dvh;
+  /* 全局 style.css 把 html/body/#app 锁成 height:100% + overflow:hidden，
+     落地页必须自己做滚动容器，矮视口才能滚到底部按钮。 */
+  height: 100dvh;
+  overflow-y: auto;
   background: #f1eee3;
   font-family: 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', system-ui, sans-serif;
 }
