@@ -324,7 +324,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="field-shell">
     <header class="field-topbar">
-      <a class="field-brand" href="/" aria-label="返回低空飞行决策工作台">
+      <a class="field-brand" href="/workspace" aria-label="返回低空飞行决策工作台">
         <span class="field-brand-mark" aria-hidden="true">水</span>
         <span><strong>积水处置</strong><small>现场处理端</small></span>
       </a>
@@ -391,7 +391,7 @@ onBeforeUnmount(() => {
         </article>
       </section>
 
-      <footer class="field-footer"><span>积水位置来自航后照片分析</span><a href="/">返回主控端</a></footer>
+      <footer class="field-footer"><span>积水位置来自航后照片分析</span><a href="/workspace">返回主控端</a></footer>
     </main>
 
     <Teleport to="body">

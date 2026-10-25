@@ -42,5 +42,6 @@ export function redirectToLogin(): void {
 }
 
 export function homeForRole(role: Role): string {
-  return role === 'field' ? '/field' : '/'
+  // '/' 现在是公开落地页，管理员的“家”在 /workspace。
+  return role === 'field' ? '/field' : '/workspace'
 }

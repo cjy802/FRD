@@ -1198,7 +1198,8 @@ def compare_weather_routes(request: WeatherRouteComparisonRequest):
 
 # ---- 同源前端托管（生产形态）----
 # vite build 产出 frontend/dist 后，浏览器直接访问 http://127.0.0.1:8011/ 即
-# 主控工作台、/field 为现场处理端、/login 为登录页；单源访问，没有跨域。
+# 公开落地页、/workspace 为主控工作台、/field 为现场处理端、/login 为登录页；
+# 单源访问，没有跨域。
 # dist 不存在（纯开发态走 vite 5173 代理）时跳过挂载。
 
 _FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"

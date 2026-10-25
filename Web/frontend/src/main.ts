@@ -4,6 +4,7 @@ import { webLightTheme } from '@fluentui/tokens'
 import '@fluentui/web-components/button.js'
 import App from './App.vue'
 import FieldClient from './FieldClient.vue'
+import Landing from './Landing.vue'
 import Login from './Login.vue'
 import './style.css'
 
@@ -20,7 +21,9 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
   return response
 }
 
+// '/' 为公开落地页，主控工作台在 /workspace（未登录由 App 的守卫带去登录页）。
 const root = window.location.pathname === '/field'
   ? FieldClient
-  : window.location.pathname === '/login' ? Login : App
+  : window.location.pathname === '/workspace' ? App
+  : window.location.pathname === '/login' ? Login : Landing
 createApp(root).mount('#app')
