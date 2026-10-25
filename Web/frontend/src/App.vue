@@ -3081,7 +3081,7 @@ onBeforeUnmount(() => {
   <div class="shell">
     <header class="topbar">
       <div class="brand"><span class="brand-mark" aria-hidden="true"><span class="svg-icon icon-route"></span></span><div class="brand-copy"><strong>积水风险智能识别与预警系统</strong><small>航线规划与天气评估</small></div></div>
-      <div class="top-actions"><span class="prototype-tag"><span class="svg-icon icon-route" aria-hidden="true"></span>道路参考路线</span><span class="connection">原型阶段</span><span v-if="session" class="session-badge">管理员 · {{ session.username }}</span><button type="button" class="session-logout" @click="signOut">退出</button></div>
+      <div class="top-actions"><span class="prototype-tag"><span class="svg-icon icon-route" aria-hidden="true"></span>道路参考路线</span><span v-if="session" class="session-badge">管理员 · {{ session.username }}</span><button type="button" class="session-logout" @click="signOut">退出</button></div>
     </header>
 
     <nav class="workspace-tabs" aria-label="工作区面板">

@@ -81,7 +81,6 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .session-logout { min-height: 30px; padding: 4px 10px; border: 1px solid #d7dfe8; border-radius: 7px; background: #fff; color: #526273; font-size: var(--font-caption); white-space: nowrap; }
 .session-logout:hover { border-color: #d5a3a3; color: #a4262c; background: #fff7f7; }
 .prototype-tag { display: inline-flex; align-items: center; gap: 6px; padding-right: 14px; border-right: 1px solid var(--ui-line); color: var(--ui-accent); font-weight: 600; }
-.connection { color: var(--ui-muted); }
 .layout { position: relative; flex: 1; min-height: 0; min-width: 0; overflow: hidden; display: grid; grid-template-columns: 76px var(--sidebar-width, 360px) minmax(420px, 1fr); grid-template-rows: minmax(0, 1fr); }
 .module-rail { grid-column: 1; grid-row: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; align-items: stretch; gap: 14px; padding: 18px 8px; border-right: 1px solid var(--ui-line); background: #fff; }
 .module-rail-label { padding: 0 3px; color: var(--ui-muted); font-size: 12px; font-weight: 700; letter-spacing: .08em; text-align: center; }
@@ -531,7 +530,7 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 }
 @media (max-width: 720px) {
   .topbar { flex-basis: 60px; padding: 0 16px; }
-  .prototype-tag, .connection { display: none; }
+  .prototype-tag { display: none; }
   .workspace-tabs { display: flex; flex: 0 0 42px; background: #fff; border-bottom: 1px solid var(--ui-line); }
   .layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: 74px minmax(0, 1fr); }
   .module-rail { grid-column: 1; grid-row: 1; flex-direction: row; align-items: center; gap: 8px; padding: 8px 10px; border-right: 0; border-bottom: 1px solid var(--ui-line); }
