@@ -37,11 +37,7 @@ export async function fetchSession(): Promise<Session | null> {
   }
 }
 
-export function redirectToLogin(): void {
-  if (window.location.pathname !== '/login') window.location.replace('/login')
-}
-
 export function homeForRole(role: Role): string {
-  // '/' 现在是公开落地页，管理员的“家”在 /workspace。
+  // '/' 现在是公开落地页兼登录入口，管理员的“家”在 /workspace。
   return role === 'field' ? '/field' : '/workspace'
 }

@@ -39,7 +39,7 @@ async function submit() {
 
       <div class="hero-main">
         <div class="hero-copy">
-          <h1>航线，当场画好。<br />天气，提前看清。</h1>
+          <h1><span class="line">航线，当场画好。</span><span class="line">天气，提前看清。</span></h1>
           <p>面向道路巡查的低空飞行助手：点到点航线规划、起飞前天气评估、航后照片 AI 分析——从画线到起飞，一站完成。</p>
         </div>
 
@@ -57,16 +57,6 @@ async function submit() {
             <p v-if="error" class="login-error" role="alert">{{ error }}</p>
             <button type="submit" class="login-submit" :disabled="busy">{{ busy ? '正在登录' : '登录' }}</button>
           </form>
-          <footer class="login-roles">
-            <div>
-              <b>管理员</b>
-              <span>进入主控工作台：航线规划、照片分析、人工确认并下发积水点。</span>
-            </div>
-            <div>
-              <b>使用者</b>
-              <span>进入现场处理端：查看下发的积水位置、现场照片和地图导航。</span>
-            </div>
-          </footer>
         </main>
       </div>
     </section>
@@ -79,7 +69,8 @@ async function submit() {
      落地页必须自己做滚动容器，矮视口（手机横屏等）才能滚到登录卡。 */
   height: 100dvh;
   overflow-y: auto;
-  background: #0a1c38;
+  /* 底色取天空蓝：万一有亚像素缝隙露底，看起来仍是画面的一部分 */
+  background: #2160b2;
   font-family: 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', system-ui, sans-serif;
 }
 
@@ -90,6 +81,8 @@ async function submit() {
   flex-direction: column;
   overflow: hidden;
   isolation: isolate;
+  /* 同一张照片铺底，图片层有亚像素接缝时露出的也是照片，不出深色缝 */
+  background: url('/hero-sky.jpg') center / cover no-repeat;
 }
 
 .hero-bg {
@@ -126,26 +119,32 @@ async function submit() {
 
 .hero-main {
   flex: 1;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   align-items: center;
-  justify-content: space-between;
   gap: clamp(32px, 5vw, 72px);
   padding: 12px clamp(24px, 6vw, 104px) 72px;
 }
 
 .hero-copy {
-  max-width: 640px;
+  max-width: 720px;
   animation: hero-rise 0.7s ease-out both;
 }
 
 .hero-copy h1 {
   margin: 0;
   color: #fff;
-  font-size: clamp(34px, 4.6vw, 62px);
+  /* 字号跟列宽走，保证每行 8 个字放得下；两行各自锁死不折行 */
+  font-size: clamp(38px, 4.8vw, 84px);
   font-weight: 700;
-  line-height: 1.22;
+  line-height: 1.18;
   letter-spacing: 0.015em;
   text-shadow: 0 2px 24px rgba(4, 14, 34, 0.55);
+}
+
+.hero-copy h1 .line {
+  display: block;
+  white-space: nowrap;
 }
 
 .hero-copy p {
@@ -157,11 +156,11 @@ async function submit() {
   text-shadow: 0 1px 12px rgba(4, 12, 28, 0.55);
 }
 
-/* 登录卡：元素与 /login 页一致，样式对齐统一身份认证平台的白卡 */
+/* 登录卡：白卡落在右半栏的居中位置，不贴屏幕右边 */
 .login-card {
   width: min(400px, 100%);
-  flex-shrink: 0;
-  padding: 30px 28px 24px;
+  justify-self: center;
+  padding: 30px 28px 28px;
   border-radius: 16px;
   background: #fff;
   box-shadow: 0 24px 60px rgba(4, 14, 34, 0.35);
@@ -243,31 +242,6 @@ async function submit() {
   opacity: 0.6;
 }
 
-.login-roles {
-  display: grid;
-  gap: 10px;
-  margin-top: 18px;
-  padding-top: 16px;
-  border-top: 1px solid var(--ui-line);
-}
-
-.login-roles div {
-  display: grid;
-  gap: 3px;
-}
-
-.login-roles b {
-  color: #1e3a5f;
-  font-size: var(--font-caption);
-  font-weight: 700;
-}
-
-.login-roles span {
-  color: var(--ui-muted);
-  font-size: var(--font-caption);
-  line-height: 1.5;
-}
-
 @keyframes hero-rise {
   from {
     opacity: 0;
@@ -298,12 +272,16 @@ async function submit() {
 
 @media (max-width: 960px) {
   .hero-main {
-    flex-direction: column;
-    align-items: center;
-    justify-content: flex-start;
+    grid-template-columns: 1fr;
+    justify-items: center;
     gap: 36px;
     padding: 24px 20px 56px;
     text-align: center;
+  }
+
+  /* 单列后可用宽度变大，字号重新按整行宽算 */
+  .hero-copy h1 {
+    font-size: clamp(34px, 7.5vw, 72px);
   }
 
   .hero-copy p {

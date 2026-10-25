@@ -328,7 +328,7 @@ const showAnalysisTargets = ref(true)
 const session = ref<Session | null>(null)
 async function signOut() {
   await logout()
-  window.location.replace('/login')
+  window.location.replace('/')
 }
 const savedTasks = ref<MissionTaskSummary[]>([])
 const taskListOpen = ref(false)
@@ -3016,7 +3016,7 @@ function initCameraPreview() {
 onMounted(() => {
   // 登录守卫：主控工作台仅管理员进入；使用者账号自动转去现场处理端。
   void fetchSession().then(current => {
-    if (!current) { window.location.replace('/login'); return }
+    if (!current) { window.location.replace('/'); return }
     if (current.role === 'field') { window.location.replace('/field'); return }
     session.value = current
   })

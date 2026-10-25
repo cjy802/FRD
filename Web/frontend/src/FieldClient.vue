@@ -47,7 +47,7 @@ let refreshTimer: ReturnType<typeof setInterval> | null = null
 
 async function signOut() {
   await logout()
-  window.location.replace('/login')
+  window.location.replace('/')
 }
 
 function loadCompletedIds(): string[] {
@@ -305,9 +305,9 @@ watch(lightbox, value => {
 
 onMounted(() => {
   document.title = '积水处置 · 现场处理端'
-  // 登录守卫：未登录去登录页；管理员也可以看现场端，但 brand 链接回主控。
+  // 登录守卫：未登录回首页登录卡；管理员也可以看现场端，但 brand 链接回主控。
   void fetchSession().then(current => {
-    if (!current) window.location.replace('/login')
+    if (!current) window.location.replace('/')
     else session.value = current
   })
   void refresh(true)
