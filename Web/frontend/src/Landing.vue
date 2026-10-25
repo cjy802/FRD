@@ -54,6 +54,11 @@ async function submit() {
               密码
               <input v-model="password" type="password" name="password" autocomplete="current-password" :disabled="busy" />
             </label>
+            <!-- 占位入口：功能还没定，先不接任何跳转 -->
+            <div class="login-links">
+              <button type="button" :disabled="busy">忘记密码</button>
+              <button type="button" :disabled="busy">新建用户</button>
+            </div>
             <p v-if="error" class="login-error" role="alert">{{ error }}</p>
             <button type="submit" class="login-submit" :disabled="busy">{{ busy ? '正在登录' : '登录' }}</button>
           </form>
@@ -208,6 +213,26 @@ async function submit() {
 .login-form input:disabled {
   background: #f3f6f9;
   color: #748092;
+}
+
+.login-links {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: -4px;
+}
+
+.login-links button {
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--ui-accent);
+  font-size: var(--font-caption);
+  cursor: pointer;
+}
+
+.login-links button:hover {
+  text-decoration: underline;
 }
 
 .login-error {
