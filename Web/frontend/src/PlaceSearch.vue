@@ -10,7 +10,7 @@ const emit = defineEmits<{
   (event: 'clear-selection-feedback'): void
 }>()
 const query = ref('')
-const region = ref('常州市')
+const region = ref('')
 const center = ref<SearchCenter | null>(null)
 const locationAddress = ref('')
 const suggestedPlaceName = ref('')
