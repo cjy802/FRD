@@ -8,6 +8,7 @@ import BaiduCameraPreview from './BaiduCameraPreview.vue'
 import PhotoAnalysisPanel from './PhotoAnalysisPanel.vue'
 import VideoSurveyPanel from './VideoSurveyPanel.vue'
 import CustomSelect from './CustomSelect.vue'
+import InfoHint from './InfoHint.vue'
 import { fetchSession, logout, type Session } from './auth'
 import type { VideoCaptureTarget, VideoTelemetryPoint } from './videoSurvey'
 import type { CameraPose } from './baiduScene'
@@ -3198,7 +3199,7 @@ onBeforeUnmount(() => {
         <div v-if="activeModule === 'route'" class="section-heading"><span class="eyebrow"><span class="svg-icon icon-route" aria-hidden="true"></span>第 1 步 · 选定航线</span><h1>规划本次飞行</h1><PlaceSearch v-if="planningMode === 'anchors'" :disabled="loading || checkingPoint" :targets="anchorChoices" :selection-feedback="placeSelectionFeedback" @choose-point="chooseSearchedPoint" @clear-selection-feedback="placeSelectionFeedback = null" /></div>
 
         <form class="route-form" @submit.prevent @invalid.capture="revealInvalidSetting">
-          <div v-if="activeModule === 'route'" class="planning-mode-switch" role="group" aria-label="路线规划方式"><button type="button" :class="{ active: planningMode === 'anchors' }" :aria-pressed="planningMode === 'anchors'" @click="choosePlanningMode('anchors')">点到点路线</button><button type="button" :class="{ active: planningMode === 'area' }" :aria-pressed="planningMode === 'area'" @click="choosePlanningMode('area')">区域道路巡查</button></div>
+          <div v-if="activeModule === 'route'" class="planning-mode-switch" role="group" aria-label="路线规划方式"><button type="button" :class="{ active: planningMode === 'anchors' }" :aria-pressed="planningMode === 'anchors'" @click="choosePlanningMode('anchors')">点到点路线</button><button type="button" :class="{ active: planningMode === 'area' }" :aria-pressed="planningMode === 'area'" @click="choosePlanningMode('area')">区域道路巡查<InfoHint text="路线覆盖本地道路数据里符合筛选等级的中心线，连接段也沿已收录道路规划。道路等级是宽度的近似，不等同于现场实测；覆盖率不包含数据中未收录的道路。" /></button></div>
           <nav v-if="activeModule === 'route'" class="settings-pages" aria-label="航线设置分组"><button type="button" :aria-pressed="settingsPage === 'points'" @click="settingsPage = 'points'">{{ planningMode === 'area' ? '区域与道路' : '主点与坐标' }}</button><button type="button" :aria-pressed="settingsPage === 'mission'" @click="settingsPage = 'mission'">飞行参数</button></nav>
           <div class="settings-fields">
           <div v-if="planningMode === 'anchors'" class="settings-group" data-settings-page="points" :class="{ 'settings-active': settingsPage === 'points' }">
@@ -3230,12 +3231,11 @@ onBeforeUnmount(() => {
           </div>
 
           <div v-else class="settings-group area-coverage-settings" data-settings-page="points" :class="{ 'settings-active': settingsPage === 'points' }">
-            <p class="form-scope-note">路线覆盖本地道路数据里符合筛选等级的中心线，连接段也沿已收录道路规划。道路等级是宽度的近似，不等同于现场实测；覆盖率不包含数据中未收录的道路。</p>
             <div class="coverage-endpoints" role="group" aria-label="区域巡查起终点">
               <button type="button" :class="{ active: coverageEndpointTarget === 'start' }" :disabled="loading || checkingPoint" @click="chooseMapCoverageEndpoint('start')"><span class="coverage-endpoint-key">A</span><span><strong>区域起点</strong><small>{{ coverageStartPoint ? `${coverageStartPoint.latitude.toFixed(5)}, ${coverageStartPoint.longitude.toFixed(5)}` : '点击地图设置' }}</small></span></button>
               <button type="button" :class="{ active: coverageEndpointTarget === 'end' }" :disabled="loading || checkingPoint" @click="chooseMapCoverageEndpoint('end')"><span class="coverage-endpoint-key">B</span><span><strong>区域终点</strong><small>{{ coverageEndPoint ? `${coverageEndPoint.latitude.toFixed(5)}, ${coverageEndPoint.longitude.toFixed(5)}` : '点击地图设置' }}</small></span></button>
             </div>
-            <p class="coverage-area-note">起终点会吸附到附近道路；吸附距离超过 100 米或点位在区域外时，路线不会生成。</p>
+            <p class="coverage-area-note">起终点会吸附到附近道路<InfoHint text="吸附距离超过 100 米或点位在区域外时，路线不会生成。" /></p>
             <div class="coverage-road-classes" role="group" aria-label="选择要覆盖的道路等级">
               <label v-for="option in coverageRoadClassOptions" :key="option.value"><input v-model="coverageRoadClasses" type="checkbox" :value="option.value" :disabled="loading" />{{ option.label }}</label>
             </div>
@@ -3256,23 +3256,20 @@ onBeforeUnmount(() => {
 
           <div class="settings-group" data-settings-page="mission" :class="{ 'settings-active': settingsPage === 'mission' }">
           <div class="form-line"></div>
-          <div class="coordinate-row"><label>离地高度 AGL · 米<input v-model.number="form.altitude_m" type="number" min="0" max="1000" required :disabled="loading" /></label><label>巡航速度 · km/h<input v-model.number="form.speed_kmh" type="number" min="1" max="200" step="0.5" required :disabled="loading" /></label></div>
-          <small class="form-scope-note">目前高度风覆盖 10–100 米；范围外会标记缺测。</small>
+          <div class="coordinate-row"><label><span class="label-hint">离地高度 AGL · 米<InfoHint text="目前高度风覆盖 10–100 米；范围外会标记缺测。" /></span><input v-model.number="form.altitude_m" type="number" min="0" max="1000" required :disabled="loading" /></label><label>巡航速度 · km/h<input v-model.number="form.speed_kmh" type="number" min="1" max="200" step="0.5" required :disabled="loading" /></label></div>
           <div v-if="planningMode === 'anchors'" class="clearance-row"><label>建筑缓冲 · 米（演示）<input v-model.number="form.clearance_m" type="number" min="0" max="20" step="0.5" required :disabled="loading || roadSource === 'online'" /></label><span>{{ roadSource === 'local' ? '用于排除靠近建筑的道路段' : '在线机动车路线不使用此参数' }}</span></div>
           <p v-else class="form-scope-note">区域巡查路线依照所选道路中心线生成，不使用建筑缓冲参数。</p>
           <button ref="waypointEditorTrigger" type="button" class="waypoint-editor-trigger" :disabled="!waypointSettings.length" aria-haspopup="dialog" :aria-expanded="waypointEditorExpanded" @click="openWaypointEditor"><span>逐点设置高度和面向</span><small>{{ waypointSettings.length }} 个点</small><span aria-hidden="true">›</span></button>
           </div>
 
            <div class="settings-group" data-settings-page="photos" :class="{ 'settings-active': settingsPage === 'photos' }">
-          <p class="form-scope-note">当前任务导入视频与对应 SRT。拖动时间线核对无人机位置，只截取需要分析的关键帧。</p>
+          <p class="form-scope-note">当前任务导入视频与对应 SRT。拖动时间线核对无人机位置，只截取需要分析的关键帧。<InfoHint text="关键帧会保存在任务文件夹中。模型只分析勾选的帧，SRT 位置会随结果一同记录。" /></p>
           <VideoSurveyPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frame-count="taskFrames.length" @track-change="setVideoTelemetryTrack" @position-change="setVideoTelemetryPosition" @targets-change="setVideoCaptureTargets" @frame-capture="addTaskFrame" @frame-saved="onTaskFrameSaved" @survey-change="onTaskSurveyChange" @job-started="onAnalysisJobStarted" @open-queue="analysisQueueOpen = true" />
-          <p class="form-scope-note">关键帧会保存在任务文件夹中。模型只分析勾选的帧，SRT 位置会随结果一同记录。</p>
           <PhotoAnalysisPanel :task-id="taskRouteMatches ? activeTask?.task_id ?? null : null" :frames="taskFrames" :thresholds="waterAlertThresholds" :active-job-id="activeAnalysisJobId" :queue-open="analysisQueueOpen" :pending-review="pendingReviewTargets" :dispatched-count="mapAnalysisTargets.length" @remove-frame="removeTaskFrame" @remove-all-frames="removeAllTaskFrames" @frames-add="addManualTaskFrames" @job-started="onAnalysisJobStarted" @analysis-update="absorbAnalysisResults" @thresholds-change="updateWaterAlertThresholds" @dispatch-review="dispatchAnalysisReview" @manual-confirm="toggleManualConfirm" @open-queue="analysisQueueOpen = true" @close-queue="analysisQueueOpen = false" />
           <div class="analysis-target-tools"><label class="route-export-record"><input v-model="showAnalysisTargets" type="checkbox" />显示已下发积水点（{{ mapAnalysisTargets.length }} 个 · 现场端可见）</label><button type="button" class="weather-refresh" :disabled="!analysisMapTargets.length" @click="clearAnalysisTargets">撤销全部下发</button></div>
           </div>
           </div>
-            <fluent-button v-if="activeModule === 'route'" class="primary-button" appearance="primary" type="button" :disabled="!weatherCoordinates || loading || checkingPoint || locatingPoint !== null" @click="selectModule('status')"><span class="svg-icon icon-cloud-rain" aria-hidden="true"></span><span>继续查看天气</span></fluent-button>
-           <p v-if="activeModule === 'route'" class="form-scope-note task-create-guide">路线和天气阶段可以继续返回修改；完成后到“命名 / 导出”阶段创建任务。</p>
+            <div v-if="activeModule === 'route'" class="primary-action-row"><fluent-button class="primary-button" appearance="primary" type="button" :disabled="!weatherCoordinates || loading || checkingPoint || locatingPoint !== null" @click="selectModule('status')"><span class="svg-icon icon-cloud-rain" aria-hidden="true"></span><span>继续查看天气</span></fluent-button><InfoHint text="路线和天气阶段可以继续返回修改；完成后到“命名 / 导出”阶段创建任务。" /></div>
            <p v-if="taskError && activeModule === 'route'" class="form-error" role="alert">{{ taskError }}</p>
            <p v-if="error && activeModule === 'route' && !locationFeedback?.error && !placeSelectionFeedback?.error" class="form-error" role="alert">{{ error }}</p>
         </form>
@@ -3351,15 +3348,15 @@ onBeforeUnmount(() => {
       <div class="column-resizer column-resizer-right" role="separator" aria-orientation="vertical" aria-label="调整任务概览栏宽度" aria-controls="route-map mission-insights" :aria-valuenow="Math.round(insightsWidth)" :aria-valuemin="minimumWidth('right')" :aria-valuemax="Math.round(widthLimit('right'))" tabindex="0" title="拖动调整任务概览栏宽度，双击恢复默认" :style="{ right: `${insightsWidth}px` }" @pointerdown="startColumnResize('right', $event)" @dblclick="resetColumnWidths" @keydown="resizeColumnByKeyboard('right', $event)"></div>
 
       <aside id="mission-insights" class="insights module-panel" :class="[{ 'panel-active': workspacePanel === 'overview', 'module-active': activeModule === 'status' || activeModule === 'dji' }, `module-mode-${activeModule}`]" aria-label="任务概览" tabindex="0" @change="markWaypointEdited">
-        <div v-if="activeModule === 'status'" class="insights-header"><span class="eyebrow"><span class="svg-icon icon-square-check" aria-hidden="true"></span>第 2 步 · 查看天气</span><h2>检查当前航线天气</h2><p>天气阶段的结果会在最后创建任务时一并保存。</p></div>
-        <div v-if="activeModule === 'dji'" class="insights-header"><span class="eyebrow"><span class="svg-icon icon-download" aria-hidden="true"></span>第 3 步 · 命名与机型导出</span><h2>导出本次任务航线</h2><p>创建任务时会生成并归档 KMZ；连接 DJI RC 2 时自动尝试导入，无法导入则下载文件。</p></div>
+        <div v-if="activeModule === 'status'" class="insights-header"><span class="eyebrow"><span class="svg-icon icon-square-check" aria-hidden="true"></span>第 2 步 · 查看天气</span><h2>检查当前航线天气<InfoHint text="天气阶段的结果会在最后创建任务时一并保存。" /></h2></div>
+        <div v-if="activeModule === 'dji'" class="insights-header"><span class="eyebrow"><span class="svg-icon icon-download" aria-hidden="true"></span>第 3 步 · 命名与机型导出</span><h2>导出本次任务航线</h2></div>
         <p v-if="taskError && (activeModule === 'status' || activeModule === 'dji')" class="form-error" role="alert">{{ taskError }}</p>
         <section v-if="activeModule === 'status'" class="overview-hero" aria-label="天气结论概览">
         <div class="mission-facts"><div><span class="fact-label"><span class="svg-icon icon-route" aria-hidden="true"></span>路线长度</span><strong>{{ distance }}</strong></div><div><span class="fact-label"><span class="svg-icon icon-refresh" aria-hidden="true"></span>预计用时</span><strong>{{ elapsed }}</strong></div><div><span class="fact-label"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>天气起算</span><strong>{{ departureBeijing.replace('T', ' ') }}</strong><small>按当前北京时间自动刷新</small></div></div>
-         <div class="decision" :class="decisionTone" aria-live="polite"><span class="decision-kicker"><span class="svg-icon icon-alert" aria-hidden="true"></span>气象初筛</span><strong>{{ decisionTitle }}</strong><p>{{ decisionDescription }}</p><small>这里只反映已覆盖的天气指标，不等于放飞许可。</small><details v-if="routeAssessment"><summary><span class="svg-icon icon-eye" aria-hidden="true"></span>查看判断依据</summary><div v-for="check in weatherChecks" :key="check.key" class="decision-check"><b>{{ check.label }}</b><span :class="check.state === 'ready' ? 'check-ready' : 'check-pending'">{{ check.state === 'ready' ? '资料已就绪' : check.state === 'no_trigger' ? '未触发当前阈值' : check.state === 'elevated' ? '较强提示' : check.state === 'attention' ? '需要留意' : '资料待补齐' }}</span><small>{{ check.detail }}</small></div></details></div>
+         <div class="decision" :class="decisionTone" aria-live="polite"><span class="decision-kicker"><span class="svg-icon icon-alert" aria-hidden="true"></span>气象初筛<InfoHint text="这里只反映已覆盖的天气指标，不等于放飞许可。" /></span><strong>{{ decisionTitle }}</strong><p>{{ decisionDescription }}</p><details v-if="routeAssessment"><summary><span class="svg-icon icon-eye" aria-hidden="true"></span>查看判断依据</summary><div v-for="check in weatherChecks" :key="check.key" class="decision-check"><b>{{ check.label }}</b><span :class="check.state === 'ready' ? 'check-ready' : 'check-pending'">{{ check.state === 'ready' ? '资料已就绪' : check.state === 'no_trigger' ? '未触发当前阈值' : check.state === 'elevated' ? '较强提示' : check.state === 'attention' ? '需要留意' : '资料待补齐' }}</span><small>{{ check.detail }}</small></div></details></div>
         </section>
         <section v-if="activeModule === 'status'" class="task-weather-advisory" aria-label="任务天气提醒">
-          <div class="task-weather-advisory-heading"><div><span class="eyebrow">继续前的天气提示</span><h3>先看风速，再看降雨</h3></div><small>提醒可忽略，是否继续由你决定</small></div>
+          <div class="task-weather-advisory-heading"><div><span class="eyebrow">继续前的天气提示</span><h3>先看风速，再看降雨<InfoHint text="风速从上限的 80% 开始提醒；降雨按预测的六小时累计量提示。天气资料有覆盖范围限制。" /></h3></div></div>
           <div class="task-weather-checks">
             <article class="task-weather-check" :class="`is-${taskWeatherAdvisories.wind.state}`">
               <div><strong>沿线风速</strong><b>{{ taskWeatherAdvisories.wind.label }}</b></div>
@@ -3372,7 +3369,7 @@ onBeforeUnmount(() => {
               <p>{{ taskWeatherAdvisories.rain.message }}</p>
             </article>
           </div>
-          <div class="task-weather-advisory-footer"><small>风速从上限的 80% 开始提醒；降雨按预测的六小时累计量提示。天气资料有覆盖范围限制。</small><button type="button" class="weather-refresh" @click="selectModule('dji')">继续到机型 / 导出</button></div>
+          <div class="task-weather-advisory-footer"><button type="button" class="weather-refresh" @click="selectModule('dji')">继续到机型 / 导出</button></div>
         </section>
          <details v-if="activeModule === 'status'" class="overview-group" open>
            <summary><span><span class="svg-icon icon-cloud-rain" aria-hidden="true"></span>沿线天气检查</span><small>风、降雨、阵风和能见度</small></summary>
@@ -3391,16 +3388,15 @@ onBeforeUnmount(() => {
             <span>{{ distance }} · 预计用时 {{ elapsed }}</span>
             <details v-if="!preview.area_coverage"><summary><span class="svg-icon icon-eye" aria-hidden="true"></span>查看路线数据</summary><small>直线 {{ preview.straight_distance_km.toFixed(2) }} km · {{ preview.building_clearance_m === null ? '在线模式未检查建筑缓冲' : `建筑缓冲 ${preview.building_clearance_m} m` }}</small><small>首末主点到道路分别约 {{ preview.start_snap_m }} m / {{ preview.end_snap_m }} m</small><small>手动主点 {{ anchors.length }} 个 · 自动生成小点 {{ generatedPointCount }} 个 · {{ preview.segments?.length ?? 1 }} 段</small><small v-for="segment in preview.segments" :key="segment.id">{{ majorPointLabel(segment.index) }} → {{ majorPointLabel(segment.index + 1) }}：{{ segment.distance_km.toFixed(2) }} km</small><small>{{ preview.data_source }}</small><small>路线数据 © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap contributors</a></small></details>
             <div v-else class="coverage-route-detail"><strong>区域道路覆盖 · {{ preview.area_coverage.route_closed ? '闭环' : 'A → B' }}</strong><span>目标道路 {{ (preview.area_coverage.target_road_m / 1000).toFixed(2) }} km · 重复经过 {{ (preview.area_coverage.repeated_road_m / 1000).toFixed(2) }} km</span><span>连接道路 {{ (preview.area_coverage.connector_m / 1000).toFixed(2) }} km · 道路等级 {{ preview.area_coverage.road_classes.join('、') }}</span><small>{{ preview.data_source }} · A/B 吸附 {{ preview.start_snap_m.toFixed(1) }} / {{ preview.end_snap_m.toFixed(1) }} m。</small></div>
-            <div class="route-export"><label>DJI 机型模板<CustomSelect v-model="djiModel" :options="djiModelOptions" aria-label="DJI 机型模板" /></label><label class="route-export-record"><input v-model="kmzAutoRecord" type="checkbox" />自动录像 · 到首航点开始、末航点停止（结束自动返航）</label><button type="button" class="weather-refresh" :disabled="!flightTimeline" @click="toggleFlight"><span class="svg-icon icon-drone" aria-hidden="true"></span>{{ flightPlaying ? '暂停巡航动画' : flightProgress >= 1 ? '重播巡航动画' : flightActive ? '继续巡航动画' : '查看巡航路线动画' }}</button><button type="button" class="weather-refresh task-flight-start" :disabled="!activeTask || !taskRouteMatches || !activeTask.export_file_name || activeTask.status === 'in_flight'" @click="markTaskFlightStarted">{{ activeTask?.status === 'in_flight' ? '已标记本次任务开始' : '标记本次任务已开始' }}</button><small v-if="activeTask?.export_file_name">KMZ 已保存在任务目录：{{ activeTask.export_file_name }}</small><small>按相对起飞点高度生成。路线折点会先抽稀，减少 DJI 中高度标签和航点标记重叠。{{ preview.area_coverage ? '此路线用于道路区域巡查；起点是道路中心线参考点，仍需现场选择合适起降位置。' : roadSource === 'online' ? '当前是在线机动车道路参考，不应直接作为飞行线。' : '当前是道路走廊参考，不代表已核实飞行航线。' }}{{ djiModel === 'fly' ? 'DJI Fly 需先创建一条占位航线，再用相同 UUID 文件名替换 waypoint 目录中的 KMZ。' : '导入 DJI Pilot 2 后仍需核对机型、动作、返航、空域和现场条件。' }}文件不是放飞许可。</small><small v-if="djiModel === 'fly'">Air 3/Air 3S 使用 DJI Fly 消费级 WPML，按 RC 2 原生存档格式生成（uav.com 命名空间、几何写入 waylines.wpml、云台俯仰用 waypointGimbalPitchAngle）。航点速度上限 43.2 km/h（12 m/s 设备能力）。</small><small v-if="kmzError" class="form-error" role="alert">{{ kmzError }}</small><small v-if="kmzNotice" class="task-create-notice" role="status">{{ kmzNotice }}</small></div>
+            <div class="route-export"><label><span class="label-hint">DJI 机型模板<InfoHint :text="`创建任务时会生成并归档 KMZ。按相对起飞点高度生成，路线折点会先抽稀，减少 DJI 中高度标签和航点标记重叠。${preview.area_coverage ? '此路线用于道路区域巡查；起点是道路中心线参考点，仍需现场选择合适起降位置。' : roadSource === 'online' ? '当前是在线机动车道路参考，不应直接作为飞行线。' : '当前是道路走廊参考，不代表已核实飞行航线。'}${djiModel === 'fly' ? 'DJI Fly 需先创建一条占位航线，再用相同 UUID 文件名替换 waypoint 目录中的 KMZ；Air 3/Air 3S 使用 DJI Fly 消费级 WPML（uav.com 命名空间、几何写入 waylines.wpml、云台俯仰用 waypointGimbalPitchAngle），航点速度上限 43.2 km/h（12 m/s 设备能力）。' : '导入 DJI Pilot 2 后仍需核对机型、动作、返航、空域和现场条件。'}文件不是放飞许可。`" /></span><CustomSelect v-model="djiModel" :options="djiModelOptions" aria-label="DJI 机型模板" /></label><label class="route-export-record"><input v-model="kmzAutoRecord" type="checkbox" />自动录像 · 到首航点开始、末航点停止（结束自动返航）</label><button type="button" class="weather-refresh" :disabled="!flightTimeline" @click="toggleFlight"><span class="svg-icon icon-drone" aria-hidden="true"></span>{{ flightPlaying ? '暂停巡航动画' : flightProgress >= 1 ? '重播巡航动画' : flightActive ? '继续巡航动画' : '查看巡航路线动画' }}</button><button type="button" class="weather-refresh task-flight-start" :disabled="!activeTask || !taskRouteMatches || !activeTask.export_file_name || activeTask.status === 'in_flight'" @click="markTaskFlightStarted">{{ activeTask?.status === 'in_flight' ? '已标记本次任务开始' : '标记本次任务已开始' }}</button><small v-if="activeTask?.export_file_name">KMZ 已保存在任务目录：{{ activeTask.export_file_name }}</small><small v-if="kmzError" class="form-error" role="alert">{{ kmzError }}</small><small v-if="kmzNotice" class="task-create-notice" role="status">{{ kmzNotice }}</small></div>
           </div>
          <section v-if="activeModule === 'dji' && ((preview && djiModel === 'fly') || rc2Job)" class="rc2-import-panel" aria-label="导入 DJI RC 2">
           <div class="rc2-import-heading">
-            <h3>导入已连接的 DJI RC 2</h3>
+            <h3>导入已连接的 DJI RC 2<InfoHint text="创建任务时会自动检查 RC 2 并尝试导入；无法确认可替换目标时会下载 KMZ。此操作只适用于 DJI Fly / RC 2，导入完成后仍需在遥控器上打开航线，核对航点与动作。" /></h3>
             <button type="button" :disabled="rc2Loading || rc2JobRunning" @click="refreshRc2Connection">{{ rc2Loading ? '检测中…' : '检测 / 刷新设备' }}</button>
           </div>
           <p role="status">{{ rc2Loading ? '正在检查本机和遥控器…' : rc2Status?.message ?? '等待检查 RC 2 连接状态。' }}</p>
           <small v-if="rc2Status?.generation_directory">本机 KMZ 生成目录：{{ rc2Status.generation_directory }}</small>
-          <small>创建任务时会自动检查 RC 2 并尝试导入；无法确认可替换目标时会下载 KMZ。</small>
           <template v-if="preview && djiModel === 'fly' && rc2Status?.available">
             <small v-if="rc2DeviceName">遥控器：{{ rc2DeviceName }}</small>
             <small v-if="rc2WaypointPath">占位航线目录：{{ rc2WaypointPath }}</small>
@@ -3427,7 +3423,6 @@ onBeforeUnmount(() => {
             <small v-if="rc2Job.backup_path">原文件备份：{{ rc2Job.backup_path }}</small>
           </div>
           <p v-if="rc2Error" class="form-error" role="alert">{{ rc2Error }}</p>
-          <small>此操作只适用于 DJI Fly / RC 2。导入完成后仍需在遥控器上打开航线，核对航点与动作。</small>
         </section>
         <div v-if="activeModule === 'dji'" class="task-create-footer">
           <p v-if="taskCreateNotice" class="task-create-notice" role="status">{{ taskCreateNotice }}</p>
@@ -3442,10 +3437,10 @@ onBeforeUnmount(() => {
  .route-form .settings-fields { overflow-y: auto; overscroll-behavior: contain; padding-right: 5px; scrollbar-width: none; -ms-overflow-style: none; }
  .route-form .settings-fields::-webkit-scrollbar { display: none; width: 0; height: 0; }
  .planning-mode-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin: 2px 0 8px; padding: 4px; border: 1px solid #dbe3ea; border-radius: 8px; background: #f3f6f8; }
- .planning-mode-switch button { min-height: 31px; padding: 5px 8px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: #596b7c; font-size: 11px; font-weight: 600; cursor: pointer; }
+ .planning-mode-switch button { min-height: 31px; padding: 5px 8px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: #596b7c; font-size: 12px; font-weight: 600; cursor: pointer; }
  .planning-mode-switch button.active { border-color: #b7d4eb; background: #fff; color: #1265a7; box-shadow: 0 1px 2px rgb(15 23 42 / .08); }
  .coverage-road-classes { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 8px; margin: 10px 0; }
- .coverage-road-classes label { display: flex; align-items: center; gap: 6px; min-height: 28px; color: #394b5e; font-size: 11px; }
+ .coverage-road-classes label { display: flex; align-items: center; gap: 6px; min-height: 28px; color: #394b5e; font-size: 12px; }
  .coverage-road-classes input { width: 15px; height: 15px; margin: 0; accent-color: var(--ui-accent); }
  .coverage-endpoints { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin: 10px 0 4px; }
  .coverage-endpoints button { display: flex; align-items: center; gap: 7px; min-width: 0; min-height: 48px; padding: 7px 8px; border: 1px solid #d7e1ea; border-radius: 7px; background: #fff; color: #344455; text-align: left; cursor: pointer; }
@@ -3456,19 +3451,19 @@ onBeforeUnmount(() => {
  .coverage-endpoints button:nth-child(2) .coverage-endpoint-key { background: #bd5a2b; }
  .coverage-endpoints button > span:last-child { display: grid; min-width: 0; gap: 1px; }
  .coverage-endpoints strong, .coverage-endpoints small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
- .coverage-endpoints strong { font-size: 11px; }
- .coverage-endpoints small { color: var(--ui-muted); font-size: 10px; }
+ .coverage-endpoints strong { font-size: 12px; }
+ .coverage-endpoints small { color: var(--ui-muted); font-size: 12px; }
  .coverage-area-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px; }
  .coverage-area-actions .major-point-add { margin-top: 0; }
  .coverage-area-actions .major-point-add.is-drawing { border-color: #0f6cbd; background: #e9f4fd; }
- .coverage-area-clear { min-height: 36px; padding: 6px 9px; border: 1px solid #d7dfe8; border-radius: 6px; background: #fff; color: #526273; font-size: 11px; cursor: pointer; }
- .coverage-area-note { margin: 8px 0; color: var(--ui-muted); font-size: 11px; line-height: 1.5; }
- .coverage-area-summary { display: grid; gap: 7px; margin-top: 12px; padding: 10px; border: 1px solid #cfe0ee; border-radius: 8px; background: #f7fbff; color: #344455; font-size: 11px; }
+ .coverage-area-clear { min-height: 36px; padding: 6px 9px; border: 1px solid #d7dfe8; border-radius: 6px; background: #fff; color: #526273; font-size: 12px; cursor: pointer; }
+ .coverage-area-note { margin: 8px 0; color: var(--ui-muted); font-size: 12px; line-height: 1.5; }
+ .coverage-area-summary { display: grid; gap: 7px; margin-top: 12px; padding: 10px; border: 1px solid #cfe0ee; border-radius: 8px; background: #f7fbff; color: #344455; font-size: 12px; }
  .coverage-area-summary > strong { color: #1769aa; font-size: 12px; }
  .coverage-area-summary > div { display: flex; justify-content: space-between; gap: 8px; }
  .coverage-area-summary > div span, .coverage-area-summary small { color: var(--ui-muted); }
- .coverage-map-hint { padding: 8px 10px; border: 1px solid #b7d4eb; border-radius: 7px; background: #fff; color: #1769aa; font-size: 11px; }
- .coverage-route-detail { display: grid; gap: 4px; margin: 6px 0; padding: 9px 10px; border: 1px solid #cfe0ee; border-radius: 7px; background: #f7fbff; color: #344455; font-size: 11px; }
+ .coverage-map-hint { padding: 8px 10px; border: 1px solid #b7d4eb; border-radius: 7px; background: #fff; color: #1769aa; font-size: 12px; }
+ .coverage-route-detail { display: grid; gap: 4px; margin: 6px 0; padding: 9px 10px; border: 1px solid #cfe0ee; border-radius: 7px; background: #f7fbff; color: #344455; font-size: 12px; }
  .coverage-route-detail strong { color: #1769aa; font-size: 12px; }
  .coverage-route-detail small { color: var(--ui-muted); line-height: 1.45; }
 .batch-range-guide { margin: 2px 4px 6px; color: var(--ui-muted); font-size: var(--font-caption); line-height: 1.4; }
@@ -3481,7 +3476,7 @@ onBeforeUnmount(() => {
 .major-point-card .point-mark { width: 28px; flex: none; }
 .major-point-card .point-middle, .major-point-card .point-middle + div .point-location-button { color: #197b78; }
 .major-point-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
-.major-point-actions button { min-height: 26px; padding: 3px 6px; border: 1px solid #dbe2ea; border-radius: 6px; background: #fff; color: #526273; font-size: 11px; cursor: pointer; }
+.major-point-actions button { min-height: 26px; padding: 3px 6px; border: 1px solid #dbe2ea; border-radius: 6px; background: #fff; color: #526273; font-size: 12px; cursor: pointer; }
 .major-point-actions button.active { border-color: #88bcea; background: #e8f3fc; color: #0f6cbd; font-weight: 700; }
 .major-point-actions button:hover:not(:disabled) { border-color: #88bcea; color: #0f6cbd; }
 .major-point-actions button:disabled { opacity: .45; cursor: default; }
@@ -3489,25 +3484,25 @@ onBeforeUnmount(() => {
 .nearby-place-picker-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #1769aa; font-size: var(--font-caption); }
 .nearby-place-picker-head button { width: 24px; height: 24px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: #6b7b8d; font-size: 20px; line-height: 1; }
 .nearby-place-picker-head button:hover { background: #e5f1fb; }
-.nearby-place-picker-note { margin: 4px 0 7px; color: #617186; font-size: 11px; line-height: 1.45; }
+.nearby-place-picker-note { margin: 4px 0 7px; color: #617186; font-size: 12px; line-height: 1.45; }
 .nearby-place-list { display: grid; gap: 5px; max-height: 230px; overflow-y: auto; }
 .nearby-place-option { display: flex; align-items: center; gap: 7px; width: 100%; min-width: 0; padding: 7px 8px; border: 1px solid #d6e5f1; border-radius: 7px; background: #fff; color: #243447; text-align: left; }
 .nearby-place-option:hover { border-color: #6eaed8; background: #f0f8ff; }
 .nearby-place-copy { display: grid; min-width: 0; gap: 2px; flex: 1; }
 .nearby-place-copy strong, .nearby-place-copy small { overflow-wrap: anywhere; }
 .nearby-place-copy strong { font-size: 12px; }
-.nearby-place-copy small { color: #617186; font-size: 10px; line-height: 1.35; }
+.nearby-place-copy small { color: #617186; font-size: 12px; line-height: 1.35; }
 .nearby-place-arrow { flex: none; color: #1769aa; font-size: 20px; }
-.nearby-place-empty { margin: 4px 0 0; color: #875100; font-size: 11px; line-height: 1.45; }
+.nearby-place-empty { margin: 4px 0 0; color: #875100; font-size: 12px; line-height: 1.45; }
 .major-point-add { display: block; width: 100%; min-height: 38px; margin-top: 12px; border: 1px dashed #83b5df; border-radius: 8px; background: #f2f8fe; color: #0f6cbd; font-size: 13px; font-weight: 700; cursor: pointer; }
 .major-point-add:hover:not(:disabled) { background: #e6f1fb; }
 .major-point-add:disabled { opacity: .5; cursor: default; }
 .batch-camera-panel { margin-top: 12px; padding: 12px; border: 1px solid #b8dedb; border-radius: 8px; background: #f7fffe; box-shadow: 0 4px 16px #172b4d1c; }
 .batch-camera-panel > strong, .batch-camera-panel > small { display: block; }
 .batch-camera-panel > strong { color: #0b625f; font-size: var(--font-body); }
-.batch-camera-panel > small { margin-top: 3px; color: var(--ui-muted); font-size: 11px; line-height: 1.4; }
+.batch-camera-panel > small { margin-top: 3px; color: var(--ui-muted); font-size: 12px; line-height: 1.4; }
 .batch-camera-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
-.batch-camera-fields label { min-width: 0; color: #344455; font-size: 11px; font-weight: 600; }
+.batch-camera-fields label { min-width: 0; color: #344455; font-size: 12px; font-weight: 600; }
 .batch-camera-fields input { display: block; width: 100%; min-height: 34px; margin-top: 4px; padding: 5px 7px; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; }
 .batch-camera-panel > button { width: 100%; min-height: 34px; margin-top: 10px; border: 0; border-radius: 6px; background: #087b76; color: #fff; font-size: var(--font-caption); font-weight: 700; }
 .batch-camera-panel > button:disabled { opacity: .55; cursor: default; }
@@ -3552,14 +3547,14 @@ onBeforeUnmount(() => {
 .flight-toggle:disabled { opacity: .45; cursor: default; }
 .flight-toggle .svg-icon { width: 22px; height: 22px; }
 .icon-drone { -webkit-mask-image: url('/svg/drone.svg'); mask-image: url('/svg/drone.svg'); }
-.flight-speed { display: inline-flex; align-items: center; gap: 3px; flex: none; color: #526273; font-size: 11px; white-space: nowrap; }
+.flight-speed { display: inline-flex; align-items: center; gap: 3px; flex: none; color: #526273; font-size: 12px; white-space: nowrap; }
 .flight-speed .custom-select { display: inline-block; width: 68px; }
-.flight-speed :deep(.custom-select-trigger) { min-height: 30px; padding: 0 8px; border-color: #dbe2ea; border-radius: 6px; background-color: #f7fafc; color: #1769aa; font-size: 11px; font-weight: 700; }
+.flight-speed :deep(.custom-select-trigger) { min-height: 30px; padding: 0 8px; border-color: #dbe2ea; border-radius: 6px; background-color: #f7fafc; color: #1769aa; font-size: 12px; font-weight: 700; }
 .flight-speed :deep(.custom-select-trigger:disabled) { opacity: .5; background-color: #f7fafc; }
 .flight-progress-wrap { display: flex; align-items: center; flex: 1; min-width: 60px; min-height: 30px; }
 .flight-progress { width: 100%; margin: 0; accent-color: #126cb7; cursor: pointer; }
 .flight-progress:disabled { opacity: .4; cursor: default; }
-.flight-percent { flex: none; width: 34px; color: #526273; font-size: 11px; font-variant-numeric: tabular-nums; text-align: right; }
+.flight-percent { flex: none; width: 34px; color: #526273; font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .map-bottom { z-index: 3; }
 .map-title-group { min-width: 0; }
@@ -3575,8 +3570,8 @@ onBeforeUnmount(() => {
 .rc2-import-panel { display: grid; gap: 8px; margin: 0 0 18px; padding: 14px; border: 1px solid #c9dced; border-radius: 10px; background: #f7fbff; }
 .rc2-import-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; }
 .rc2-import-heading h3 { margin: 0; color: #173b5c; font-size: 14px; }
-.rc2-import-heading button { padding: 5px 8px; border: 1px solid #a9c8e4; border-radius: 6px; background: #fff; color: #1265a7; font-size: 11px; cursor: pointer; }
-.rc2-import-panel p, .rc2-import-panel small, .rc2-job span { display: block; margin: 0; color: #53677c; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.rc2-import-heading button { padding: 5px 8px; border: 1px solid #a9c8e4; border-radius: 6px; background: #fff; color: #1265a7; font-size: 12px; cursor: pointer; }
+.rc2-import-panel p, .rc2-import-panel small, .rc2-job span { display: block; margin: 0; color: #53677c; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .rc2-import-panel .form-error { color: #a4262c; }
 .rc2-import-panel label { display: block; color: #344455; font-size: 12px; font-weight: 600; }
 .rc2-import-panel .custom-select { display: block; margin-top: 5px; }
@@ -3589,7 +3584,8 @@ onBeforeUnmount(() => {
 .rc2-job-failed { border-color: #edbfc1; background: #fff8f8; }
 .rc2-job-failed > strong { color: #a4262c; }
 .rc2-job-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; margin: 2px 0; padding: 0; list-style: none; }
-.rc2-job-steps li { padding: 5px 3px; border-radius: 5px; background: #edf2f7; color: #607286; font-size: 10px; text-align: center; }
+.rc2-job-steps li { padding: 5px 3px; border-radius: 5px; background: #edf2f7; color: #607286; font-size: 12px; text-align: center; }
 .rc2-job-steps li.active { background: #dceeff; color: #0f6cbd; font-weight: 700; }
 .rc2-job-steps li.done { background: #ddf3e5; color: #167348; }
+.primary-action-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; }
 </style>

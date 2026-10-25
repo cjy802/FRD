@@ -28,5 +28,5 @@ onBeforeUnmount(() => { unmounted = true; observer?.disconnect(); scene?.dispose
 <style scoped>
 .baidu-camera-preview, .baidu-camera-canvas { position: absolute; inset: 0; }
 .baidu-camera-status { position: absolute; top: 50%; left: 0; right: 0; padding: 8px; background: #ffffffdf; text-align: center; font-size: 12px; }
-.baidu-camera-credit { position: absolute; right: 5px; bottom: 28px; color: white; text-shadow: 0 1px 2px black; font-size: 10px; }
+.baidu-camera-credit { position: absolute; right: 5px; bottom: 28px; color: white; text-shadow: 0 1px 2px black; font-size: 12px; }
 </style>

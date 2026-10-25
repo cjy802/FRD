@@ -173,7 +173,7 @@ onBeforeUnmount(() => {
 .field-map-canvas { position: absolute; inset: 0; }
 /* SDK 画布自带 z-index:2（widgets 面板 15），覆盖层必须显式压到它上面。 */
 .field-map-markers { position: absolute; inset: 0; z-index: 3; overflow: hidden; pointer-events: none; }
-.field-map-marker { position: absolute; display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 2px solid #fff; border-radius: 999px; background: #d0342c; color: #fff; font-size: 11px; font-weight: 700; transform: translate(-50%, -100%); box-shadow: 0 2px 8px rgb(15 23 42 / .3); pointer-events: auto; }
+.field-map-marker { position: absolute; display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 2px solid #fff; border-radius: 999px; background: #d0342c; color: #fff; font-size: 12px; font-weight: 700; transform: translate(-50%, -100%); box-shadow: 0 2px 8px rgb(15 23 42 / .3); pointer-events: auto; }
 .field-map-marker::after { content: ''; position: absolute; bottom: -5px; left: 50%; width: 8px; height: 8px; border-right: 2px solid #fff; border-bottom: 2px solid #fff; background: inherit; transform: translateX(-50%) rotate(45deg); }
 .field-map-marker.selected { z-index: 1; width: 34px; height: 34px; border-color: #fff; background: var(--ui-accent); font-size: 13px; }
 .field-map-state { position: absolute; top: 50%; left: 50%; z-index: 5; display: grid; justify-items: center; gap: 8px; padding: 26px 30px; border: 1px solid #e1e6eb; border-radius: var(--ui-radius); background: #fffffff2; box-shadow: 0 12px 36px rgb(15 23 42 / .2); color: var(--ui-muted); text-align: center; transform: translate(-50%, -50%); }

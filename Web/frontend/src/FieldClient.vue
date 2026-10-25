@@ -434,7 +434,7 @@ onBeforeUnmount(() => {
 .field-subtitle { max-width: 300px; margin: 10px 0 0; color: var(--ui-muted); font-size: var(--font-caption); line-height: 1.6; }
 .field-hero-meta { display: grid; flex: 0 0 auto; gap: 4px; max-width: 200px; color: #344455; font-size: var(--font-caption); text-align: right; }
 .field-hero-meta span { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.field-hero-meta small { color: var(--ui-muted); font-size: 11px; }
+.field-hero-meta small { color: var(--ui-muted); font-size: 12px; }
 .field-task-picker { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; padding: 14px 0 2px; }
 .field-task-picker label { color: var(--ui-muted); font-size: var(--font-caption); font-weight: 600; white-space: nowrap; }
 .field-alert-list { display: grid; gap: 14px; padding-top: 20px; }
@@ -442,28 +442,28 @@ onBeforeUnmount(() => {
 .field-alert-header { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: start; gap: 11px; padding: 16px 16px 13px; }
 .field-alert-index { padding-top: 3px; color: var(--ui-accent); font-size: var(--font-caption); font-variant-numeric: tabular-nums; font-weight: 700; }
 .field-alert-heading { min-width: 0; }
-.field-alert-badge { display: inline-flex; min-height: 22px; align-items: center; padding: 3px 9px; border-radius: 999px; background: #fff6f5; color: #c4312b; font-size: 11px; font-weight: 700; }
+.field-alert-badge { display: inline-flex; min-height: 22px; align-items: center; padding: 3px 9px; border-radius: 999px; background: #fff6f5; color: #c4312b; font-size: 12px; font-weight: 700; }
 .field-alert-heading h2 { overflow: hidden; margin: 7px 0 0; color: #1e3a5f; font-size: 16px; font-weight: 600; line-height: 1.3; letter-spacing: -.01em; text-overflow: ellipsis; white-space: nowrap; }
-.field-alert-heading p { overflow: hidden; margin: 4px 0 0; color: var(--ui-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.field-alert-status { padding-top: 5px; color: #875100; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.field-alert-heading p { overflow: hidden; margin: 4px 0 0; color: var(--ui-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.field-alert-status { padding-top: 5px; color: #875100; font-size: 12px; font-weight: 700; white-space: nowrap; }
 .field-location-block { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 0 16px; padding: 11px 0; border-top: 1px solid #edf0f2; border-bottom: 1px solid #edf0f2; }
 .field-location-row { display: flex; align-items: center; min-width: 0; gap: 9px; }
 .field-pin { display: grid; width: 30px; height: 30px; place-items: center; border-radius: 8px; background: #e8f3fc; color: var(--ui-accent); font-size: 18px; font-weight: 700; }
 .field-location-row div { display: grid; min-width: 0; gap: 2px; }
-.field-location-row strong { color: var(--ui-muted); font-size: 11px; font-weight: 600; }
+.field-location-row strong { color: var(--ui-muted); font-size: 12px; font-weight: 600; }
 .field-location-row span { color: #344455; font-size: var(--font-caption); font-variant-numeric: tabular-nums; }
 .field-nav-link { display: inline-flex; align-items: center; gap: 4px; flex: none; min-height: 30px; padding: 4px 10px; border: 1px solid #d7dfe8; border-radius: 7px; background: #fff; color: var(--ui-accent); font-size: var(--font-caption); font-weight: 600; text-decoration: none; }
 .field-nav-link:hover { border-color: var(--ui-accent); background: #eff6ff; }
 .field-photo-stage { position: relative; display: block; width: calc(100% - 32px); min-height: 180px; margin: 14px 16px 0; padding: 0; overflow: hidden; border: 1px solid var(--ui-line); border-radius: 8px; background: #eaf0f6; cursor: zoom-in; }
 .field-photo-stage img { display: block; width: 100%; aspect-ratio: 1.65; object-fit: cover; }
-.field-photo-caption { position: absolute; right: 10px; bottom: 9px; left: 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #fff; font-size: 11px; text-shadow: 0 1px 4px rgb(0 0 0 / .7); }
+.field-photo-caption { position: absolute; right: 10px; bottom: 9px; left: 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #fff; font-size: 12px; text-shadow: 0 1px 4px rgb(0 0 0 / .7); }
 .field-photo-caption span:last-child { padding: 2px 8px; border-radius: 999px; background: rgb(17 24 39 / .55); text-shadow: none; }
-.field-photo-note { display: flex; align-items: center; gap: 6px; margin: 9px 16px 0; color: var(--ui-muted); font-size: 11px; line-height: 1.5; }
+.field-photo-note { display: flex; align-items: center; gap: 6px; margin: 9px 16px 0; color: var(--ui-muted); font-size: 12px; line-height: 1.5; }
 .field-dot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--ui-accent); }
 .field-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 14px 16px 0; }
 .field-facts span { display: grid; min-width: 0; gap: 3px; padding: 9px 10px; border: 1px solid #e1e6eb; border-radius: 8px; background: #f8fafc; }
 .field-facts b { overflow: hidden; color: #1e3a5f; font-size: var(--font-caption); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.field-facts small { color: var(--ui-muted); font-size: 11px; }
+.field-facts small { color: var(--ui-muted); font-size: 12px; }
 .field-complete-button { display: flex; align-items: center; justify-content: center; gap: 8px; width: calc(100% - 32px); min-height: 42px; margin: 14px 16px 16px; border: 1px solid var(--ui-accent); border-radius: var(--ui-radius); background: var(--ui-accent); color: #fff; font-size: var(--font-body); font-weight: 600; }
 .field-complete-button:hover:not(:disabled) { border-color: var(--ui-accent-hover); background: var(--ui-accent-hover); }
 .field-complete-button span { display: grid; width: 20px; height: 20px; place-items: center; border-radius: 50%; background: rgb(255 255 255 / .18); font-size: 12px; }
@@ -476,7 +476,7 @@ onBeforeUnmount(() => {
 @keyframes field-spin { to { transform: rotate(360deg); } }
 .field-error strong { color: #a4262c; }
 .field-empty-mark { display: grid; width: 46px; height: 46px; place-items: center; border-radius: 50%; background: #e8f3fc; color: var(--ui-accent); font-size: 22px; font-weight: 700; }
-.field-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 24px 0 8px; color: var(--ui-muted); font-size: 11px; }
+.field-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 24px 0 8px; color: var(--ui-muted); font-size: 12px; }
 .field-footer a { color: var(--ui-accent); font-weight: 600; text-decoration: none; }
 .field-footer a:hover { text-decoration: underline; }
 .field-lightbox { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 18px; background: rgb(15 23 42 / .38); }

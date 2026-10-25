@@ -640,20 +640,20 @@ onBeforeUnmount(() => {
 }
 .earth-coverage-vertex:focus-visible, .earth-coverage-edge-handle:focus-visible { outline: 2px solid #f5bd4f; outline-offset: 2px; }
 .earth-coverage-edge-handle { width: 22px; height: 22px; border: 1px solid #0f6cbd; background: #fff; color: #0f6cbd; font-size: 16px; font-weight: 700; cursor: pointer; }
-.earth-video-legend { position: absolute; z-index: 4; bottom: 64px; left: 12px; display: flex; flex-wrap: wrap; gap: 9px; padding: 6px 8px; border: 1px solid #d8e0e7; border-radius: 6px; background: rgb(255 255 255 / .94); color: #344455; font-size: 11px; }
+.earth-video-legend { position: absolute; z-index: 4; bottom: 64px; left: 12px; display: flex; flex-wrap: wrap; gap: 9px; padding: 6px 8px; border: 1px solid #d8e0e7; border-radius: 6px; background: rgb(255 255 255 / .94); color: #344455; font-size: 12px; }
 .earth-video-legend span { display: inline-flex; align-items: center; gap: 4px; }
 .earth-video-legend i { display: inline-grid; width: 14px; height: 14px; place-items: center; border-radius: 50%; color: #fff; font-size: 8px; font-style: normal; font-weight: 700; }
 .earth-video-legend .track-key { width: 16px; height: 3px; border-radius: 0; background: #d97706; }
 .earth-video-legend .position-key { background: #0f6cbd; }
 .earth-video-legend .target-key { background: #d97706; }
-.earth-weather-hint { position: absolute; z-index: 4; top: 12px; right: 12px; padding: 6px 9px; border: 1px solid #d8e0e7; border-radius: 6px; background: rgb(255 255 255 / .96); color: #526273; font-size: 11px; }
-.earth-weather-marker { position: absolute; z-index: 6; display: grid; width: 26px; height: 26px; transform: translate(-50%, -50%); place-items: center; padding: 0; border: 2px solid #fff; border-radius: 50%; background: #0f6cbd; box-shadow: 0 1px 5px rgb(15 23 42 / .45); color: #fff; font-family: inherit; font-size: 10px; font-weight: 700; line-height: 1; pointer-events: auto; cursor: pointer; }
+.earth-weather-hint { position: absolute; z-index: 4; top: 12px; right: 12px; padding: 6px 9px; border: 1px solid #d8e0e7; border-radius: 6px; background: rgb(255 255 255 / .96); color: #526273; font-size: 12px; }
+.earth-weather-marker { position: absolute; z-index: 6; display: grid; width: 26px; height: 26px; transform: translate(-50%, -50%); place-items: center; padding: 0; border: 2px solid #fff; border-radius: 50%; background: #0f6cbd; box-shadow: 0 1px 5px rgb(15 23 42 / .45); color: #fff; font-family: inherit; font-size: 12px; font-weight: 700; line-height: 1; pointer-events: auto; cursor: pointer; }
 .earth-weather-marker:hover:not(:disabled), .earth-weather-marker:active:not(:disabled) { transform: translate(-50%, -50%); box-shadow: 0 1px 5px rgb(15 23 42 / .45); }
 .earth-weather-marker.is-attention { background: #c77900; }
 .earth-weather-marker.is-elevated { background: #bd302b; }
 .earth-weather-marker.is-incomplete { background: #667788; }
 .earth-weather-marker.selected { outline: 3px solid rgb(15 108 189 / .25); outline-offset: 2px; }
-.earth-weather-popover { position: absolute; z-index: 6; display: grid; gap: 7px; box-sizing: border-box; width: min(258px, calc(100% - 16px)); transform: translate(-50%, -100%); padding: 10px; border: 1px solid #cbd5df; border-radius: 8px; background: #fff; box-shadow: 0 4px 14px rgb(15 23 42 / .2); color: #344455; font-size: 11px; line-height: 1.4; pointer-events: auto; }
+.earth-weather-popover { position: absolute; z-index: 6; display: grid; gap: 7px; box-sizing: border-box; width: min(258px, calc(100% - 16px)); transform: translate(-50%, -100%); padding: 10px; border: 1px solid #cbd5df; border-radius: 8px; background: #fff; box-shadow: 0 4px 14px rgb(15 23 42 / .2); color: #344455; font-size: 12px; line-height: 1.4; pointer-events: auto; }
 .earth-weather-popover.is-below { transform: translate(-50%, 0); }
 .earth-weather-popover.is-elevated { border-color: #c4312b; }
 .earth-weather-popover.is-attention { border-color: #d68100; }
@@ -661,22 +661,22 @@ onBeforeUnmount(() => {
 .earth-weather-popover header { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding-bottom: 7px; border-bottom: 1px solid #e5e7eb; }
 .earth-weather-popover header div { display: grid; gap: 2px; min-width: 0; }
 .earth-weather-popover header strong { color: #173b5c; font-size: 13px; }
-.earth-weather-popover header span { color: #64748b; font-size: 10px; font-variant-numeric: tabular-nums; }
+.earth-weather-popover header span { color: #64748b; font-size: 12px; font-variant-numeric: tabular-nums; }
 .earth-weather-popover header button { display: grid; width: 24px; height: 24px; flex: 0 0 auto; place-items: center; padding: 0; border: 1px solid #d8e0e7; border-radius: 5px; background: #fff; color: #526273; font-family: inherit; font-size: 18px; line-height: 1; cursor: pointer; }
-.earth-weather-coordinate { color: #64748b; font-size: 10px; font-variant-numeric: tabular-nums; }
+.earth-weather-coordinate { color: #64748b; font-size: 12px; font-variant-numeric: tabular-nums; }
 .earth-weather-values { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 10px; }
 .earth-weather-values div { display: flex; justify-content: space-between; gap: 6px; min-width: 0; }
 .earth-weather-values span { color: #64748b; white-space: nowrap; }
 .earth-weather-values b { color: #26394c; font-weight: 600; text-align: right; white-space: nowrap; }
-.earth-weather-reason { padding-top: 6px; border-top: 1px solid #eef0f2; color: #a4262c; font-size: 10px; line-height: 1.35; }
+.earth-weather-reason { padding-top: 6px; border-top: 1px solid #eef0f2; color: #a4262c; font-size: 12px; line-height: 1.35; }
 .earth-node { position: absolute; z-index: 5; width: 32px; height: 32px; transform: translate(-50%, -50%); display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: transparent; pointer-events: auto; cursor: pointer; touch-action: none; }
 .earth-node:hover:not(:disabled), .earth-node:active:not(:disabled) { transform: translate(-50%, -50%); box-shadow: none; }
 .earth-node span { width: 12px; height: 12px; border: 2px solid #fff; border-radius: 50%; background: #00e5a8; box-shadow: 0 1px 5px #12343b; }
 .earth-node.selected span { width: 18px; height: 18px; background: #ffb547; }
 .earth-node:focus-visible { outline: 2px solid #ffb547; }
 .earth-video-dropline { position: absolute; z-index: 2; width: 2px; border-left: 2px dashed rgb(15 108 189 / .75); background: transparent; pointer-events: none; }
-.earth-video-position { position: absolute; z-index: 3; display: grid; width: 26px; height: 26px; transform: translate(-50%, -50%); place-items: center; border: 2px solid #fff; border-radius: 50%; background: #0f6cbd; box-shadow: 0 1px 5px rgb(18 52 59 / .45); color: #fff; font-size: 11px; font-weight: 700; pointer-events: none; }
-.earth-capture-target { position: absolute; z-index: 2; display: grid; width: 24px; height: 24px; transform: translate(-50%, -50%); place-items: center; border: 2px solid #fff; border-radius: 50%; background: #d97706; box-shadow: 0 1px 5px rgb(18 52 59 / .4); color: #fff; font-size: 10px; font-weight: 700; pointer-events: none; }
+.earth-video-position { position: absolute; z-index: 3; display: grid; width: 26px; height: 26px; transform: translate(-50%, -50%); place-items: center; border: 2px solid #fff; border-radius: 50%; background: #0f6cbd; box-shadow: 0 1px 5px rgb(18 52 59 / .45); color: #fff; font-size: 12px; font-weight: 700; pointer-events: none; }
+.earth-capture-target { position: absolute; z-index: 2; display: grid; width: 24px; height: 24px; transform: translate(-50%, -50%); place-items: center; border: 2px solid #fff; border-radius: 50%; background: #d97706; box-shadow: 0 1px 5px rgb(18 52 59 / .4); color: #fff; font-size: 12px; font-weight: 700; pointer-events: none; }
 .earth-ground-node { position: absolute; width: 14px; height: 14px; transform: translate(-50%, -50%); display: grid; place-items: center; pointer-events: none; }
 .earth-ground-node span { width: 8px; height: 8px; border: 2px solid #fff; border-radius: 50%; background: #36dfba; box-shadow: 0 1px 4px #12343b; }
 .earth-endpoint { position: absolute; transform: translate(-50%, -100%); padding: 3px 6px; border-radius: 4px; color: #fff; font-size: 12px; font-weight: 700; }
@@ -691,7 +691,7 @@ onBeforeUnmount(() => {
 .earth-tilt-control input { width: 90px; }
 .earth-map-status { position: absolute; z-index: 2; top: 50%; left: 50%; display: grid; justify-items: center; gap: 9px; max-width: min(320px, 80%); transform: translate(-50%, -50%); padding: 12px 16px; background: #fff; border: 1px solid #d8dde3; color: #424242; text-align: center; font-size: 13px; }
 .earth-map-status button { padding: 5px 12px; border: 1px solid #0f6cbd; border-radius: 4px; background: #fff; color: #0f6cbd; cursor: pointer; }
-.earth-attribution { position: absolute; bottom: 4px; right: 6px; color: #fff; text-shadow: 0 1px 2px #000; font-size: 11px; }
+.earth-attribution { position: absolute; bottom: 4px; right: 6px; color: #fff; text-shadow: 0 1px 2px #000; font-size: 12px; }
 @media (max-width: 900px) { .earth-tilt-control { top: 164px; right: 10px; } }
-@media (max-width: 600px) { .earth-weather-popover { width: min(242px, calc(100% - 16px)); } .earth-weather-hint { top: auto; right: 8px; bottom: 12px; font-size: 10px; } }
+@media (max-width: 600px) { .earth-weather-popover { width: min(242px, calc(100% - 16px)); } .earth-weather-hint { top: auto; right: 8px; bottom: 12px; font-size: 12px; } }
 </style>
