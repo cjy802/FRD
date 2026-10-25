@@ -68,7 +68,7 @@
   <span id="pos">- / -</span>
   <span id="time"></span>
   <span id="rectInfo">本帧 0 个框</span>
-  <span class="hint">拖拽画框 | 点击框选中拖动 | 右键点框删除 | <kbd>←</kbd><kbd>→</kbd> 翻帧 | <kbd>V</kbd> 复制上一帧框 | <kbd>Del</kbd> 删除选中</span>
+  <span class="hint">拖拽画框 | 点击框选中拖动 | 右键点框删除 | <kbd>←</kbd><kbd>→</kbd> 翻帧 | <kbd>V</kbd> 复制上一帧框 | <kbd>Del</kbd> 删除选中 | <kbd>Ctrl+Z</kbd> 撤销</span>
   <span id="saveState"></span>
 </div>
 <script>
@@ -166,11 +166,13 @@ function draw(im) {
     ctx.filter = "blur(" + blurPx + "px)";
     ctx.drawImage(im, 0, 0, cv.width, cv.height);
     ctx.restore();
-    ctx.save();
-    ctx.lineWidth = selected === i ? 2.5 : 1.5;
-    ctx.strokeStyle = selected === i ? "#ffd54a" : "#ff5252";
-    ctx.strokeRect(x + .5, y + .5, w, h);
-    ctx.restore();
+    if (selected === i) {   // 只给选中框一条淡蓝细线,普通框不描边
+      ctx.save();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = "rgba(130,180,255,0.75)";
+      ctx.strokeRect(x + .5, y + .5, w, h);
+      ctx.restore();
+    }
   }
   ctx.restore();
 }
@@ -184,7 +186,19 @@ function updateStatus() {
   $("rectInfo").textContent = "本帧 " + curRects().length + " 个框";
 }
 
-/* ---------------- 保存 ---------------- */
+/* ---------------- 保存与撤销 ---------------- */
+const undoStack = [];
+function pushSnapshot(json) {
+  undoStack.push(json);
+  if (undoStack.length > 80) undoStack.shift();
+}
+function snapshotNow() { pushSnapshot(JSON.stringify(boxes)); }
+function undo() {
+  if (!undoStack.length) { flash("没有可撤销的操作"); return; }
+  boxes = JSON.parse(undoStack.pop());
+  selected = -1;
+  markDirty(); redraw();
+}
 function markDirty() {
   dirty = true;
   $("saveState").textContent = "保存中…";
@@ -226,10 +240,10 @@ cv.addEventListener("mousedown", e => {
   if (hit >= 0) {
     selected = hit;
     const r = curRects()[hit];
-    drag = { mode: "move", x0: p.x, y0: p.y, orig: { ...r }, rect: r };
+    drag = { mode: "move", x0: p.x, y0: p.y, orig: { ...r }, rect: r, undo: JSON.stringify(boxes) };
   } else {
     selected = -1;
-    drag = { mode: "new", x0: p.x, y0: p.y, rect: null };
+    drag = { mode: "new", x0: p.x, y0: p.y, rect: null, undo: JSON.stringify(boxes) };
   }
   redraw();
 });
@@ -258,6 +272,7 @@ cv.addEventListener("mousemove", e => {
 });
 window.addEventListener("mouseup", e => {
   if (!drag) return;
+  let changed = false;
   if (drag.mode === "new") {
     const r = drag.rect;
     if (!r || r.w < 5 || r.h < 4) {
@@ -266,19 +281,26 @@ window.addEventListener("mouseup", e => {
     } else {
       r.x = Math.round(r.x); r.y = Math.round(r.y);
       r.w = Math.round(r.w); r.h = Math.round(r.h);
+      changed = true;
     }
   } else if (drag.mode === "move") {
     const r = drag.rect;
     r.x = Math.round(r.x); r.y = Math.round(r.y);
+    changed = r.x !== drag.orig.x || r.y !== drag.orig.y;
   }
+  if (changed) pushSnapshot(drag.undo);
   drag = null;
-  markDirty();
+  if (changed) markDirty();
   redraw();
 });
 cv.addEventListener("contextmenu", e => {
   e.preventDefault();
   const hit = hitRect(toImg(e));
-  if (hit >= 0) { curRects().splice(hit, 1); selected = -1; markDirty(); redraw(); }
+  if (hit >= 0) {
+    snapshotNow();
+    curRects().splice(hit, 1);
+    selected = -1; markDirty(); redraw();
+  }
 });
 
 /* ---------------- 键盘 ---------------- */
@@ -289,9 +311,15 @@ window.addEventListener("keydown", e => {
   else if (e.key === "PageUp") { e.preventDefault(); show(cur - 30); }
   else if (e.key === "PageDown") { e.preventDefault(); show(cur + 30); }
   else if (e.key === "Delete" || e.key === "d") {
-    if (selected >= 0) { curRects().splice(selected, 1); selected = -1; markDirty(); redraw(); }
+    if (selected >= 0) {
+      snapshotNow();
+      curRects().splice(selected, 1); selected = -1; markDirty(); redraw();
+    }
   }
-  else if (e.key === "v" || e.key === "V") copyPrev();
+  else if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) {
+    e.preventDefault(); undo();
+  }
+  else if (e.key === "v" || e.key === "V") { if (!e.ctrlKey && !e.metaKey) copyPrev(); }
 });
 
 /* ---------------- 工具栏 ---------------- */
@@ -299,10 +327,12 @@ function copyPrev() {
   if (cur === 0) return;
   const src = boxes[keyOf(cur - 1)];
   if (!src || !src.length) { flash("上一帧没有框"); return; }
+  snapshotNow();
   boxes[keyOf(cur)] = src.map(r => ({ ...r }));
   markDirty(); redraw();
 }
 function clearCur() {
+  snapshotNow();
   boxes[keyOf(cur)] = [];
   selected = -1; markDirty(); redraw();
 }
@@ -319,7 +349,7 @@ $("jumpBtn").onclick = () => { const v = parseInt($("jump").value, 10); if (v >=
 $("jump").addEventListener("keydown", e => { if (e.key === "Enter") $("jumpBtn").onclick(); });
 $("copyPrev").onclick = copyPrev;
 $("clearCur").onclick = clearCur;
-$("delSel").onclick = () => { if (selected >= 0) { curRects().splice(selected, 1); selected = -1; markDirty(); redraw(); } };
+$("delSel").onclick = () => { if (selected >= 0) { snapshotNow(); curRects().splice(selected, 1); selected = -1; markDirty(); redraw(); } };
 $("strength").oninput = () => { $("strengthVal").textContent = ($("strength").value / 100).toFixed(2); };
 
 async function applyBlur(scope) {
