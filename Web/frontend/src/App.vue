@@ -2984,10 +2984,18 @@ function initCameraPreview() {
       infoBox: false,
       selectionIndicator: false,
     })
-    cameraPreviewViewer.imageryLayers.addImageryProvider(new Cesium.OpenStreetMapImageryProvider({
-      url: 'https://tile.openstreetmap.org/',
-      credit: new Cesium.Credit('<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">© OpenStreetMap contributors</a>', true),
-    }))
+    const tk = import.meta.env.VITE_TIANDITU_TK?.trim()
+    cameraPreviewViewer.imageryLayers.addImageryProvider(tk
+      ? new Cesium.UrlTemplateImageryProvider({
+          url: `https://t{s}.tianditu.gov.cn/DataServer?T=vec_w&x={x}&y={y}&l={z}&tk=${tk}`,
+          subdomains: ['0', '1', '2', '3', '4', '5', '6', '7'],
+          maximumLevel: 18,
+          credit: new Cesium.Credit('© 天地图', true),
+        })
+      : new Cesium.OpenStreetMapImageryProvider({
+          url: 'https://tile.openstreetmap.org/',
+          credit: new Cesium.Credit('<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">© OpenStreetMap contributors</a>', true),
+        }))
     cameraPreviewViewer.scene.globe.depthTestAgainstTerrain = false
     const controller = cameraPreviewViewer.scene.screenSpaceCameraController
     controller.enableRotate = false
