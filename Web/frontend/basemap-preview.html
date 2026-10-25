@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>无注记底图预览</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; font: 14px/1.5 'Segoe UI', 'Microsoft YaHei UI', sans-serif; color: #242424; background: #edf4fa; }
+      #map { position: fixed; inset: 0; }
+      .toolbar { position: fixed; z-index: 2; top: 16px; left: 16px; max-width: min(420px, calc(100% - 32px)); padding: 12px 14px; border: 1px solid #d8dde3; background: #fff; }
+      .toolbar strong { display: block; font-size: 18px; }
+      .toolbar p { margin: 5px 0 8px; color: #5d6670; }
+      #status { margin-top: 8px; color: #835400; }
+    </style>
+    <script>
+      window.MAPV_BASE_URL = '/mapvthree/'
+      window._disable_hmt = true
+    </script>
+  </head>
+  <body>
+    <div id="map"></div>
+    <div class="toolbar">
+      <strong>OSM 模式底图预览(无注记)</strong>
+      <p>工作台 OSM 地图模式的实际底图效果。在 frontend/.env.local 配置 VITE_TIANDITU_TK 后刷新本页,底图切换为天地图矢量底图(无路名地名注记);未配置时维持标准 OSM 瓦片(带地名)。CARTO/Esri 的免密钥无注记瓦片均已要求 API key,实测不可直连。</p>
+      <div id="status">正在加载引擎…</div>
+    </div>
+    <script type="module" src="/src/basemap-preview.ts"></script>
+  </body>
+</html>

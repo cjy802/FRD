@@ -17,6 +17,29 @@ async function loadSdk(requireAk = true) {
   return { sdk, ak }
 }
 
+// OSM 模式的底图。标准 OSM 瓦片把路名/地名/POI 文字烙在图片里,关不掉;
+// 无注记底图按以下规则选择:
+// 1. VITE_TIANDITU_TK 已配置 → 天地图矢量底图(注记是独立图层,不叠加即无文字)
+// 2. 未配置 → 维持原 OSM 标准瓦片(带地名)。
+//    曾经试过 CARTO light_nolabels 与 Esri Light Gray Canvas 的免密钥直连,
+//    两家 2024 年后均要求 API key,匿名请求只会拿到 "not available" 占位瓦片,
+//    所以不再作为兜底;要无地名地图请配置天地图 TK。
+export function osmBasemapUsesAnnotationFreeTiles() {
+  return !!import.meta.env.VITE_TIANDITU_TK?.trim()
+}
+
+export function osmBasemapCredit() {
+  return osmBasemapUsesAnnotationFreeTiles() ? '© 天地图' : '© OpenStreetMap contributors'
+}
+
+function createOsmBasemap(sdk: any) {
+  const tk = import.meta.env.VITE_TIANDITU_TK?.trim()
+  if (!tk) return new sdk.OSMImageryTileProvider()
+  sdk.TiandituConfig.tk = tk
+  // 默认 style 就是矢量底图;矢量注记(cva)是单独图层,这里不叠加。
+  return new sdk.TiandituImageryTileProvider()
+}
+
 // All public inputs/outputs are WGS84. Reprojecting the Baidu tiles changes
 // their projection, but does not convert their BD-09 geographic datum. Convert
 // once at each renderer boundary; keep mission data in WGS84.
@@ -28,7 +51,7 @@ export async function createMapScene(element: HTMLElement, center: Coordinate, p
     map: {
       provider: provider === 'baidu'
         ? new sdk.Baidu09ImageryTileProvider({ ak, type: 'satellite' })
-        : new sdk.OSMImageryTileProvider(),
+        : createOsmBasemap(sdk),
       projection: provider === 'baidu' ? 'ecef' : 'EPSG:3857', center: toScene(center), heading: 0, pitch: 52, range: 900,
     },
     controller: { enabled: !preview, enableRotate: !preview, enableZoom: !preview, enablePan: !preview, enableTilt: !preview,

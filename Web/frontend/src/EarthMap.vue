@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { createMapScene, type BaiduScene, type CameraPose, type MapProvider, type SceneView } from './baiduScene'
+import { createMapScene, osmBasemapCredit, type BaiduScene, type CameraPose, type MapProvider, type SceneView } from './baiduScene'
+
+const osmCredit = osmBasemapCredit()
 import type { VideoCaptureTarget, VideoTelemetryPoint } from './videoSurvey'
 import type { RouteAssessment, WeatherRiskPoint } from './weatherTypes'
 
@@ -613,7 +615,7 @@ onBeforeUnmount(() => {
     </div>
     <label v-if="viewMode === '3d' && !status" class="earth-tilt-control">观察角度 <input aria-label="地球 3D 观察角度" type="range" min="0" max="75" :value="tilt" @input="changeTilt" /><span>{{ tilt }}°</span></label>
     <div v-if="status" class="earth-map-status" role="status"><span>{{ status }}</span><button v-if="failed" type="button" @click="initialize">重试</button></div>
-    <span class="earth-attribution">{{ provider === 'baidu' ? '© 百度地图' : '© OpenStreetMap contributors' }}</span>
+    <span class="earth-attribution">{{ provider === 'baidu' ? '© 百度地图' : osmCredit }}</span>
   </div>
 </template>
 
