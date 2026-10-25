@@ -391,7 +391,7 @@ onBeforeUnmount(() => {
         </article>
       </section>
 
-      <footer class="field-footer"><span>积水位置来自航后照片分析</span><a href="/workspace">返回主控端</a></footer>
+      <footer class="field-footer"><span>积水位置来自航后照片分析</span></footer>
     </main>
 
     <Teleport to="body">
@@ -477,8 +477,6 @@ onBeforeUnmount(() => {
 .field-error strong { color: #a4262c; }
 .field-empty-mark { display: grid; width: 46px; height: 46px; place-items: center; border-radius: 50%; background: #e8f3fc; color: var(--ui-accent); font-size: 22px; font-weight: 700; }
 .field-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 24px 0 8px; color: var(--ui-muted); font-size: 12px; }
-.field-footer a { color: var(--ui-accent); font-weight: 600; text-decoration: none; }
-.field-footer a:hover { text-decoration: underline; }
 .field-lightbox { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 18px; background: rgb(15 23 42 / .38); }
 .field-lightbox-close { position: absolute; top: 17px; right: 19px; display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid #d7dfe8; border-radius: 50%; background: #fff; color: #34506c; font-size: 22px; line-height: 1; }
 .field-lightbox-close:hover { border-color: var(--ui-accent); color: var(--ui-accent); }
