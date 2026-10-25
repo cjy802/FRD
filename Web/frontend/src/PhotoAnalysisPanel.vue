@@ -12,13 +12,13 @@ import {
   sanitizeWaterAlertThresholds,
   submitPhotoAnalysisJob,
 } from './photoAnalysis'
-import type { ActivePhotoAnalysisJob, PhotoAnalysisHealth, PhotoAnalysisJob, PhotoAnalysisJobItem, PhotoAnalysisResultImage, WaterAlertThresholds } from './photoAnalysis'
+import type { ActivePhotoAnalysisJob, PhotoAnalysisHealth, PhotoAnalysisJob, PhotoAnalysisJobItem, PhotoAnalysisJobItemMeta, PhotoAnalysisResultImage, WaterAlertThresholds } from './photoAnalysis'
 import type { TaskVideoFrame } from './photoAnalysis'
 import type { VideoCaptureTarget } from './videoSurvey'
 import { STAGE_LABELS } from './analysisPipeline'
 
 const props = withDefaults(defineProps<{ taskId: string | null; frames: TaskVideoFrame[]; thresholds: WaterAlertThresholds; activeJobId?: string | null; queueOpen?: boolean; pendingReview?: VideoCaptureTarget[]; dispatchedCount?: number }>(), { activeJobId: null, queueOpen: false, pendingReview: () => [], dispatchedCount: 0 })
-const emit = defineEmits<{ 'remove-frame': [index: number]; 'remove-all-frames': []; 'frames-add': [frames: TaskVideoFrame[]]; 'job-started': [jobId: string]; 'analysis-update': [job: PhotoAnalysisJob]; 'thresholds-change': [thresholds: WaterAlertThresholds]; 'dispatch-review': [ids: string[]]; 'open-queue': []; 'close-queue': [] }>()
+const emit = defineEmits<{ 'remove-frame': [index: number]; 'remove-all-frames': []; 'frames-add': [frames: TaskVideoFrame[]]; 'job-started': [jobId: string]; 'analysis-update': [job: PhotoAnalysisJob]; 'thresholds-change': [thresholds: WaterAlertThresholds]; 'dispatch-review': [ids: string[]]; 'manual-confirm': [payload: { jobId: string; image: PhotoAnalysisResultImage; meta: PhotoAnalysisJobItemMeta }]; 'open-queue': []; 'close-queue': [] }>()
 
 // 人工复核：默认全部勾选，管理员逐张看图取消误检后一键下发到现场端。
 const reviewExcludedIds = ref<string[]>([])
@@ -43,6 +43,17 @@ const reviewIdByName = computed(() => {
 })
 function toggleAllReview(checked: boolean) {
   reviewExcludedIds.value = checked ? [] : props.pendingReview.map(target => target.id)
+}
+// GLM 终审未检出、但管理员看图认为确实有积水的帧，手动加进待复核下发列表。
+const pendingReviewIdSet = computed(() => new Set(props.pendingReview.map(target => target.id)))
+function manualConfirmId(image: PhotoAnalysisResultImage): string {
+  return `analysis-${job.value?.job_id}-${image.name}`
+}
+function toggleManualConfirm(image: PhotoAnalysisResultImage) {
+  const currentJob = job.value
+  const meta = (currentJob?.items ?? []).find(item => item.name === image.name)?.meta
+  if (!currentJob || meta === undefined) return
+  emit('manual-confirm', { jobId: currentJob.job_id, image, meta })
 }
 
 const removeAllArmed = ref(false)
@@ -675,7 +686,7 @@ function onDocumentPointerdown(event: PointerEvent) {
         <div v-if="pendingReview.length" class="review-dispatch-bar" role="region" aria-label="人工复核下发">
           <div class="review-dispatch-copy">
             <strong>人工复核下发</strong>
-            <small>{{ pendingReview.length }} 处{{ confirmWord }}积水待复核{{ dispatchedCount ? ` · 已下发 ${dispatchedCount} 处（本次下发将整体替换）` : '' }} · 逐张看图勾选后下发到现场处理端</small>
+            <small>{{ pendingReview.length }} 处积水待复核（{{ confirmWord }} {{ pendingReview.filter(t => !t.label.includes('人工确认')).length }} · 人工确认 {{ pendingReview.filter(t => t.label.includes('人工确认')).length }}）{{ dispatchedCount ? ` · 已下发 ${dispatchedCount} 处（本次下发将整体替换）` : '' }} · 逐张看图勾选后下发到现场处理端</small>
           </div>
           <div class="review-dispatch-actions">
             <label class="route-export-record"><input type="checkbox" :checked="reviewSelectedTargets.length === pendingReview.length" @change="toggleAllReview(($event.target as HTMLInputElement).checked)" />全选</label>
@@ -695,6 +706,7 @@ function onDocumentPointerdown(event: PointerEvent) {
               <span v-if="isRecheckJob && (image.suspected_pixels ?? 0) > 0" class="photo-alert-badge is-recheck">{{ confirmWord }}</span>
               <span v-else-if="isRecheckJob" class="photo-alert-badge is-none">复检未检出</span>
               <span v-else :class="['photo-alert-badge', `is-${assessment.level}`]">{{ assessment.label }}</span>
+              <button v-if="isRecheckJob && (image.suspected_pixels ?? 0) <= 0" type="button" class="photo-manual-confirm" :class="{ 'is-active': pendingReviewIdSet.has(manualConfirmId(image)) }" :title="pendingReviewIdSet.has(manualConfirmId(image)) ? '已加入待复核下发，点击可移除' : 'GLM 未检出，但人工看图确认有积水：加入下发列表'" @click.stop="toggleManualConfirm(image)">{{ pendingReviewIdSet.has(manualConfirmId(image)) ? '已人工确认 ✓ 点击移除' : '人工确认积水' }}</button>
               <label v-if="reviewIdByName.get(image.name)" class="review-check"><input type="checkbox" :checked="!reviewExcludedIds.includes(reviewIdByName.get(image.name)!)" @change="toggleReviewTarget(reviewIdByName.get(image.name)!, ($event.target as HTMLInputElement).checked)" />确认积水</label>
               <small v-if="assessment.areaText">{{ assessment.areaText }} · 高度 {{ image.altitude_m !== null && image.altitude_m !== undefined ? `${image.altitude_m.toFixed(0)} m` : '未知' }}</small>
               <small>疑似积水 {{ fractionPercent(image.suspected_fraction) }} · {{ image.suspected_patch_count }} 处 · 置信度 {{ fractionPercent(image.mean_confidence_on_suspected) }}</small>
@@ -785,6 +797,9 @@ function onDocumentPointerdown(event: PointerEvent) {
 .review-dispatch-button:disabled { opacity: .5; cursor: not-allowed; }
 .review-check { display: inline-flex; align-items: center; gap: 5px; margin-top: 4px; color: #1769aa; font-size: 11px; font-weight: 700; cursor: pointer; user-select: none; }
 .review-check input { width: 14px; height: 14px; margin: 0; accent-color: var(--ui-accent); cursor: pointer; }
+.photo-manual-confirm { margin-top: 4px; min-height: 26px; padding: 3px 9px; border: 1px solid #bfd9ef; border-radius: 999px; background: #fff; color: #1769aa; font-size: 10px; font-weight: 700; }
+.photo-manual-confirm:hover { border-color: var(--ui-accent); background: #eff6ff; }
+.photo-manual-confirm.is-active { border-color: #9fd4b4; background: #e7f6ec; color: #16794c; }
 .analysis-queue-overlay { position: fixed; z-index: 6000; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--ui-line); border-radius: 10px; background: #f4f7fa; box-shadow: 0 14px 40px rgb(15 23 42 / .24); }
 .analysis-queue-overlay-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--ui-line); background: #fff; }
 .analysis-queue-overlay-title { display: grid; min-width: 0; gap: 2px; }
