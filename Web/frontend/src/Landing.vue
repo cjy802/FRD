@@ -2,26 +2,18 @@
 import { computed, onMounted, ref } from 'vue'
 import { fetchSession, homeForRole, type Session } from './auth'
 
-// 落地页公开可见：顺手查一下会话，只用来决定按钮文案和去向，不做强制跳转。
+// 落地页公开可见：顺手查一下会话，只用来决定主按钮的文案和去向，不做强制跳转。
 const session = ref<Session | null>(null)
-const sessionChecked = ref(false)
 
 onMounted(() => {
   document.title = '低空飞行决策工作台'
   void fetchSession().then(current => {
     session.value = current
-    sessionChecked.value = true
   })
 })
 
 const primaryHref = computed(() => (session.value ? homeForRole(session.value.role) : '/workspace'))
 const primaryLabel = computed(() => (session.value?.role === 'field' ? '进入现场端' : '进入工作台'))
-
-const pillHref = computed(() => (session.value ? homeForRole(session.value.role) : '/login'))
-const pillLabel = computed(() => {
-  if (!session.value) return sessionChecked.value ? '登录' : '进入'
-  return `${session.value.username} · ${session.value.role === 'field' ? '现场端' : '工作台'}`
-})
 </script>
 
 <template>
@@ -32,10 +24,6 @@ const pillLabel = computed(() => {
 
       <header class="hero-bar">
         <span class="brand">低空飞行决策工作台</span>
-        <a class="pill" :href="pillHref">
-          {{ pillLabel }}
-          <span class="arrow" aria-hidden="true">→</span>
-        </a>
       </header>
 
       <div class="hero-body">
@@ -52,12 +40,11 @@ const pillLabel = computed(() => {
 
 <style scoped>
 .landing {
-  --hero-accent: #ddf25b;
   /* 全局 style.css 把 html/body/#app 锁成 height:100% + overflow:hidden，
      落地页必须自己做滚动容器，矮视口才能滚到底部按钮。 */
   height: 100dvh;
   overflow-y: auto;
-  background: #f1eee3;
+  background: #0a1c38;
   font-family: 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', system-ui, sans-serif;
 }
 
@@ -66,7 +53,6 @@ const pillLabel = computed(() => {
   min-height: 100dvh;
   display: flex;
   flex-direction: column;
-  border-radius: 0 0 30px 30px;
   overflow: hidden;
   isolation: isolate;
 }
@@ -97,35 +83,11 @@ const pillLabel = computed(() => {
 }
 
 .brand {
-  color: var(--hero-accent);
+  color: #fff;
   font-size: clamp(17px, 2vw, 21px);
   font-weight: 700;
   letter-spacing: 0.02em;
   text-shadow: 0 1px 14px rgba(4, 12, 28, 0.45);
-}
-
-.pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 22px;
-  border: 1px solid rgba(255, 255, 255, 0.55);
-  border-radius: 999px;
-  color: #fff;
-  font-size: 15px;
-  font-weight: 600;
-  text-decoration: none;
-  backdrop-filter: blur(4px);
-  transition: background 0.2s ease, border-color 0.2s ease;
-}
-
-.pill:hover {
-  background: rgba(255, 255, 255, 0.14);
-  border-color: rgba(255, 255, 255, 0.85);
-}
-
-.arrow {
-  font-weight: 400;
 }
 
 .hero-body {
@@ -140,12 +102,13 @@ const pillLabel = computed(() => {
 
 .hero-body h1 {
   margin: 0;
-  color: var(--hero-accent);
+  color: #0d2f63;
   font-size: clamp(40px, 8vw, 94px);
   font-weight: 700;
   line-height: 1.1;
   letter-spacing: 0.015em;
-  text-shadow: 0 3px 30px rgba(4, 12, 28, 0.5);
+  /* 深蓝字压在蓝天上，靠白色光晕把边缘衬出来 */
+  text-shadow: 0 2px 20px rgba(240, 247, 255, 0.5), 0 1px 6px rgba(240, 247, 255, 0.28);
   animation: hero-rise 0.7s ease-out both;
 }
 
@@ -180,12 +143,12 @@ const pillLabel = computed(() => {
 }
 
 .btn.solid {
-  background: var(--hero-accent);
-  color: #101f36;
+  background: #14468c;
+  color: #fff;
 }
 
 .btn.solid:hover {
-  background: #ebfa7f;
+  background: #1b57a8;
   transform: translateY(-1px);
 }
 
