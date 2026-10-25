@@ -2971,6 +2971,7 @@ function initCameraPreview() {
     cameraPreviewViewer = new Cesium.Viewer(cesiumCameraElement.value ?? cameraPreviewElement.value, {
       baseLayer: false,
       terrainProvider: new Cesium.EllipsoidTerrainProvider(),
+      creditContainer: document.createElement('div'),
       requestRenderMode: true,
       maximumRenderTimeChange: Number.POSITIVE_INFINITY,
       animation: false,
