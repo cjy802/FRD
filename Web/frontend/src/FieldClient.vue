@@ -317,14 +317,14 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (refreshTimer) window.clearInterval(refreshTimer)
   document.body.style.overflow = ''
-  document.title = '低空飞行决策工作台'
+  document.title = '积水风险智能识别与预警系统'
 })
 </script>
 
 <template>
   <div class="field-shell">
     <header class="field-topbar">
-      <a class="field-brand" href="/workspace" aria-label="返回低空飞行决策工作台">
+      <a class="field-brand" href="/workspace" aria-label="返回积水风险智能识别与预警系统">
         <span class="field-brand-mark" aria-hidden="true">水</span>
         <span><strong>积水处置</strong><small>现场处理端</small></span>
       </a>

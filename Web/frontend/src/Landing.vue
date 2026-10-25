@@ -34,7 +34,7 @@ async function submit() {
       <div class="hero-tint" aria-hidden="true"></div>
 
       <header class="hero-bar">
-        <span class="brand">低空飞行决策工作台</span>
+        <span class="brand">积水风险智能识别与预警系统</span>
       </header>
 
       <div class="hero-main">

@@ -13,7 +13,7 @@ onMounted(async () => {
   const session = await fetchSession()
   if (session) window.location.replace(homeForRole(session.role))
   else checking.value = false
-  document.title = '登录 · 低空飞行决策工作台'
+  document.title = '登录 · 积水风险智能识别与预警系统'
 })
 
 async function submit() {
@@ -40,7 +40,7 @@ async function submit() {
       <div class="login-brand">
         <span class="login-brand-mark" aria-hidden="true">低</span>
         <div>
-          <strong>低空飞行决策工作台</strong>
+          <strong>积水风险智能识别与预警系统</strong>
           <small>积水巡查 · 登录</small>
         </div>
       </div>

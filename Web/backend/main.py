@@ -44,7 +44,7 @@ from task_store import TaskError, tasks
 from adaptive_video import AdaptiveVideoError, select_frames as select_adaptive_video_frames
 
 
-app = FastAPI(title="低空飞行决策工作台", version="0.1.0")
+app = FastAPI(title="积水风险智能识别与预警系统", version="0.1.0")
 
 # 登录会话门禁：同源部署（8011 托管前端或 5173 代理），不再提供 CORS 跨域许可；
 # 浏览器跨域请求拿不到响应头，本机回环与 Origin 校验由 require_local_request
