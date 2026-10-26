@@ -305,7 +305,7 @@ watch(lightbox, value => {
 
 onMounted(() => {
   document.title = '积水处置 · 现场处理端'
-  // 登录守卫：未登录回首页登录卡；管理员也可以看现场端，但 brand 链接回主控。
+  // 登录守卫：未登录回首页登录卡。
   void fetchSession().then(current => {
     if (!current) window.location.replace('/')
     else session.value = current
@@ -324,10 +324,9 @@ onBeforeUnmount(() => {
 <template>
   <div class="field-shell">
     <header class="field-topbar">
-      <a class="field-brand" href="/workspace" aria-label="返回积水风险智能识别与预警系统">
-        <span class="field-brand-mark" aria-hidden="true">水</span>
+      <span class="field-brand">
         <span><strong>积水处置</strong><small>现场处理端</small></span>
-      </a>
+      </span>
       <div class="field-top-actions">
         <span v-if="session" class="field-session">{{ session.role === 'admin' ? '管理员' : '使用者' }} · {{ session.username }}</span>
         <button type="button" class="field-logout-button" @click="signOut">退出</button>
@@ -412,8 +411,7 @@ onBeforeUnmount(() => {
 :global(body) { background: #f3f5f7; }
 .field-shell { height: 100dvh; overflow-y: auto; overscroll-behavior: contain; color: #111827; background: #f3f5f7; }
 .field-topbar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 68px; padding: 12px max(20px, calc((100vw - 720px) / 2 + 20px)); background: #fff; border-bottom: 1px solid var(--ui-line); }
-.field-brand { display: inline-flex; align-items: center; gap: 10px; color: #111827; text-decoration: none; }
-.field-brand-mark { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 10px; background: #e8f3fc; color: var(--ui-accent); font-size: 15px; font-weight: 700; }
+.field-brand { display: inline-flex; align-items: center; color: #111827; }
 .field-brand strong, .field-brand small { display: block; }
 .field-brand strong { font-size: var(--font-heading); line-height: 1.25; font-weight: 600; letter-spacing: -.02em; }
 .field-brand small { margin-top: 1px; color: var(--ui-muted); font-size: var(--font-caption); line-height: 1.3; }
