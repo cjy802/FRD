@@ -128,8 +128,9 @@ def _request_data_url(image: np.ndarray) -> str:
 def _call_model(image: np.ndarray, url: str, api_key: str, model: str) -> dict:
     image_url = _request_data_url(image)
     prompt = (
-        "分析这张无人机道路照片，只识别画面里可见的积水/水坑区域。不要把阴影、车身、反光、"
-        "湿润但没有积水的路面或天空识别成水坑。请只返回 JSON，不要 Markdown 或解释，格式为："
+        "分析这张无人机道路照片，只识别画面里路面/道路上的积水/水坑区域。不要把阴影、车身、反光、"
+        "湿润但没有积水的路面或天空识别成水坑；屋顶/楼顶、天台、院落、泳池、河道湖泊等非路面积水"
+        "不属于目标，即使画面里可见也不要输出。请只返回 JSON，不要 Markdown 或解释，格式为："
         '{"detections":[{"label":"puddle","confidence":0.0,"polygon":[[0.1,0.2],[0.3,0.2],[0.3,0.4]]}]}。'
         "polygon 使用相对原图宽高归一化到 0–1 的边界点，原点在左上角；只在能确定水坑边界时输出，"
         "没有水坑时返回空 detections。建议每个明显独立水坑一个多边形，最多 30 个。"
