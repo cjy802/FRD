@@ -36,12 +36,9 @@ let controller: AbortController | null = null
 let timer: ReturnType<typeof setTimeout> | null = null
 let expiryTimer: ReturnType<typeof setInterval> | null = null
 
-function riskLabel(level: string, fallback: string) {
-  return ({ incomplete: '资料不完整', elevated: '需要重点留意', attention: '需要留意', no_trigger: '暂未发现明显提醒' } as Record<string, string>)[level] || fallback
-}
 function metricTone(field: string) {
   const level = alignment.value?.weather_risk.alerts.find(alert => alert.field === field)?.level
-  return level === 'elevated' ? 'is-danger' : level === 'attention' ? 'is-attention' : ''
+  return level === 'elevated' ? 'is-danger' : level === 'attention' ? 'is-attention' : 'is-ok'
 }
 function updateLimit(field: 'max_wind_m_s' | 'max_crosswind_m_s' | 'min_visibility_m', event: Event) {
   const value = Number((event.target as HTMLInputElement).value)
@@ -141,9 +138,9 @@ onBeforeUnmount(() => { controller?.abort(); if (timer) clearTimeout(timer); if 
 
 <template>
   <div class="status-block" aria-label="沿线天气检查">
-    <div class="status-title"><span>沿线天气检查</span><b :class="alignment ? `risk-${alignment.weather_risk.level}` : 'pending'">{{ alignment ? riskLabel(alignment.weather_risk.level, alignment.weather_risk.label) : '待评估' }}</b></div>
+    <div class="status-title"><span>沿线天气检查</span></div>
     <template v-if="alignment">
-      <div class="weather-test-meta"><small>上次测试：{{ assessmentAgeLabel }}<span v-if="alignment.cache_reused"> · 已复用六小时缓存</span></small><button type="button" :disabled="pending" @click="requestAlignment">{{ pending ? '正在测试…' : '重新测试' }}</button></div>
+      <div class="weather-test-meta"><small>上次测试：{{ assessmentAgeLabel }}</small><button type="button" :disabled="pending" @click="requestAlignment">{{ pending ? '正在测试…' : '重新测试' }}</button></div>
       <div class="weather-mini-grid"><div :class="metricTone('wind')"><span>飞行高度风</span><strong>{{ alignment.weather_risk.summary.max_wind_m_s?.toFixed(1) ?? '—' }} m/s</strong><small>最高风速</small></div><div :class="metricTone('crosswind')"><span>侧风</span><strong>{{ alignment.weather_risk.summary.max_crosswind_m_s?.toFixed(1) ?? '—' }} m/s</strong><small>横向风力</small></div><div :class="metricTone('visibility')"><span>地面能见度</span><strong>{{ alignment.weather_risk.summary.min_surface_visibility_m?.toFixed(0) ?? '—' }} m</strong><small>最低值</small></div></div>
     </template>
     <p v-else>{{ pending ? '正在计算沿线高度风及风雨提示…' : error || '等待路线与天气资料就绪。' }}</p>

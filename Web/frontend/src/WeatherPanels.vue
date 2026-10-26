@@ -74,7 +74,6 @@ const metrics: { field: Field; label: string }[] = [
   { field: 'msl_Pa', label: '气压 · Pa' },
   { field: 'tp_6h_mm', label: '6 小时降水 · mm' },
 ]
-const weatherLabel = computed(() => loading.value ? '预测中' : sampling.value ? '位置匹配中' : forecast.value ? '未来约 6 小时' : '等待天气预报')
 const forecastAgeMs = computed(() => forecast.value ? Math.max(0, ageClock.value - new Date(forecast.value.generated_at_utc).getTime()) : 0)
 const forecastAgeLabel = computed(() => {
   const minutes = Math.floor(forecastAgeMs.value / 60_000)
@@ -123,9 +122,6 @@ const pointRisk = computed(() => {
     rules: { ...forecast.value.point_risk.rules, ...pointThresholds },
   }
 })
-function riskLabel(level: string, fallback: string) {
-  return ({ elevated: '需要重点留意', attention: '需要留意', no_trigger: '暂未发现明显提醒', incomplete: '资料不完整' } as Record<string, string>)[level] || fallback
-}
 function restorePointThresholds() {
   try {
     const saved = JSON.parse(localStorage.getItem(POINT_THRESHOLDS_KEY) ?? 'null') as Partial<GroundThresholds> | null
@@ -239,7 +235,7 @@ function metricValue(field: Field, value: number) {
 }
 function metricTone(field: 'temperature' | 'wind' | 'rain') {
   const level = pointRisk.value?.triggers.find(trigger => trigger.field === field)?.level
-  return level === 'elevated' ? 'is-danger' : level === 'attention' ? 'is-attention' : ''
+  return level === 'elevated' ? 'is-danger' : level === 'attention' ? 'is-attention' : 'is-ok'
 }
 async function readJob(response: Response): Promise<Job> {
   const payload = await response.json()
@@ -362,9 +358,9 @@ onBeforeUnmount(() => {
 <template>
   <div class="weather-reference-slot">
     <div class="status-block weather-risk-panel" aria-label="路线中点参考天气">
-      <div class="status-title"><span>路线中点参考天气</span><b :class="pointRisk ? `risk-${pointRisk.level}` : 'pending'">{{ pointRisk ? riskLabel(pointRisk.level, pointRisk.label) : (loading ? '等待预测' : '待评估') }}</b></div>
+      <div class="status-title"><span>路线中点参考天气</span></div>
       <div class="weather-live-actions weather-cache-toolbar">
-        <small v-if="forecast">上次预测：{{ localTime(forecast.generated_at_utc) }} · {{ forecastAgeLabel }}{{ cacheHit ? ' · 已复用缓存' : '' }}</small>
+        <small v-if="forecast">上次预测：{{ localTime(forecast.generated_at_utc) }} · {{ forecastAgeLabel }}</small>
         <small v-else>首次预测会自动运行；之后优先复用六小时内的数据。</small>
         <button type="button" class="weather-refresh" :disabled="loading" @click="predictWeather(true)">{{ loading ? '刷新中…' : '刷新天气' }}</button>
       </div>
@@ -388,7 +384,7 @@ onBeforeUnmount(() => {
   <slot name="route-weather" />
 
   <div class="status-block weather-data-panel" aria-label="详细天气">
-    <div class="status-title"><span>详细天气</span><b class="weather-state">{{ weatherLabel }}</b></div>
+      <div class="status-title"><span>详细天气</span></div>
     <p v-if="forecast && loading" class="weather-refreshing" role="status">正在获取新预测，旧数据会暂时保留。</p>
     <p v-if="forecast && error" class="weather-cache-error" role="alert">{{ error }}；当前仍显示上一次结果。</p>
     <p v-if="!forecast" :role="jobStatus === 'failed' || error ? 'alert' : 'status'">{{ error || (sampling ? '正在查询航线位置的区域天气…' : message) }}</p>
