@@ -32,8 +32,6 @@ const assessmentAgeLabel = computed(() => {
   return remainingMinutes ? `${hours} 小时 ${remainingMinutes} 分钟前` : `${hours} 小时前`
 })
 const displayedLimits = computed(() => props.limits ?? alignment.value?.weather_risk.limits ?? DEFAULT_LIMITS)
-const usesCustomThresholds = computed(() => Boolean(props.limits)
-  || Boolean(alignment.value && alignment.value.weather_risk.rule_mode !== 'demo'))
 let controller: AbortController | null = null
 let timer: ReturnType<typeof setTimeout> | null = null
 let expiryTimer: ReturnType<typeof setInterval> | null = null
@@ -150,7 +148,7 @@ onBeforeUnmount(() => { controller?.abort(); if (timer) clearTimeout(timer); if 
     </template>
     <p v-else>{{ pending ? '正在计算沿线高度风及风雨提示…' : error || '等待路线与天气资料就绪。' }}</p>
     <details v-if="coordinates" class="weather-threshold-config route-threshold-config" aria-label="沿线天气阈值配置">
-      <summary class="weather-threshold-config-heading"><strong>设置沿线天气阈值</strong><small>{{ usesCustomThresholds ? '当前为自定义阈值' : '当前为演示阈值' }}</small></summary>
+      <summary class="weather-threshold-config-heading"><strong>设置沿线天气阈值</strong></summary>
       <div class="weather-threshold-group">
         <div class="weather-threshold-item"><strong>飞行高度风 · m/s</strong><label>较强提示线<input type="number" min="0.1" max="200" step="0.1" :value="displayedLimits.max_wind_m_s" @change="updateLimit('max_wind_m_s', $event)" /></label><small>关注线：{{ (displayedLimits.max_wind_m_s * .8).toFixed(1) }} m/s</small></div>
         <div class="weather-threshold-item"><strong>侧风 · m/s</strong><label>较强提示线<input type="number" min="0.1" max="200" step="0.1" :value="displayedLimits.max_crosswind_m_s" @change="updateLimit('max_crosswind_m_s', $event)" /></label><small>关注线：{{ (displayedLimits.max_crosswind_m_s * .8).toFixed(1) }} m/s</small></div>
