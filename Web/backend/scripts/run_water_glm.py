@@ -130,7 +130,9 @@ def _call_model(image: np.ndarray, url: str, api_key: str, model: str) -> dict:
     prompt = (
         "分析这张无人机道路照片，只识别画面里路面/道路上的积水/水坑区域。不要把阴影、车身、反光、"
         "湿润但没有积水的路面或天空识别成水坑；屋顶/楼顶、天台、院落、泳池、河道湖泊等非路面积水"
-        "不属于目标，即使画面里可见也不要输出。请只返回 JSON，不要 Markdown 或解释，格式为："
+        "不属于目标，即使画面里可见也不要输出。水膜、潮湿痕迹、发白污渍、新旧沥青色差都不算积水；"
+        "只有能看到明确水体特征（水面反光或倒影、淹没标线或路缘、边界吞没）时才把该区域判为积水。"
+        "请只返回 JSON，不要 Markdown 或解释，格式为："
         '{"detections":[{"label":"puddle","confidence":0.0,"polygon":[[0.1,0.2],[0.3,0.2],[0.3,0.4]]}]}。'
         "polygon 使用相对原图宽高归一化到 0–1 的边界点，原点在左上角；只在能确定水坑边界时输出，"
         "没有水坑时返回空 detections。建议每个明显独立水坑一个多边形，最多 30 个。"
@@ -174,6 +176,10 @@ def _call_model(image: np.ndarray, url: str, api_key: str, model: str) -> dict:
     return _json_content(answer)
 
 
+# GLM 擦边置信（如 0.59/0.6 的湿痕误报）不算确认；低于该值的多边形直接丢弃。
+MIN_DETECTION_CONFIDENCE = 0.7
+
+
 def _process(entry: dict, output_dir: Path, url: str, api_key: str, model: str) -> dict:
     path = entry["path"]
     image = _read_image(path)
@@ -200,6 +206,8 @@ def _process(entry: dict, output_dir: Path, url: str, api_key: str, model: str) 
             score = min(max(float(item.get("confidence", 0.5)), 0), 1)
         except (TypeError, ValueError):
             score = 0.5
+        if score < MIN_DETECTION_CONFIDENCE:
+            continue
         polygon = _polygon_points(item.get("polygon"), width, height)
         if polygon is None:
             continue
@@ -322,7 +330,7 @@ def main() -> int:
                   "input_size": REQUEST_MAX_SIDE, "normalize": "remote vision request; normalized polygons rasterized locally",
                   "request_encoding": "png-lossless", "reasoning_effort": "low",
                   "concurrency": args.concurrency,
-                  "confidence_threshold": None, "model_sha256": model_digest},
+                  "confidence_threshold": MIN_DETECTION_CONFIDENCE, "model_sha256": model_digest},
         "images": entries,
         "elapsed_seconds": round(time.monotonic() - started, 2),
         "interpretation": "GLM 返回的多边形已在本机栅格化为候选掩膜；整图 PNG 无损送检。"
