@@ -341,7 +341,7 @@ onBeforeUnmount(() => {
         <div>
           <p class="field-kicker">现场待处理</p>
           <h1 id="field-title">{{ visibleAlerts.length }}<span>处积水</span></h1>
-          <p class="field-subtitle">只看位置和现场照片，处理完一处就划掉一处。</p>
+          <p class="field-subtitle">处理完一处少一处。</p>
         </div>
         <div class="field-hero-meta">
           <span>{{ taskLabel }}</span>
@@ -354,10 +354,10 @@ onBeforeUnmount(() => {
         <CustomSelect :model-value="selectedTaskId" :options="taskOptions" aria-label="选择巡查任务" @update:model-value="onTaskChange" />
       </section>
 
-      <div v-if="loading" class="field-state field-loading" role="status"><span class="field-loader"></span><strong>正在读取最新积水点</strong><small>把位置和现场照片整理好后会显示在这里。</small></div>
+      <div v-if="loading" class="field-state field-loading" role="status"><span class="field-loader"></span><strong>正在读取最新积水点</strong></div>
       <div v-else-if="error" class="field-state field-error" role="alert"><strong>暂时读不到积水点</strong><small>{{ error }}</small><button type="button" @click="refresh()">重新读取</button></div>
-      <div v-else-if="!alerts.length" class="field-state field-empty"><span class="field-empty-mark">✓</span><strong>主控端尚未下发积水点</strong><small>管理员在照片分析中人工确认积水后才会下发到这里，请稍后刷新查看。</small></div>
-      <div v-else-if="!visibleAlerts.length" class="field-state field-empty"><span class="field-empty-mark">✓</span><strong>这一批已全部处理</strong><small>共完成 {{ completedCount }} 处。需要复看时，可刷新主控端任务。</small></div>
+      <div v-else-if="!alerts.length" class="field-state field-empty"><span class="field-empty-mark">✓</span><strong>主控端尚未下发积水点</strong><small>管理员确认后会自动出现在这里。</small></div>
+      <div v-else-if="!visibleAlerts.length" class="field-state field-empty"><span class="field-empty-mark">✓</span><strong>这一批已全部处理</strong><small>共 {{ completedCount }} 处。</small></div>
 
       <section v-else class="field-alert-list" aria-label="积水点列表">
         <article v-for="(alert, index) in visibleAlerts" :key="alert.id" class="field-alert-card">
@@ -380,12 +380,12 @@ onBeforeUnmount(() => {
             <img :src="alert.sourceUrl" :alt="`${alert.locationLabel} 现场照片`" loading="lazy" />
             <span class="field-photo-caption"><span>现场照片</span><span>点击放大</span></span>
           </button>
-          <div class="field-photo-note"><span class="field-dot"></span>识别叠图已叠加在照片上，颜色区域是模型标出的疑似积水范围。</div>
+          <div class="field-photo-note"><span class="field-dot"></span>彩色区域是模型标出的疑似积水范围。</div>
 
           <div class="field-facts" aria-label="积水识别信息">
-            <span><b>{{ alert.areaLabel }}</b><small>范围参考</small></span>
-            <span><b>{{ alert.confidenceLabel }}</b><small>识别结果</small></span>
-            <span><b>{{ alert.altitudeLabel }}</b><small>拍摄信息</small></span>
+            <span>{{ alert.areaLabel }}</span>
+            <span>{{ alert.confidenceLabel }}</span>
+            <span>{{ alert.altitudeLabel }}</span>
           </div>
           <button type="button" class="field-complete-button" @click="markCompleted(alert)"><span aria-hidden="true">✓</span>标记为已处理</button>
         </article>
@@ -461,9 +461,7 @@ onBeforeUnmount(() => {
 .field-photo-note { display: flex; align-items: center; gap: 6px; margin: 9px 16px 0; color: var(--ui-muted); font-size: 12px; line-height: 1.5; }
 .field-dot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--ui-accent); }
 .field-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 14px 16px 0; }
-.field-facts span { display: grid; min-width: 0; gap: 3px; padding: 9px 10px; border: 1px solid #e1e6eb; border-radius: 8px; background: #f8fafc; }
-.field-facts b { overflow: hidden; color: #1e3a5f; font-size: var(--font-caption); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.field-facts small { color: var(--ui-muted); font-size: 12px; }
+.field-facts span { display: block; overflow: hidden; padding: 11px 10px; border: 1px solid #e1e6eb; border-radius: 8px; background: #f8fafc; color: #1e3a5f; font-size: var(--font-caption); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .field-complete-button { display: flex; align-items: center; justify-content: center; gap: 8px; width: calc(100% - 32px); min-height: 42px; margin: 14px 16px 16px; border: 1px solid var(--ui-accent); border-radius: var(--ui-radius); background: var(--ui-accent); color: #fff; font-size: var(--font-body); font-weight: 600; }
 .field-complete-button:hover:not(:disabled) { border-color: var(--ui-accent-hover); background: var(--ui-accent-hover); }
 .field-complete-button span { display: grid; width: 20px; height: 20px; place-items: center; border-radius: 50%; background: rgb(255 255 255 / .18); font-size: 12px; }
