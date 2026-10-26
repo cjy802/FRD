@@ -586,7 +586,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="earth-map" :class="{ active, 'coverage-drawing': coverageDrawEnabled }" :aria-label="provider === 'baidu' ? '百度地图地球模式' : 'OpenStreetMap 地图模式'" :data-view-mode="viewMode" @pointerdown.capture="onCtrlRotateDown" @mousedown.capture="onCtrlMouseDown">
+  <div class="earth-map" :class="{ active, 'coverage-drawing': coverageDrawEnabled }" :aria-label="provider === 'baidu' ? '百度地图地球模式' : provider === 'tianditu-sat' ? '天地图卫星底图' : 'OpenStreetMap 地图模式'" :data-view-mode="viewMode" @pointerdown.capture="onCtrlRotateDown" @mousedown.capture="onCtrlMouseDown">
     <div ref="earthElement" class="earth-map-canvas" @pointerdown="onMapPointerDown" @pointermove="onMapPointerMove" @pointerup="onMapPointerUp" @pointercancel="onMapPointerUp" @click="onMapClick"></div>
     <div class="earth-map-overlay">
       <svg v-if="overlay.coverageVertices.length >= 3" class="earth-coverage-svg" aria-hidden="true"><polygon :points="coverageSvgPoints" /></svg>

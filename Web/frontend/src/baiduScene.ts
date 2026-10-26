@@ -4,7 +4,7 @@ import { BufferGeometry, DoubleSide, Float32BufferAttribute, Mesh, MeshBasicMate
 export type Coordinate = number[]
 export type CameraPose = { longitude: number; latitude: number; altitude: number; heading: number; pitch: number }
 export type SceneView = '2d' | '3d'
-export type MapProvider = 'baidu' | 'osm'
+export type MapProvider = 'baidu' | 'osm' | 'tianditu-sat'
 
 let sdkPromise: Promise<any> | null = null
 async function loadSdk(requireAk = true) {
@@ -32,12 +32,14 @@ export function osmBasemapCredit() {
   return osmBasemapUsesAnnotationFreeTiles() ? '© 天地图' : '© OpenStreetMap contributors'
 }
 
-function createOsmBasemap(sdk: any) {
+function createOsmBasemap(sdk: any, provider: MapProvider) {
   const tk = import.meta.env.VITE_TIANDITU_TK?.trim()
   if (!tk) return new sdk.OSMImageryTileProvider()
   sdk.TiandituConfig.tk = tk
-  // 默认 style 就是矢量底图;矢量注记(cva)是单独图层,这里不叠加。
-  return new sdk.TiandituImageryTileProvider()
+  // 默认 style 就是矢量底图;卫星底图切影像(img)。矢量/影像注记(cva/cia)是单独图层,均不叠加。
+  return new sdk.TiandituImageryTileProvider(provider === 'tianditu-sat'
+    ? { style: sdk.mapViewConstants?.TIANDITU_MAP_STYLE_IMAGERY ?? 'img' }
+    : {})
 }
 
 // All public inputs/outputs are WGS84. Reprojecting the Baidu tiles changes
@@ -51,7 +53,7 @@ export async function createMapScene(element: HTMLElement, center: Coordinate, p
     map: {
       provider: provider === 'baidu'
         ? new sdk.Baidu09ImageryTileProvider({ ak, type: 'satellite' })
-        : createOsmBasemap(sdk),
+        : createOsmBasemap(sdk, provider),
       projection: provider === 'baidu' ? 'ecef' : 'EPSG:3857', center: toScene(center), heading: 0, pitch: 52, range: 900,
     },
     controller: { enabled: !preview, enableRotate: !preview, enableZoom: !preview, enablePan: !preview, enableTilt: !preview,

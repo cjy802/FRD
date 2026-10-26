@@ -11,7 +11,7 @@ import CustomSelect from './CustomSelect.vue'
 import InfoHint from './InfoHint.vue'
 import { fetchSession, logout, type Session } from './auth'
 import type { VideoCaptureTarget, VideoTelemetryPoint } from './videoSurvey'
-import type { CameraPose } from './baiduScene'
+import { osmBasemapUsesAnnotationFreeTiles, type CameraPose } from './baiduScene'
 import type { RouteAssessment, WeatherLimits } from './weatherTypes'
 import { weatherOnlyChecks } from './weatherPresentation'
 import type { RoadPreview as Preview } from './routeTypes'
@@ -410,7 +410,9 @@ let nearbyPlacesController: AbortController | null = null
 let locationRequestVersion = 0
 const error = ref('')
 const placeSelectionFeedback = ref<{ message: string; error: boolean } | null>(null)
-const baseMap = ref<'current' | 'earth'>('current')
+const baseMap = ref<'current' | 'earth' | 'satellite'>('current')
+// 卫星底图走天地图影像(img),没有 TK 就不提供该选项。
+const tiandituSatelliteAvailable = osmBasemapUsesAnnotationFreeTiles()
 const earthMapRef = ref<InstanceType<typeof EarthMap> | null>(null)
 const pointRouteViewMode = ref<'2d' | '3d'>('3d')
 const areaRouteViewMode = ref<'2d' | '3d'>('2d')
@@ -1533,7 +1535,7 @@ function updateFlightCamera(now = performance.now(), force = false) {
   flightLastCameraUpdate = now
   flightCameraPose.value = { longitude: sample.longitude, latitude: sample.latitude,
     altitude: sample.altitude, heading: sample.heading, pitch: sample.pitch }
-  if (baseMap.value === 'current') void nextTick(updateCameraPreview)
+  if (baseMap.value !== 'earth') void nextTick(updateCameraPreview)
 }
 
 function advanceFlight(now: number) {
@@ -1594,7 +1596,7 @@ watch(preview, (current, previous) => {
   if (current !== previous) stopFlight()
 })
 
-async function chooseBaseMap(next: 'current' | 'earth') {
+async function chooseBaseMap(next: 'current' | 'earth' | 'satellite') {
   if (baseMap.value === next) return
   pauseFlight()
   cancelCameraPreviewDrag()
@@ -1602,8 +1604,8 @@ async function chooseBaseMap(next: 'current' | 'earth') {
   baseMap.value = next
   await nextTick()
   syncCesiumFlight()
-  if (cameraPreviewViewer) cameraPreviewViewer.useDefaultRenderLoop = next === 'current' && (flightActive.value || (mapEditMode.value === 'node' && selectedWaypointIndex.value !== null))
-  if (next === 'current') {
+  if (cameraPreviewViewer) cameraPreviewViewer.useDefaultRenderLoop = next !== 'earth' && (flightActive.value || (mapEditMode.value === 'node' && selectedWaypointIndex.value !== null))
+  if (next !== 'earth') {
     updateCameraPreview()
   }
 }
@@ -2159,7 +2161,7 @@ watch([mapEditMode, selectedWaypointIndex, baseMap, flightActive], async () => {
   await nextTick()
   if (flightActive.value || (mapEditMode.value === 'node' && selectedWaypointIndex.value !== null)) {
     updateCameraPreview()
-    if (cameraPreviewViewer && baseMap.value === 'current') {
+    if (cameraPreviewViewer && baseMap.value !== 'earth') {
       cameraPreviewViewer.useDefaultRenderLoop = true
       cameraPreviewViewer.resize()
       cameraPreviewViewer.scene.requestRender()
@@ -3280,9 +3282,9 @@ onBeforeUnmount(() => {
 
       <section id="route-map" class="map-panel" :class="{ 'panel-active': workspacePanel === 'map' }" aria-label="航线地图">
         <div ref="mapElement" class="cesium-map" aria-hidden="true"></div>
-        <EarthMap ref="earthMapRef" :active="true" :provider="baseMap === 'earth' ? 'baidu' : 'osm'" :view-mode="mapViewMode" :start="form.start" :end="form.end" :anchors="mapAnchors" :selected-anchor-id="selectedAnchorId" :route="earthRoute" :coverage-polygon="planningMode === 'area' ? coveragePolygon : []" :coverage-draw-enabled="coverageDrawEnabled" :coverage-edit-enabled="planningMode === 'area' && coveragePolygon.length >= 3" :suppress-map-point-selection="activeModule === 'photos' || (planningMode === 'area' && !coverageEndpointTarget)" :selected-index="selectedWaypointIndex" :edit-mode="mapEditMode" :footprint="earthFootprint" :flight-pose="mapFlightPose" :flight-footprint="flightFootprint" :weather-segments="routeAssessment?.weather_risk.segments ?? []" :weather-samples="showRouteWeatherPoints ? routeAssessment?.samples : null" :weather-risk-points="showRouteWeatherPoints ? routeAssessment?.weather_risk.points : null" :weather-altitude-m="form.altitude_m" :show-start-range="showStartRange" :show-end-range="showEndRange" :range-meters="landingSearchRadiusM" :video-track="activeModule === 'photos' ? videoTelemetryTrack : []" :video-position="activeModule === 'photos' ? videoTelemetryPosition : null" :capture-targets="activeModule === 'photos' ? mapCaptureTargets : []" @select-waypoint="selectWaypoint" @choose-point="chooseMapPoint" @rotate-waypoint="setSelectedWaypointOrientation($event, undefined, true)" @coverage-polygon-created="updateCoveragePolygon" @coverage-polygon-updated="updateCoveragePolygon" />
+        <EarthMap ref="earthMapRef" :active="true" :provider="baseMap === 'earth' ? 'baidu' : baseMap === 'satellite' ? 'tianditu-sat' : 'osm'" :view-mode="mapViewMode" :start="form.start" :end="form.end" :anchors="mapAnchors" :selected-anchor-id="selectedAnchorId" :route="earthRoute" :coverage-polygon="planningMode === 'area' ? coveragePolygon : []" :coverage-draw-enabled="coverageDrawEnabled" :coverage-edit-enabled="planningMode === 'area' && coveragePolygon.length >= 3" :suppress-map-point-selection="activeModule === 'photos' || (planningMode === 'area' && !coverageEndpointTarget)" :selected-index="selectedWaypointIndex" :edit-mode="mapEditMode" :footprint="earthFootprint" :flight-pose="mapFlightPose" :flight-footprint="flightFootprint" :weather-segments="routeAssessment?.weather_risk.segments ?? []" :weather-samples="showRouteWeatherPoints ? routeAssessment?.samples : null" :weather-risk-points="showRouteWeatherPoints ? routeAssessment?.weather_risk.points : null" :weather-altitude-m="form.altitude_m" :show-start-range="showStartRange" :show-end-range="showEndRange" :range-meters="landingSearchRadiusM" :video-track="activeModule === 'photos' ? videoTelemetryTrack : []" :video-position="activeModule === 'photos' ? videoTelemetryPosition : null" :capture-targets="activeModule === 'photos' ? mapCaptureTargets : []" @select-waypoint="selectWaypoint" @choose-point="chooseMapPoint" @rotate-waypoint="setSelectedWaypointOrientation($event, undefined, true)" @coverage-polygon-created="updateCoveragePolygon" @coverage-polygon-updated="updateCoveragePolygon" />
         <div class="map-top">
-          <div v-if="!flightActive" class="map-title-group"><span class="map-badge"><span class="svg-icon icon-layers" aria-hidden="true"></span>{{ (baseMap === 'earth' ? '地球模式' : '当前底图') + (mapViewMode === '3d' ? ' · 3D 航线' : ' · 2D 平面') }}</span><span class="map-mode-chip">{{ form.altitude_m }} m AGL</span><div class="map-source-switch base-map-switch" aria-label="底图"><button type="button" :class="{ active: baseMap === 'current' }" :aria-pressed="baseMap === 'current'" @click="chooseBaseMap('current')">当前底图</button><button type="button" :class="{ active: baseMap === 'earth' }" :aria-pressed="baseMap === 'earth'" @click="chooseBaseMap('earth')">地球模式</button></div><div class="map-edit-switch" aria-label="编辑对象"><button type="button" :class="{ active: mapEditMode === 'route' }" :aria-pressed="mapEditMode === 'route'" @click="mapEditMode = 'route'">路径 / 主点</button><button type="button" :class="{ active: mapEditMode === 'node' }" :aria-pressed="mapEditMode === 'node'" @click="mapEditMode = 'node'">节点 / 视角</button></div></div>
+          <div v-if="!flightActive" class="map-title-group"><span class="map-badge"><span class="svg-icon icon-layers" aria-hidden="true"></span>{{ (baseMap === 'earth' ? '地球模式' : baseMap === 'satellite' ? '卫星底图' : '当前底图') + (mapViewMode === '3d' ? ' · 3D 航线' : ' · 2D 平面') }}</span><span class="map-mode-chip">{{ form.altitude_m }} m AGL</span><div class="map-source-switch base-map-switch" aria-label="底图"><button type="button" :class="{ active: baseMap === 'current' }" :aria-pressed="baseMap === 'current'" @click="chooseBaseMap('current')">当前底图</button><button v-if="tiandituSatelliteAvailable" type="button" :class="{ active: baseMap === 'satellite' }" :aria-pressed="baseMap === 'satellite'" @click="chooseBaseMap('satellite')">卫星底图</button><button type="button" :class="{ active: baseMap === 'earth' }" :aria-pressed="baseMap === 'earth'" @click="chooseBaseMap('earth')">地球模式</button></div><div class="map-edit-switch" aria-label="编辑对象"><button type="button" :class="{ active: mapEditMode === 'route' }" :aria-pressed="mapEditMode === 'route'" @click="mapEditMode = 'route'">路径 / 主点</button><button type="button" :class="{ active: mapEditMode === 'node' }" :aria-pressed="mapEditMode === 'node'" @click="mapEditMode = 'node'">节点 / 视角</button></div></div>
           <button v-if="!flightActive" class="flight-entry" type="button" :disabled="!flightTimeline" aria-label="开始模拟飞行" title="模拟飞行" @click="toggleFlight"><span class="svg-icon icon-drone" aria-hidden="true"></span></button>
           <div v-if="flightActive" class="flight-controls" aria-label="模拟飞行回放">
             <button class="flight-toggle" type="button" :disabled="!flightTimeline" :aria-label="flightPlaying ? '暂停模拟飞行' : flightProgress >= 1 ? '重新播放模拟飞行' : flightActive ? '继续模拟飞行' : '开始模拟飞行'" :aria-pressed="flightPlaying" :title="flightPlaying ? '暂停' : flightProgress >= 1 ? '重播' : flightActive ? '继续' : '模拟飞行'" @click="toggleFlight"><span class="svg-icon icon-drone" aria-hidden="true"></span></button>
@@ -3336,7 +3338,7 @@ onBeforeUnmount(() => {
         </div>
         <div v-if="!flightActive && mapEditMode === 'node' && selectedWaypointIndex !== null && selectedWaypointSetting()" class="node-controller" aria-label="航点控制器"><div class="node-controller-head"><strong>节点 {{ selectedWaypointIndex + 1 }} · 视角控制</strong><span>{{ Math.round(waypointHeading(selectedWaypointIndex)) }}° · {{ selectedWaypointSetting()?.altitude_m ?? form.altitude_m }}m</span></div><div class="node-controller-body"><div class="wasd-pad" aria-label="WASD 平面移动控制"><button type="button" @click="moveSelectedWaypoint(0, 1)">W</button><button type="button" @click="moveSelectedWaypoint(-1, 0)">A</button><button type="button" @click="moveSelectedWaypoint(0, -1)">S</button><button type="button" @click="moveSelectedWaypoint(1, 0)">D</button></div><div class="node-dial"><button type="button" aria-label="逆时针旋转" @click="rotateSelectedWaypoint(-15)">↺</button><strong>{{ Math.round(waypointHeading(selectedWaypointIndex)) }}°</strong><button type="button" aria-label="顺时针旋转" @click="rotateSelectedWaypoint(15)">↻</button></div><div class="node-axis"><button type="button" @click="rotateSelectedWaypoint(0, 5)">镜头上</button><button type="button" @click="rotateSelectedWaypoint(0, -5)">镜头下</button><button type="button" @click="adjustSelectedWaypoint({ altitude_m: Math.min(1500, (selectedWaypointSetting()?.altitude_m ?? form.altitude_m) + 5) })">高度 +</button><button type="button" @click="adjustSelectedWaypoint({ altitude_m: Math.max(1, (selectedWaypointSetting()?.altitude_m ?? form.altitude_m) - 5) })">高度 −</button></div></div><small>W/S 平面前后 ±1m，A/D 平面左右 ±1m，Q/E 航向 ±5°，Z/C 俯仰 ±5°可直接调整水平朝向。</small></div>
         <div v-if="routeAssessment" class="weather-map-legend">沿线初筛：蓝 · 未触发，橙 · 关注，红 · 较强，灰 · 缺测<br />基于 0.25° 场，不是街道级风险，也不代表飞行许可。</div>
-        <div class="camera-preview" :class="{ visible: (flightActive || (mapEditMode === 'node' && selectedWaypointIndex !== null)) && (baseMap === 'earth' || cameraPreviewReady) }" aria-label="当前节点相机视角预览"><div ref="cameraPreviewElement" class="camera-preview-map" :data-base-map="baseMap" @pointerdown.capture="handleCameraPreviewPointerDown" @pointermove="handleCameraPreviewPointerMove" @pointerup="handleCameraPreviewPointerEnd" @pointercancel="handleCameraPreviewPointerEnd" @lostpointercapture="handleCameraPreviewPointerEnd"><div ref="cesiumCameraElement" :style="{ position: 'absolute', inset: '0', visibility: baseMap === 'current' ? 'visible' : 'hidden' }"></div><BaiduCameraPreview v-if="baseMap === 'earth' && (flightActive || (mapEditMode === 'node' && selectedWaypointIndex !== null))" :active="baseMap === 'earth' && (flightActive || (mapEditMode === 'node' && selectedWaypointIndex !== null))" :pose="currentCameraPose" /></div><div class="camera-preview-head"><strong>当前视角</strong><span v-if="flightActive">{{ flightNodeLabel }} / {{ Math.round(flightSample?.pitch ?? 0) }}&deg;</span><span v-else-if="selectedWaypointIndex !== null">节点 {{ selectedWaypointIndex + 1 }} · {{ Math.round(selectedWaypointSetting()?.gimbal_pitch_angle ?? -90) }}°</span></div><small>地图模拟视角 · 不是实时相机视频</small></div>
+        <div class="camera-preview" :class="{ visible: (flightActive || (mapEditMode === 'node' && selectedWaypointIndex !== null)) && (baseMap === 'earth' || cameraPreviewReady) }" aria-label="当前节点相机视角预览"><div ref="cameraPreviewElement" class="camera-preview-map" :data-base-map="baseMap" @pointerdown.capture="handleCameraPreviewPointerDown" @pointermove="handleCameraPreviewPointerMove" @pointerup="handleCameraPreviewPointerEnd" @pointercancel="handleCameraPreviewPointerEnd" @lostpointercapture="handleCameraPreviewPointerEnd"><div ref="cesiumCameraElement" :style="{ position: 'absolute', inset: '0', visibility: baseMap !== 'earth' ? 'visible' : 'hidden' }"></div><BaiduCameraPreview v-if="baseMap === 'earth' && (flightActive || (mapEditMode === 'node' && selectedWaypointIndex !== null))" :active="baseMap === 'earth' && (flightActive || (mapEditMode === 'node' && selectedWaypointIndex !== null))" :pose="currentCameraPose" /></div><div class="camera-preview-head"><strong>当前视角</strong><span v-if="flightActive">{{ flightNodeLabel }} / {{ Math.round(flightSample?.pitch ?? 0) }}&deg;</span><span v-else-if="selectedWaypointIndex !== null">节点 {{ selectedWaypointIndex + 1 }} · {{ Math.round(selectedWaypointSetting()?.gimbal_pitch_angle ?? -90) }}°</span></div><small>地图模拟视角 · 不是实时相机视频</small></div>
         <div v-if="loading" class="map-loading-overlay">
           <div class="map-loading-card">
             <button type="button" class="map-loading-cancel" aria-label="取消路线计算" title="取消" @click="cancelCalculation">×</button>
