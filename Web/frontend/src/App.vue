@@ -1193,6 +1193,8 @@ const cameraPreviewElement = ref<HTMLElement | null>(null)
 const cesiumCameraElement = ref<HTMLElement | null>(null)
 const cameraPreviewReady = ref(false)
 let cameraPreviewViewer: any = null
+// 模拟视角小窗的底图跟随主图切换;记录当前图层,切换时才重建。
+let cameraPreviewImageryKey = ''
 const flightActive = ref(false)
 const flightPlaying = ref(false)
 const flightProgress = ref(0)
@@ -2012,6 +2014,7 @@ function updateCameraPreview() {
   if (!pose || !Cesium) return
   if (!cameraPreviewViewer) initCameraPreview()
   if (!cameraPreviewViewer) return
+  applyCameraPreviewBasemap()
   cameraPreviewViewer.camera.setView({
     destination: Cesium.Cartesian3.fromDegrees(pose.longitude, pose.latitude, pose.altitude),
     orientation: { heading: Cesium.Math.toRadians(pose.heading), pitch: Cesium.Math.toRadians(pose.pitch), roll: 0 },
@@ -2542,7 +2545,7 @@ function syncCesiumFlight() {
   if (!viewer || !Cesium) return
   const previous = viewer.entities.getById('flight-drone')
   const sample = flightSample.value
-  const visible = baseMap.value === 'current' && mapElement.value?.classList.contains('visible')
+  const visible = !!mapElement.value?.classList.contains('visible')
   if (!sample || !visible) {
     if (previous) viewer.entities.remove(previous)
     viewer.scene.requestRender()
@@ -2895,6 +2898,27 @@ function initMap() {
   }
 }
 
+function applyCameraPreviewBasemap() {
+  if (!cameraPreviewViewer || !Cesium) return
+  const tk = import.meta.env.VITE_TIANDITU_TK?.trim()
+  const key = `${baseMap.value === 'satellite' ? 'img' : 'vec'}:${tk ? 'tdt' : 'osm'}`
+  if (cameraPreviewImageryKey === key) return
+  cameraPreviewImageryKey = key
+  cameraPreviewViewer.imageryLayers.removeAll()
+  cameraPreviewViewer.imageryLayers.addImageryProvider(tk
+    ? new Cesium.UrlTemplateImageryProvider({
+        url: `https://t{s}.tianditu.gov.cn/DataServer?T=${baseMap.value === 'satellite' ? 'img_w' : 'vec_w'}&x={x}&y={y}&l={z}&tk=${tk}`,
+        subdomains: ['0', '1', '2', '3', '4', '5', '6', '7'],
+        maximumLevel: 18,
+        credit: new Cesium.Credit('© 天地图', true),
+      })
+    : new Cesium.OpenStreetMapImageryProvider({
+        url: 'https://tile.openstreetmap.org/',
+        credit: new Cesium.Credit('<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">© OpenStreetMap contributors</a>', true),
+      }))
+  cameraPreviewViewer.scene.requestRender()
+}
+
 function initCameraPreview() {
   if (!Cesium || !cameraPreviewElement.value || cameraPreviewViewer) return
   try {
@@ -2915,18 +2939,7 @@ function initCameraPreview() {
       infoBox: false,
       selectionIndicator: false,
     })
-    const tk = import.meta.env.VITE_TIANDITU_TK?.trim()
-    cameraPreviewViewer.imageryLayers.addImageryProvider(tk
-      ? new Cesium.UrlTemplateImageryProvider({
-          url: `https://t{s}.tianditu.gov.cn/DataServer?T=vec_w&x={x}&y={y}&l={z}&tk=${tk}`,
-          subdomains: ['0', '1', '2', '3', '4', '5', '6', '7'],
-          maximumLevel: 18,
-          credit: new Cesium.Credit('© 天地图', true),
-        })
-      : new Cesium.OpenStreetMapImageryProvider({
-          url: 'https://tile.openstreetmap.org/',
-          credit: new Cesium.Credit('<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">© OpenStreetMap contributors</a>', true),
-        }))
+    applyCameraPreviewBasemap()
     cameraPreviewViewer.scene.globe.depthTestAgainstTerrain = false
     const controller = cameraPreviewViewer.scene.screenSpaceCameraController
     controller.enableRotate = false
