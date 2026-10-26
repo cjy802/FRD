@@ -3347,8 +3347,6 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
- /* 任务概览列可拖宽，天气步骤内容限宽居中，避免卡片被拉得过宽 */
- .insights.module-mode-status > * { max-width: 640px; margin-inline: auto; }
  .route-form .settings-fields { overflow-y: auto; overscroll-behavior: contain; padding-right: 5px; scrollbar-width: none; -ms-overflow-style: none; }
  .route-form .settings-fields::-webkit-scrollbar { display: none; width: 0; height: 0; }
  .planning-mode-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin: 2px 0 8px; padding: 4px; border: 1px solid #dbe3ea; border-radius: 8px; background: #f3f6f8; }
