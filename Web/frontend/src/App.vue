@@ -3501,5 +3501,5 @@ onBeforeUnmount(() => {
 .rc2-job-steps li.active { background: #dceeff; color: #0f6cbd; font-weight: 700; }
 .rc2-job-steps li.done { background: #ddf3e5; color: #167348; }
 .primary-action-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; }
-.sidebar > .place-search { flex-shrink: 0; margin-bottom: 10px; }
+.sidebar > .place-search { flex-shrink: 0; }
 </style>
