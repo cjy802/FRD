@@ -717,10 +717,10 @@ watch(() => props.taskId, () => {
               <label class="adaptive-blur-toggle"><input v-model="blurFilterEnabled" type="checkbox" :disabled="selectingFrames" />过滤明显模糊帧</label>
               <label>最低清晰度 · 近期中位数 %<input v-model.number="minimumSharpnessPercent" type="number" min="0" max="100" step="5" :disabled="selectingFrames || !blurFilterEnabled" /></label>
             </div>
-            <div v-else class="adaptive-selector-fields">
+            <div v-else class="adaptive-selector-fields adaptive-fields-fixed">
               <label>抽帧间隔<CustomSelect v-model="fixedIntervalSeconds" :options="[{ value: 2, label: '每 2 秒一帧' }, { value: 3, label: '每 3 秒一帧' }, { value: 5, label: '每 5 秒一帧' }]" :disabled="selectingFrames" aria-label="固定抽帧间隔" /></label>
-              <label class="adaptive-blur-toggle"><input v-model="blurFilterEnabled" type="checkbox" :disabled="selectingFrames" />过滤明显模糊帧</label>
               <label>最低清晰度 · 近期中位数 %<input v-model.number="minimumSharpnessPercent" type="number" min="0" max="100" step="5" :disabled="selectingFrames || !blurFilterEnabled" /></label>
+              <label class="adaptive-blur-toggle"><input v-model="blurFilterEnabled" type="checkbox" :disabled="selectingFrames" />过滤明显模糊帧</label>
             </div>
           </div>
         </details>
@@ -886,7 +886,8 @@ watch(() => props.taskId, () => {
 .adaptive-settings-group > summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 9px; cursor: pointer; font-size: 12px; }
 .adaptive-settings-group > summary span { min-width: 0; color: #526273; }
 .adaptive-settings-group > summary small { margin-left: auto; color: var(--ui-muted); font-size: 12px; }
-.adaptive-settings-group .overview-group-body { padding: 0 9px 8px; }
+.adaptive-settings-group .overview-group-body { padding: 2px 9px 9px; }
+.adaptive-fields-fixed .adaptive-blur-toggle { grid-column: 1 / -1; justify-content: flex-start; padding: 1px 0; }
 .adaptive-selector-fields label { display: grid; min-width: 0; gap: 3px; color: #526273; font-size: 12px; }
 .adaptive-selector-fields input, .adaptive-selector-fields select { width: 100%; min-width: 0; min-height: 28px; padding: 3px 5px; border: 1px solid #d7dfe8; border-radius: 5px; background-color: #fff; color: #27364a; font-size: 12px; }
 .adaptive-selector-fields select { padding-right: 30px; }
