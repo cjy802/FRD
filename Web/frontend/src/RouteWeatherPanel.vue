@@ -12,6 +12,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   assessed: [result: RouteAssessment | null]
   phase: [state: { pending: boolean; error: string }]
+  'point-weather-toggle': [visible: boolean]
   'limits-change': [limits: WeatherLimits]
 }>()
 const DEFAULT_LIMITS: WeatherLimits = { name: '演示规则', max_wind_m_s: 12, max_crosswind_m_s: 8,
@@ -19,6 +20,7 @@ const DEFAULT_LIMITS: WeatherLimits = { name: '演示规则', max_wind_m_s: 12, 
 const alignment = ref<RouteAssessment | null>(null)
 const pending = ref(false)
 const error = ref('')
+const pointWeatherVisible = ref(false)
 const ageClock = ref(Date.now())
 const CACHE_KEY = 'low-altitude-route-weather-v1'
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000
@@ -46,6 +48,10 @@ let expiryTimer: ReturnType<typeof setInterval> | null = null
 function metricTone(field: string) {
   const level = alignment.value?.weather_risk.alerts.find(alert => alert.field === field)?.level
   return level === 'elevated' ? 'is-danger' : level === 'attention' ? 'is-attention' : 'is-ok'
+}
+function togglePointWeather() {
+  pointWeatherVisible.value = !pointWeatherVisible.value
+  emit('point-weather-toggle', pointWeatherVisible.value)
 }
 function updateLimit(field: 'max_wind_m_s' | 'max_crosswind_m_s' | 'min_visibility_m', event: Event) {
   const value = Number((event.target as HTMLInputElement).value)
@@ -113,6 +119,10 @@ async function requestAlignment() {
     if (current === controller) { pending.value = false; controller = null; emit('phase', { pending: false, error: error.value }) }
   }
 }
+watch(() => [props.jobId, props.coordinates], () => {
+  pointWeatherVisible.value = false
+  emit('point-weather-toggle', false)
+}, { deep: true, flush: 'sync' })
 watch(() => [props.jobId, props.coordinates, props.speedKmh, props.altitudeM, props.limits], () => {
   controller?.abort()
   controller = null
@@ -149,6 +159,7 @@ onBeforeUnmount(() => { controller?.abort(); if (timer) clearTimeout(timer); if 
     <template v-if="alignment">
       <div class="weather-test-meta"><small>上次测试：{{ alignment.tested_at_utc ? `${localTime(alignment.tested_at_utc)} · ${assessmentAgeLabel}` : assessmentAgeLabel }}</small><button type="button" :disabled="pending" @click="requestAlignment">{{ pending ? '正在测试…' : '重新测试' }}</button></div>
       <div class="weather-mini-grid"><div :class="metricTone('wind')"><span>飞行高度风</span><strong>{{ alignment.weather_risk.summary.max_wind_m_s?.toFixed(1) ?? '—' }} m/s</strong><small>最高风速</small></div><div :class="metricTone('crosswind')"><span>侧风</span><strong>{{ alignment.weather_risk.summary.max_crosswind_m_s?.toFixed(1) ?? '—' }} m/s</strong><small>横向风力</small></div><div :class="metricTone('visibility')"><span>地面能见度</span><strong>{{ alignment.weather_risk.summary.min_surface_visibility_m?.toFixed(0) ?? '—' }} m</strong><small>最低值</small></div></div>
+      <button v-if="alignment.samples.length" type="button" class="weather-point-toggle" :aria-pressed="pointWeatherVisible" @click="togglePointWeather">{{ pointWeatherVisible ? '隐藏地图点位天气' : '查看沿线每个点的天气' }}</button>
     </template>
     <p v-else>{{ pending ? '正在计算沿线高度风及风雨提示…' : error || '等待路线与天气资料就绪。' }}</p>
     <!-- 阈值配置改由“沿线天气检查”标题右侧的齿轮按钮统一开关 -->
