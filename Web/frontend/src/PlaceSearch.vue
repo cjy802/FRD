@@ -227,7 +227,6 @@ function coordinates(place: PlaceResult) {
     </form>
     <small v-if="locating" class="place-location-status" role="status">正在获取当前位置…</small>
     <small v-else-if="center" class="place-location-status" role="status"><span>当前位置：{{ locationAddress || (resolvingAddress ? '正在解析地址…' : '已获取坐标') }}</span><button type="button" :disabled="disabled" @click="clearLocation">取消附近搜索</button></small>
-    <small v-if="!error && !message && !center && !locating">搜索地点后查看经纬度。</small>
     <small v-if="message" class="place-search-message" role="status">{{ message }}</small>
     <small v-if="error" class="place-search-error" role="alert">{{ error }}</small>
     <small v-if="selectionFeedback" class="place-selection-feedback" :class="{ 'is-error': selectionFeedback.error }" :role="selectionFeedback.error ? 'alert' : 'status'">{{ selectionFeedback.message }}</small>
