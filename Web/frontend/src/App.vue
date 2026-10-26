@@ -1406,77 +1406,13 @@ const decisionDescription = computed(() => {
   if (routePhase.value.error) return routePhase.value.error
   if (routePhase.value.pending) return '系统正在按出发时间、飞行高度和路线逐点检查天气。'
   if (!routeAssessment.value) return '结果出来后，这里会先告诉你是否有需要留意的天气因素。'
-  if (decisionLevel.value === 'no_trigger') return '风、降雨、阵风和能见度均未触发提醒线，仍需结合现场情况核验。'
+  if (decisionLevel.value === 'no_trigger') return ''
   if (decisionLevel.value === 'incomplete') return '部分路线缺少可用的高度或时间资料，当前判断不完整，不能把“没有提醒”理解为安全。'
   return '较强提醒指标已用红框标出，接近提醒线的指标用橙框标出；可展开沿线天气查看地图点位。这个结果只是天气初筛。'
 })
 const weatherChecks = computed(() => routeAssessment.value ? weatherOnlyChecks(routeAssessment.value.decision) : [])
 const alignmentProgress = computed(() => routeAssessment.value?.coverage.flight_height ? '沿线位置、时间与高度风已匹配'
   : routeAssessment.value?.coverage.surface_space_time ? '地面时空已匹配，高度资料不足' : '等待路线与天气资料匹配')
-const taskWeatherAdvisories = computed(() => {
-  const assessment = routeAssessment.value
-  const windLimit = assessment?.weather_risk.limits.max_wind_m_s ?? activeLimits.value?.max_wind_m_s ?? 12
-  const windNotice = windLimit * 0.8
-  const rainLimit = assessment?.weather_risk.limits.max_rain_6h_mm ?? activeLimits.value?.max_rain_6h_mm ?? 5
-  if (!assessment) {
-    const message = routePhase.value.error || (routePhase.value.pending || weatherJobId.value
-      ? '正在读取沿线天气数据，检查完成后会显示风速和降雨提示。'
-      : '请先完成天气预测和沿线匹配。')
-    const state = routePhase.value.error ? 'incomplete' : 'pending'
-    return {
-      wind: { state, label: routePhase.value.error ? '无法判断' : '等待检查', value: '—', message },
-      rain: { state, label: routePhase.value.error ? '无法判断' : '等待检查', value: '—', message },
-      windNotice, windLimit, rainLimit,
-    }
-  }
-
-  const maxWind = assessment.weather_risk.summary.max_wind_m_s
-  const windCovered = assessment.coverage.flight_height
-  let windState = 'incomplete'
-  let windLabel = '资料不完整'
-  if (maxWind !== null && maxWind >= windLimit) {
-    windState = 'elevated'; windLabel = '较强风速提示'
-  } else if (maxWind !== null && maxWind >= windNotice) {
-    windState = 'attention'; windLabel = '风速提示'
-  } else if (maxWind !== null && windCovered) {
-    windState = 'normal'; windLabel = '风速正常'
-  }
-  const windValue = maxWind === null ? '—' : `${maxWind.toFixed(1)} m/s`
-  const windMessage = maxWind === null
-    ? '没有足够的离地高度风数据，不能判断风速是否正常。'
-    : `沿线已覆盖部分的最大高度风 ${windValue}；从 ${windNotice.toFixed(1)} m/s 提示，达到 ${windLimit.toFixed(1)} m/s 为较强提示。${windCovered ? '' : '路线天气覆盖不完整。'}`
-
-  const maxRain = assessment.weather_risk.summary.max_rain_6h_mm
-  const rainCovered = assessment.coverage.surface_space_time
-  // 网格降水经双线性与时刻插值后常出现 <0.1 mm/6h 的微量值；气象上低于
-  // 0.1 mm/6h 视为微量降水（可视为无雨），不再按“有降水提示”提醒。
-  const TRACE_RAIN_6H_MM = 0.1
-  const traceRain = maxRain !== null && maxRain > 0 && maxRain < TRACE_RAIN_6H_MM
-  const rainValue = maxRain === null ? '—'
-    : traceRain ? `${maxRain.toFixed(3)} mm/6h` : `${maxRain.toFixed(2)} mm/6h`
-  let rainState = 'incomplete'
-  let rainLabel = '资料不完整'
-  if (maxRain !== null && maxRain >= TRACE_RAIN_6H_MM) {
-    rainState = 'attention'; rainLabel = '有降水提示'
-  } else if (traceRain) {
-    rainState = 'normal'; rainLabel = '微量降水'
-  } else if (maxRain === 0 && rainCovered) {
-    rainState = 'normal'; rainLabel = '未预测到降水'
-  }
-  const rainMessage = maxRain !== null && maxRain >= TRACE_RAIN_6H_MM
-    ? `沿线最高六小时累计降水 ${rainValue}；达到 ${TRACE_RAIN_6H_MM.toFixed(1)} mm/6h 就会提示。提醒上限为 ${rainLimit.toFixed(1)} mm/6h。${rainCovered ? '' : '路线天气覆盖不完整。'}`
-    : traceRain
-      ? `沿线最高六小时累计降水 ${rainValue}，低于 ${TRACE_RAIN_6H_MM.toFixed(1)} mm/6h 的微量降水阈值，通常可视为无雨。`
-      : maxRain === 0 && rainCovered
-        ? `当前预报覆盖的任务时段未发现降水（${rainValue}）。`
-        : '当前气象资料不完整，不能确认整条路线是否无雨。'
-
-  return {
-    wind: { state: windState, label: windLabel, value: windValue, message: windMessage },
-    rain: { state: rainState, label: rainLabel, value: rainValue, message: rainMessage },
-    windNotice, windLimit, rainLimit,
-  }
-})
 
 watch(routeKey, () => {
   clearBatchRange()
@@ -3249,7 +3185,6 @@ onBeforeUnmount(() => {
               <button v-if="coveragePolygon.length" type="button" class="coverage-area-clear" :disabled="loading" @click="clearCoveragePolygon">清除范围</button>
             </div>
             <p v-if="coveragePolygon.length" class="coverage-area-note">已选 {{ coveragePolygon.length }} 个边界点。可拖动边界点调整范围，双击顶点删除，点击边线中点可增加顶点。</p>
-            <p v-else class="coverage-area-note">框选完成后，设置 A、B 两个端点，系统会沿区域内道路生成从 A 到 B 的覆盖路线。</p>
             <div v-if="preview?.area_coverage && previewKey === routeKey" class="coverage-area-summary" aria-live="polite">
               <strong>道路覆盖路线已生成 · {{ preview.area_coverage.route_closed ? '闭环' : 'A → B' }} · {{ (preview.area_coverage.coverage_ratio * 100).toFixed(0) }}% 覆盖</strong>
               <div><span>目标道路</span><b>{{ (preview.area_coverage.target_road_m / 1000).toFixed(2) }} km · {{ preview.area_coverage.road_edge_count }} 段</b></div>
@@ -3263,7 +3198,6 @@ onBeforeUnmount(() => {
           <div class="form-line"></div>
           <div class="coordinate-row"><label><span class="label-hint">离地高度 AGL · 米<InfoHint text="目前高度风覆盖 10–100 米；范围外会标记缺测。" /></span><input v-model.number="form.altitude_m" type="number" min="0" max="1000" required :disabled="loading" /></label><label>巡航速度 · km/h<input v-model.number="form.speed_kmh" type="number" min="1" max="200" step="0.5" required :disabled="loading" /></label></div>
           <div v-if="planningMode === 'anchors'" class="clearance-row"><label>建筑缓冲 · 米（演示）<input v-model.number="form.clearance_m" type="number" min="0" max="20" step="0.5" required :disabled="loading || roadSource === 'online'" /></label><span>{{ roadSource === 'local' ? '用于排除靠近建筑的道路段' : '在线机动车路线不使用此参数' }}</span></div>
-          <p v-else class="form-scope-note">区域巡查路线依照所选道路中心线生成，不使用建筑缓冲参数。</p>
           <button ref="waypointEditorTrigger" type="button" class="waypoint-editor-trigger" :disabled="!waypointSettings.length" aria-haspopup="dialog" :aria-expanded="waypointEditorExpanded" @click="openWaypointEditor"><span>逐点设置高度和面向</span><small>{{ waypointSettings.length }} 个点</small><span aria-hidden="true">›</span></button>
           </div>
 
@@ -3358,23 +3292,7 @@ onBeforeUnmount(() => {
         <p v-if="taskError && (activeModule === 'status' || activeModule === 'dji')" class="form-error" role="alert">{{ taskError }}</p>
         <section v-if="activeModule === 'status'" class="overview-hero" aria-label="天气结论概览">
         <div class="mission-facts"><div><span class="fact-label"><span class="svg-icon icon-route" aria-hidden="true"></span>路线长度</span><strong>{{ distance }}</strong></div><div><span class="fact-label"><span class="svg-icon icon-refresh" aria-hidden="true"></span>预计用时</span><strong>{{ elapsed }}</strong></div><div><span class="fact-label"><span class="svg-icon icon-map-pin" aria-hidden="true"></span>天气起算</span><strong>{{ departureBeijing.replace('T', ' ') }}</strong><small>按当前北京时间自动刷新</small></div></div>
-         <div class="decision" :class="decisionTone" aria-live="polite"><span class="decision-kicker"><span class="svg-icon icon-alert" aria-hidden="true"></span>气象初筛<InfoHint text="这里只反映已覆盖的天气指标，不等于放飞许可。" /></span><strong>{{ decisionTitle }}</strong><p>{{ decisionDescription }}</p><details v-if="routeAssessment"><summary><span class="svg-icon icon-eye" aria-hidden="true"></span>查看判断依据</summary><div v-for="check in weatherChecks" :key="check.key" class="decision-check"><b>{{ check.label }}</b><span :class="check.state === 'ready' ? 'check-ready' : 'check-pending'">{{ check.state === 'ready' ? '资料已就绪' : check.state === 'no_trigger' ? '未触发当前阈值' : check.state === 'elevated' ? '较强提示' : check.state === 'attention' ? '需要留意' : '资料待补齐' }}</span><small>{{ check.detail }}</small></div></details></div>
-        </section>
-        <section v-if="activeModule === 'status'" class="task-weather-advisory" aria-label="任务天气提醒">
-          <div class="task-weather-advisory-heading"><div><span class="eyebrow">继续前的天气提示</span><h3>先看风速，再看降雨<InfoHint text="风速从上限的 80% 开始提醒；降雨按预测的六小时累计量提示。天气资料有覆盖范围限制。" /></h3></div></div>
-          <div class="task-weather-checks">
-            <article class="task-weather-check" :class="`is-${taskWeatherAdvisories.wind.state}`">
-              <div><strong>沿线风速</strong><b>{{ taskWeatherAdvisories.wind.label }}</b></div>
-              <strong class="task-weather-check-value">{{ taskWeatherAdvisories.wind.value }}</strong>
-              <p>{{ taskWeatherAdvisories.wind.message }}</p>
-            </article>
-            <article class="task-weather-check" :class="`is-${taskWeatherAdvisories.rain.state}`">
-              <div><strong>沿线降雨</strong><b>{{ taskWeatherAdvisories.rain.label }}</b></div>
-              <strong class="task-weather-check-value">{{ taskWeatherAdvisories.rain.value }}</strong>
-              <p>{{ taskWeatherAdvisories.rain.message }}</p>
-            </article>
-          </div>
-          <div class="task-weather-advisory-footer"><button type="button" class="weather-refresh" @click="selectModule('dji')">继续到机型 / 导出</button></div>
+         <div class="decision" :class="decisionTone" aria-live="polite"><span class="decision-kicker"><span class="svg-icon icon-alert" aria-hidden="true"></span>气象初筛<InfoHint text="这里只反映已覆盖的天气指标，不等于放飞许可。" /></span><strong>{{ decisionTitle }}</strong><p v-if="decisionDescription">{{ decisionDescription }}</p><details v-if="routeAssessment"><summary><span class="svg-icon icon-eye" aria-hidden="true"></span>查看判断依据</summary><div v-for="check in weatherChecks" :key="check.key" class="decision-check"><b>{{ check.label }}</b><span :class="check.state === 'ready' ? 'check-ready' : 'check-pending'">{{ check.state === 'ready' ? '资料已就绪' : check.state === 'no_trigger' ? '未触发当前阈值' : check.state === 'elevated' ? '较强提示' : check.state === 'attention' ? '需要留意' : '资料待补齐' }}</span><small>{{ check.detail }}</small></div></details></div>
         </section>
          <details v-if="activeModule === 'status'" class="overview-group" open>
            <summary><span><span class="svg-icon icon-cloud-rain" aria-hidden="true"></span>沿线天气检查</span><small>风、降雨、阵风和能见度</small></summary>
