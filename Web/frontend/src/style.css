@@ -149,6 +149,9 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .module-layout > .sidebar.module-active { display: flex; }
 .module-layout > .insights.module-active { display: block; }
 .module-layout .column-resizer { display: none; }
+@media (min-width: 1101px) {
+  .module-layout .column-resizer-left { display: block; }
+}
 .sidebar.module-mode-route .settings-group[data-settings-page="photos"] { display: none; }
 .sidebar.module-mode-photos .settings-group[data-settings-page="points"], .sidebar.module-mode-photos .settings-group[data-settings-page="mission"] { display: none; }
 .sidebar.module-mode-photos .route-form { margin-top: 0; }
