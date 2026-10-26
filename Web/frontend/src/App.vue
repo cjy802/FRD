@@ -505,7 +505,7 @@ async function createCurrentTask() {
             : '检测到 DJI RC 2，但没有可替换的占位航线文件夹。'
         } else {
           try {
-            taskCreateProgress.value = `正在导入 DJI RC 2：${target.folder}…期间 Windows 若弹出“替换文件”确认框，请点击“替换/是”，属正常步骤。`
+            taskCreateProgress.value = `正在导入 DJI RC 2：${target.folder}…`
             const queued = await startRc2Import(target.folder)
             const result = await waitForRc2Job(queued.job_id)
             if (result.status === 'succeeded') importedToRc2 = true
@@ -2198,7 +2198,7 @@ function refreshRc2Connection(): Promise<void> {
       }
     } catch (cause) {
       if (version === rc2ConnectionVersion) {
-        if (rc2Status.value) rc2Status.value = { ...rc2Status.value, available: false, message: '无法读取已连接遥控器的占位航线。' }
+        if (rc2Status.value) rc2Status.value = { ...rc2Status.value, available: false, message: '' }
         rc2Folders.value = []
         rc2TargetName.value = ''
         rc2Error.value = cause instanceof Error ? cause.message : '读取 RC 2 状态失败。'
@@ -3314,7 +3314,6 @@ onBeforeUnmount(() => {
             <button type="button" :disabled="rc2Loading || rc2JobRunning" @click="refreshRc2Connection">{{ rc2Loading ? '检测中…' : '检测 / 刷新设备' }}</button>
           </div>
           <p role="status">{{ rc2Loading ? '正在检查本机和遥控器…' : rc2Status?.message ?? '等待检查 RC 2 连接状态。' }}</p>
-          <small v-if="rc2Status?.generation_directory">本机 KMZ 生成目录：{{ rc2Status.generation_directory }}</small>
           <template v-if="preview && djiModel === 'fly' && rc2Status?.available">
             <small v-if="rc2DeviceName">遥控器：{{ rc2DeviceName }}</small>
             <small v-if="rc2WaypointPath">占位航线目录：{{ rc2WaypointPath }}</small>
@@ -3323,9 +3322,7 @@ onBeforeUnmount(() => {
             </label>
             <small v-if="!rc2Folders.length && !rc2Loading">没有可替换的占位航线文件夹。需要 RC 2 上存在 waypoint/&lt;编号&gt;/ 文件夹（DJI Fly 占位航线），且里面有与文件夹同名的 .kmz；创建任务时会下载 KMZ 文件。</small>
             <small v-else-if="rc2Folders.length > 1 && !rc2TargetName">请选择要替换的占位航线文件夹；未选择时创建任务会下载 KMZ 文件。</small>
-            <small v-if="rc2TargetName">创建任务时将替换文件夹 {{ rc2TargetName }} 里的同名 .kmz；原文件会先备份，写入后回读校验。过程中 Windows 会弹出“替换文件”确认框，点击“替换/是”即可，属正常步骤。</small>
           </template>
-          <small v-else-if="preview && djiModel === 'fly'">用 USB 连接并解锁 RC 2 后，创建任务会自动尝试导入；未检测到时会下载 KMZ。</small>
           <div v-if="rc2Job" class="rc2-job" :class="{ 'rc2-job-failed': rc2Job.status === 'failed', 'rc2-job-done': rc2Job.status === 'succeeded' }" role="status" aria-live="polite">
             <strong>{{ !rc2JobMatchesCurrent ? '上次航线的' : '' }}{{ rc2Job.status === 'succeeded' ? '导入并回读校验完成' : rc2Job.status === 'failed' ? '导入失败' : '导入进行中' }}</strong>
             <small v-if="!rc2JobMatchesCurrent">当前路线或航点设置与提交任务时不同；以下结果对应提交时的版本。</small>
@@ -3335,12 +3332,7 @@ onBeforeUnmount(() => {
               <li :class="{ active: rc2Job.stage === 'uploading', done: rc2Job.stage === 'verified' }">备份并传输</li>
               <li :class="{ active: rc2Job.stage === 'verified', done: rc2Job.status === 'succeeded' }">回读校验</li>
             </ol>
-            <span>{{ rc2Job.message }}</span>
-            <small v-if="rc2Job.source_path">生成文件：{{ rc2Job.source_path }}</small>
-            <small v-if="rc2Job.backup_directory">备份目录：{{ rc2Job.backup_directory }}</small>
-            <small v-if="rc2Job.backup_path">原文件备份：{{ rc2Job.backup_path }}</small>
           </div>
-          <p v-if="rc2Error" class="form-error" role="alert">{{ rc2Error }}</p>
         </section>
         <div v-if="activeModule === 'dji'" class="task-create-footer">
           <p v-if="taskCreateNotice" class="task-create-notice" role="status">{{ taskCreateNotice }}</p>
