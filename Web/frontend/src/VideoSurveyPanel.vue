@@ -711,7 +711,6 @@ watch(() => props.taskId, () => {
     <header class="video-survey-header">
       <div>
         <h3 id="video-survey-title">视频轨迹定位</h3>
-        <p>选择视频文件夹：同名 MP4 / SRT / LRF 自动成组，JPG 图片不读取。导入后播放或拖动进度时，地图显示该时刻的无人机位置。</p>
       </div>
       <span v-if="survey" class="video-survey-badge" :class="survey.has_gps ? 'is-ready' : 'is-warning'">
         {{ survey.has_gps ? `${survey.telemetry_points} 个定位点` : '无 GPS 数据' }}
