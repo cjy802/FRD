@@ -196,9 +196,7 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .settings-pages button, .workspace-tabs button { padding: 7px 10px; border: 1px solid var(--ui-line); background: #fff; color: #424242; font-size: var(--font-caption); }
 .settings-pages button[aria-pressed="true"], .workspace-tabs button[aria-pressed="true"] { color: var(--ui-accent); border-color: var(--ui-accent); background: #e8f3fc; font-weight: 600; }
 .settings-fields { flex: 1; min-height: 0; }
-.sidebar .section-heading { flex-shrink: 0; }
-.sidebar .section-heading h1 { margin: 4px 0 6px; }
-.sidebar .section-heading p { font-size: var(--font-caption); }
+.sidebar .section-heading { flex-shrink: 0; padding-bottom: 12px; margin-bottom: 12px; border-bottom: 1px solid var(--ui-line); }
 .sidebar .point-heading { margin-bottom: 8px; }
 .sidebar .coordinate-row input, .sidebar .clearance-row input { height: 34px; margin-top: 4px; }
 .sidebar .route-divider { height: 12px; }
@@ -206,8 +204,8 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .sidebar .clearance-row { margin-top: 14px; }
 .eyebrow { display: inline-flex; align-items: center; gap: 6px; color: var(--ui-muted); font-size: var(--font-caption); font-weight: 600; }
 .eyebrow .svg-icon { width: 15px; height: 15px; color: var(--ui-accent); }
-.section-heading h1 { margin: 8px 0 10px; font-size: var(--font-display); font-weight: 600; line-height: 1.3; letter-spacing: -.025em; }
-.section-heading p, .status-block p { margin: 0; color: var(--ui-muted); font-size: var(--font-body); line-height: 1.6; }
+.sidebar .section-heading h2 { margin: 4px 0 0; font-size: var(--font-heading); font-weight: 600; line-height: 1.3; }
+.status-block p { margin: 0; color: var(--ui-muted); font-size: var(--font-body); line-height: 1.6; }
 .route-form { flex: 1; min-height: 0; display: flex; flex-direction: column; margin-top: 14px; }
 .point-heading { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
 .point-heading > div { flex: 1; min-width: 0; }
@@ -578,8 +576,8 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 }
 @media (max-height: 620px) {
   .sidebar { padding: 10px 16px; }
-  .sidebar .section-heading p, .sidebar .section-heading .eyebrow { display: none; }
-  .sidebar .section-heading h1 { font-size: 20px; margin: 0 0 4px; }
+  .sidebar .section-heading .eyebrow { display: none; }
+  .sidebar .section-heading h2 { font-size: 16px; margin: 0; }
   .sidebar .point-heading { margin-bottom: 4px; }
   .sidebar .range-toggle { min-height: 24px; padding: 3px 6px; }
   .sidebar .coordinate-row input, .sidebar .clearance-row input { height: 28px; margin-top: 2px; }

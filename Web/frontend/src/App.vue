@@ -3134,7 +3134,9 @@ onBeforeUnmount(() => {
       </Teleport>
 
       <aside id="mission-sidebar" class="sidebar module-panel" :class="[{ 'panel-active': workspacePanel === 'settings', 'module-active': activeModule === 'route' || activeModule === 'photos' }, `module-mode-${activeModule}`]" aria-label="航线设置">
-        <div v-if="activeModule === 'route'" class="section-heading"><span class="eyebrow"><span class="svg-icon icon-route" aria-hidden="true"></span>第 1 步 · 选定航线</span><h1>规划本次飞行</h1><PlaceSearch v-if="planningMode === 'anchors'" :disabled="loading || checkingPoint" :targets="anchorChoices" :selection-feedback="placeSelectionFeedback" @choose-point="chooseSearchedPoint" @clear-selection-feedback="placeSelectionFeedback = null" /></div>
+        <div v-if="activeModule === 'route'" class="section-heading"><span class="eyebrow"><span class="svg-icon icon-route" aria-hidden="true"></span>第 1 步 · 选定航线</span><h2>规划本次飞行</h2></div>
+        <PlaceSearch v-if="activeModule === 'route' && planningMode === 'anchors'" :disabled="loading || checkingPoint" :targets="anchorChoices" :selection-feedback="placeSelectionFeedback" @choose-point="chooseSearchedPoint" @clear-selection-feedback="placeSelectionFeedback = null" />
+        <div v-if="activeModule === 'photos'" class="section-heading"><span class="eyebrow"><span class="svg-icon icon-layers" aria-hidden="true"></span>第 4 步 · 任务视频 / 分析</span><h2>分析任务视频关键帧</h2></div>
 
         <form class="route-form" @submit.prevent @invalid.capture="revealInvalidSetting">
           <div v-if="activeModule === 'route'" class="planning-mode-switch" role="group" aria-label="路线规划方式"><button type="button" :class="{ active: planningMode === 'anchors' }" :aria-pressed="planningMode === 'anchors'" @click="choosePlanningMode('anchors')">点到点路线</button><button type="button" :class="{ active: planningMode === 'area' }" :aria-pressed="planningMode === 'area'" @click="choosePlanningMode('area')">区域道路巡查<InfoHint text="路线覆盖本地道路数据里符合筛选等级的中心线，连接段也沿已收录道路规划。道路等级是宽度的近似，不等同于现场实测；覆盖率不包含数据中未收录的道路。起终点会吸附到附近道路，吸附距离超过 100 米或点位在区域外时路线不会生成。" /></button></div>
@@ -3499,4 +3501,5 @@ onBeforeUnmount(() => {
 .rc2-job-steps li.active { background: #dceeff; color: #0f6cbd; font-weight: 700; }
 .rc2-job-steps li.done { background: #ddf3e5; color: #167348; }
 .primary-action-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+.sidebar > .place-search { flex-shrink: 0; margin-bottom: 10px; }
 </style>
