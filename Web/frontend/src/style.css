@@ -332,6 +332,7 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .road-summary strong { display: flex; align-items: center; gap: 6px; color: var(--ui-accent); font-size: var(--font-body); font-weight: 600; }
 .road-summary strong .svg-icon { display: inline-block; width: 17px; height: 17px; margin-top: 0; }
 .road-summary span, .road-summary small { display: block; margin-top: 7px; color: var(--ui-muted); font-size: var(--font-caption); line-height: 1.5; }
+.road-summary .label-hint, .road-summary .label-hint .info-hint { display: inline-flex; margin-top: 0; }
 .road-summary summary .svg-icon { display: inline-block; margin-top: 0; }
 .road-summary a { color: var(--ui-accent); }
 .road-summary summary { cursor: pointer; color: var(--ui-accent); font-size: var(--font-caption); font-weight: 600; list-style: none; }
