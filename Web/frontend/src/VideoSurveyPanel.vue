@@ -728,20 +728,7 @@ watch(() => props.taskId, () => {
       </span>
     </div>
 
-    <p v-if="survey" class="video-survey-note" role="status">{{ survey.message }}</p>
-    <p
-      v-if="survey?.task_match"
-      class="video-survey-match"
-      :class="`is-${survey.task_match.status.replace('_', '-')}`"
-      role="status"
-    >
-      {{ survey.task_match.message }}
-      <template v-if="survey.recording">
-        拍摄于 {{ survey.recording.started_at_local }} 至 {{ survey.recording.ended_at_local }}（相机本地时间）。
-      </template>
-    </p>
     <p v-if="error" class="video-survey-feedback is-error" role="alert">{{ error }}</p>
-    <p v-else-if="status" class="video-survey-feedback" role="status">{{ status }}</p>
 
     <div v-if="survey" class="video-survey-review">
       <template v-if="reviewVideoSrc">
@@ -805,7 +792,6 @@ watch(() => props.taskId, () => {
           </div>
         </details>
         <div class="adaptive-selector-fields adaptive-queue-row">
-          <small class="adaptive-pipeline-note">识别流水线（自动复检，无需选模型）：YOLO 全量初筛 → GLM 终审，GLM 只复查 YOLO 检出的疑似帧，两遍都检出才确认。</small>
           <small v-if="queueHealthLoaded && !queueStages.length">识别服务未就绪，只能先截帧。</small>
         </div>
         <div class="adaptive-selector-actions-row">
@@ -821,7 +807,6 @@ watch(() => props.taskId, () => {
           {{ queueStatusLabel }}
           <button type="button" class="adaptive-queue-jump" @click="emit('open-queue')">查看识别队列</button>
         </p>
-        <small class="adaptive-selector-note">{{ hasGpsTelemetry ? '系统用画面变化估算相邻覆盖，用 SRT 轨迹的前后航向夹角识别转弯（低速/悬停不误判）。默认重叠 0%＝“边挨着边”：相邻帧不带连接点、不重复送识别，需要留覆盖冗余时在上方把重叠调回大于 0。' : '当前视频没有 GPS 轨迹：无法按重叠和转弯选帧，自动截帧退化为固定时间间隔；识别出的积水将没有坐标（显示“坐标待补充”），地图上不会显示位置。' }}有本地视频时自动截帧在浏览器里直接处理，不上传完整视频；重叠值是筛选目标，不代表地面覆盖的测绘级保证。“自动截帧并排队识别”会边截边传：每选出一张立即入队识别，结果逐张返回，失败帧会自动重试且不拖累整批；<strong>所有截图帧都会保存到任务关键帧（本机任务目录），识别后不会自动删除，需手动移除</strong>。</small>
       </section>
 
       <ul v-if="survey.targets.length" class="video-survey-target-list">
@@ -833,7 +818,6 @@ watch(() => props.taskId, () => {
           <button class="video-survey-remove" type="button" :disabled="busyTarget" :aria-label="`删除${target.label}`" @click="removeTarget(target)">删除</button>
         </li>
       </ul>
-      <small class="video-survey-footnote">只对手动截取的关键帧运行模型；SRT 依据时间提供无人机位置，不会逐帧调用模型。地图点表示无人机位置，不是水坑地面坐标。</small>
     </div>
 
     <Teleport to="body">
@@ -964,7 +948,7 @@ watch(() => props.taskId, () => {
 .adaptive-selector { display: grid; gap: 7px; margin-top: 9px; padding: 8px; border: 1px solid var(--ui-line); border-radius: 7px; background: #fbfcfe; }
 .adaptive-selector header { display: grid; gap: 3px; }
 .adaptive-selector header strong { color: #27364a; font-size: 12px; }
-.adaptive-selector header small, .adaptive-selector-note { color: var(--ui-muted); font-size: 12px; line-height: 1.4; }
+.adaptive-selector header small { color: var(--ui-muted); font-size: 12px; line-height: 1.4; }
 .adaptive-selector-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
 .adaptive-settings-group { border: 1px solid var(--ui-line); border-radius: 7px; background: #fff; }
 .adaptive-settings-group > summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 9px; cursor: pointer; font-size: 12px; }
@@ -981,7 +965,6 @@ watch(() => props.taskId, () => {
 .adaptive-selector-action:disabled { opacity: .5; cursor: not-allowed; }
 .adaptive-selector-action:not(.is-primary) { border-color: #d7dfe8 !important; background: #fff !important; color: #34506c !important; }
 .adaptive-selector-action:not(.is-primary):hover:not(:disabled) { border-color: var(--ui-accent) !important; color: var(--ui-accent) !important; background: #eff6ff !important; }
-.adaptive-selector-note { margin: 0; }
 .adaptive-selector-actions-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .adaptive-selector-actions-row .adaptive-selector-action { flex: 1; }
 .adaptive-selector-cancel { min-height: 34px; padding: 6px 12px; border: 1px solid #d7dfe8; border-radius: 7px; background: #fff; color: #526273; font-size: 12px; cursor: pointer; }
@@ -993,10 +976,6 @@ watch(() => props.taskId, () => {
 .adaptive-queue-jump:hover { border-color: #16794c; background: #eaf6ee; }
 .video-survey-note, .video-survey-feedback { margin: 7px 0; padding: 6px 8px; border-radius: 6px; background: #eff6ff; color: #1d4ed8; line-height: 1.4; overflow-wrap: anywhere; }
 .video-survey-feedback.is-error { background: #fef2f2; color: #a4262c; }
-.video-survey-match { margin: 7px 0; padding: 6px 8px; border-radius: 6px; background: #f3f4f6; color: #4b5563; line-height: 1.4; overflow-wrap: anywhere; }
-.video-survey-match.is-matched { background: #e7f6ec; color: #16794c; }
-.video-survey-match.is-near { background: #fff4e5; color: #9a5b13; }
-.video-survey-match.is-off-route { background: #fef2f2; color: #a4262c; }
 .video-survey-review { margin-top: 9px; }
 .video-survey-player { display: block; width: 100%; max-height: 270px; border-radius: 7px; background: #111; }
 .video-survey-timeline { display: flex; align-items: center; gap: 7px; margin-top: 5px; color: var(--ui-muted); font-size: 12px; }
@@ -1014,7 +993,6 @@ watch(() => props.taskId, () => {
 .video-survey-target-summary strong, .video-survey-target-summary small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .video-survey-target-summary small { color: var(--ui-muted); font-size: 12px; }
 .video-survey-target-list .video-survey-remove { flex: 0 0 auto; }
-.video-survey-footnote { display: block; margin-top: 8px; color: var(--ui-muted); line-height: 1.4; }
 .video-survey-input { display: none; }
 
 .video-library-page { position: fixed; z-index: 6000; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--ui-line); border-radius: 10px; background: #f4f7fa; box-shadow: 0 14px 40px rgb(15 23 42 / .24); }
