@@ -1213,7 +1213,7 @@ const showEndRange = ref(false)
 type ResizeSide = 'left' | 'right'
 function defaultColumnWidths() {
   const viewportWidth = typeof window === 'undefined' ? 1440 : window.innerWidth
-  return { left: Math.max(260, viewportWidth * 0.2), right: Math.max(280, viewportWidth * 0.3) }
+  return { left: Math.max(260, viewportWidth * 0.15), right: Math.max(280, viewportWidth * 0.3) }
 }
 const initialColumnWidths = defaultColumnWidths()
 const sidebarWidth = ref(initialColumnWidths.left)
