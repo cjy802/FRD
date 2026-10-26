@@ -355,8 +355,8 @@ onBeforeUnmount(() => {
 
       <div v-if="loading" class="field-state field-loading" role="status"><span class="field-loader"></span><strong>正在读取最新积水点</strong></div>
       <div v-else-if="error" class="field-state field-error" role="alert"><strong>暂时读不到积水点</strong><small>{{ error }}</small><button type="button" @click="refresh()">重新读取</button></div>
-      <div v-else-if="!alerts.length" class="field-state field-empty"><span class="field-empty-mark">✓</span><strong>主控端尚未下发积水点</strong><small>管理员确认后会自动出现在这里。</small></div>
-      <div v-else-if="!visibleAlerts.length" class="field-state field-empty"><span class="field-empty-mark">✓</span><strong>这一批已全部处理</strong><small>共 {{ completedCount }} 处。</small></div>
+      <div v-else-if="!alerts.length" class="field-state field-empty"><span class="field-empty-mark"><svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor" aria-hidden="true"><path d="M382-240 154-468l57-57 171 171 367-367 57 57-424 424Z"/></svg></span><strong>主控端尚未下发积水点</strong><small>管理员确认后会自动出现在这里。</small></div>
+      <div v-else-if="!visibleAlerts.length" class="field-state field-empty"><span class="field-empty-mark"><svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor" aria-hidden="true"><path d="M382-240 154-468l57-57 171 171 367-367 57 57-424 424Z"/></svg></span><strong>这一批已全部处理</strong><small>共 {{ completedCount }} 处。</small></div>
 
       <section v-else class="field-alert-list" aria-label="积水点列表">
         <article v-for="(alert, index) in visibleAlerts" :key="alert.id" class="field-alert-card">
@@ -471,7 +471,7 @@ onBeforeUnmount(() => {
 .field-loader { width: 30px; height: 30px; border: 3px solid #c7ddf1; border-top-color: var(--ui-accent); border-radius: 50%; animation: field-spin .8s linear infinite; }
 @keyframes field-spin { to { transform: rotate(360deg); } }
 .field-error strong { color: #a4262c; }
-.field-empty-mark { display: grid; width: 46px; height: 46px; place-items: center; border-radius: 50%; background: #e8f3fc; color: var(--ui-accent); font-size: 22px; font-weight: 700; }
+.field-empty-mark { display: grid; width: 46px; height: 46px; place-items: center; border-radius: 50%; background: #e8f3fc; color: var(--ui-accent); }
 .field-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 24px 0 8px; color: var(--ui-muted); font-size: 12px; }
 .field-lightbox { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 18px; background: rgb(15 23 42 / .38); }
 .field-lightbox-close { position: absolute; top: 17px; right: 19px; display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid #d7dfe8; border-radius: 50%; background: #fff; color: #34506c; font-size: 22px; line-height: 1; }
