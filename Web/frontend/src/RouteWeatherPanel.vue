@@ -33,6 +33,12 @@ const assessmentAgeLabel = computed(() => {
   return remainingMinutes ? `${hours} 小时 ${remainingMinutes} 分钟前` : `${hours} 小时前`
 })
 const displayedLimits = computed(() => props.limits ?? alignment.value?.weather_risk.limits ?? DEFAULT_LIMITS)
+function localTime(time: string) {
+  return new Date(time).toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  })
+}
 let controller: AbortController | null = null
 let timer: ReturnType<typeof setTimeout> | null = null
 let expiryTimer: ReturnType<typeof setInterval> | null = null
@@ -141,7 +147,7 @@ onBeforeUnmount(() => { controller?.abort(); if (timer) clearTimeout(timer); if 
   <div class="status-block" aria-label="沿线天气检查">
     <div class="status-title"><span>沿线天气检查</span></div>
     <template v-if="alignment">
-      <div class="weather-test-meta"><small>上次测试：{{ assessmentAgeLabel }}</small><button type="button" :disabled="pending" @click="requestAlignment">{{ pending ? '正在测试…' : '重新测试' }}</button></div>
+      <div class="weather-test-meta"><small>上次测试：{{ localTime(alignment.tested_at_utc) }} · {{ assessmentAgeLabel }}</small><button type="button" :disabled="pending" @click="requestAlignment">{{ pending ? '正在测试…' : '重新测试' }}</button></div>
       <div class="weather-mini-grid"><div :class="metricTone('wind')"><span>飞行高度风</span><strong>{{ alignment.weather_risk.summary.max_wind_m_s?.toFixed(1) ?? '—' }} m/s</strong><small>最高风速</small></div><div :class="metricTone('crosswind')"><span>侧风</span><strong>{{ alignment.weather_risk.summary.max_crosswind_m_s?.toFixed(1) ?? '—' }} m/s</strong><small>横向风力</small></div><div :class="metricTone('visibility')"><span>地面能见度</span><strong>{{ alignment.weather_risk.summary.min_surface_visibility_m?.toFixed(0) ?? '—' }} m</strong><small>最低值</small></div></div>
     </template>
     <p v-else>{{ pending ? '正在计算沿线高度风及风雨提示…' : error || '等待路线与天气资料就绪。' }}</p>
