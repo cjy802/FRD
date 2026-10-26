@@ -115,11 +115,6 @@ const previewUrl = computed(() => {
     ? fileUrl(preview.value.image.overlay)
     : inputUrl(preview.value.image)
 })
-const modelSummary = computed(() => {
-  const model = job.value?.results?.model
-  if (!model) return ''
-  return `${model.display_name ?? model.default_model} · 输入 ${model.input_size}px`
-})
 function hasSuspectedWater(image: PhotoAnalysisResultImage): boolean {
   return (image.suspected_pixels ?? 0) > 0
 }
@@ -662,10 +657,8 @@ function onDocumentPointerdown(event: PointerEvent) {
         <div class="photo-results-header">
           <div class="photo-view-toggle" role="group" aria-label="叠图显示方式">
             <button type="button" :class="{ 'is-active': viewMode === 'overlay' }" @click="viewMode = 'overlay'">叠图</button>
-            <button type="button" :class="{ 'is-active': viewMode === 'original' }" @click="viewMode = 'original'">原图</button>
           </div>
           <div class="photo-results-actions">
-            <small>{{ modelSummary }}</small>
             <button v-if="visibleNoWaterCount" type="button" class="photo-result-action" @click="hideAllNoWaterImages">移除无积水图（{{ visibleNoWaterCount }}）</button>
             <button v-if="hiddenNoWaterCount" type="button" class="photo-result-action" @click="restoreHiddenNoWaterImages">恢复已移除（{{ hiddenNoWaterCount }}）</button>
           </div>
@@ -902,8 +895,9 @@ function onDocumentPointerdown(event: PointerEvent) {
 .photo-result-action { min-height: 26px !important; padding: 3px 8px !important; font-size: 12px !important; }
 .photo-view-toggle { display: inline-flex; gap: 0; }
 .photo-view-toggle button { border-radius: 0; }
-.photo-view-toggle button:first-child { border-radius: 6px 0 0 6px; }
-.photo-view-toggle button:last-child { border-radius: 0 6px 6px 0; border-left: none; }
+.photo-view-toggle button:first-child:not(:only-child) { border-radius: 6px 0 0 6px; }
+.photo-view-toggle button:last-child:not(:only-child) { border-radius: 0 6px 6px 0; border-left: none; }
+.photo-view-toggle button:only-child { border-radius: 6px; }
 .photo-view-toggle button.is-active { background: var(--ui-accent); border-color: var(--ui-accent); color: #fff; }
 .photo-grid { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
 .photo-grid li { min-width: 0; padding: 6px; border: 1px solid var(--ui-line); border-radius: 7px; background: #fbfcfe; }
