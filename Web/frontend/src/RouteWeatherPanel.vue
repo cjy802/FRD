@@ -11,7 +11,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   assessed: [result: RouteAssessment | null]
   phase: [state: { pending: boolean; error: string }]
-  'point-weather-toggle': [visible: boolean]
   'limits-change': [limits: WeatherLimits]
 }>()
 const DEFAULT_LIMITS: WeatherLimits = { name: '演示规则', max_wind_m_s: 12, max_crosswind_m_s: 8,
@@ -19,7 +18,6 @@ const DEFAULT_LIMITS: WeatherLimits = { name: '演示规则', max_wind_m_s: 12, 
 const alignment = ref<RouteAssessment | null>(null)
 const pending = ref(false)
 const error = ref('')
-const pointWeatherVisible = ref(false)
 const ageClock = ref(Date.now())
 const CACHE_KEY = 'low-altitude-route-weather-v1'
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000
@@ -40,25 +38,12 @@ let controller: AbortController | null = null
 let timer: ReturnType<typeof setTimeout> | null = null
 let expiryTimer: ReturnType<typeof setInterval> | null = null
 
-function beijing(time: string) {
-  return new Date(time).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
-}
 function riskLabel(level: string, fallback: string) {
   return ({ incomplete: '资料不完整', elevated: '需要重点留意', attention: '需要留意', no_trigger: '暂未发现明显提醒' } as Record<string, string>)[level] || fallback
-}
-function riskDescription(level: string, complete: boolean) {
-  if (!complete || level === 'incomplete') return '部分路线缺少可用天气资料，当前结果不能作为完整判断。'
-  if (level === 'no_trigger') return '已覆盖的指标均未超过当前提醒线。'
-  if (level === 'elevated') return '有指标达到较强提醒线，已在上方红框标出；可打开地图逐点复核。'
-  return '有指标接近提醒线，已在上方橙框标出；可打开地图逐点复核。'
 }
 function metricTone(field: string) {
   const level = alignment.value?.weather_risk.alerts.find(alert => alert.field === field)?.level
   return level === 'elevated' ? 'is-danger' : level === 'attention' ? 'is-attention' : ''
-}
-function togglePointWeather() {
-  pointWeatherVisible.value = !pointWeatherVisible.value
-  emit('point-weather-toggle', pointWeatherVisible.value)
 }
 function updateLimit(field: 'max_wind_m_s' | 'max_crosswind_m_s' | 'min_visibility_m', event: Event) {
   const value = Number((event.target as HTMLInputElement).value)
@@ -126,10 +111,6 @@ async function requestAlignment() {
     if (current === controller) { pending.value = false; controller = null; emit('phase', { pending: false, error: error.value }) }
   }
 }
-watch(() => [props.jobId, props.coordinates], () => {
-  pointWeatherVisible.value = false
-  emit('point-weather-toggle', false)
-}, { deep: true, flush: 'sync' })
 watch(() => [props.jobId, props.coordinates, props.speedKmh, props.altitudeM, props.limits], () => {
   controller?.abort()
   controller = null
@@ -165,7 +146,6 @@ onBeforeUnmount(() => { controller?.abort(); if (timer) clearTimeout(timer); if 
     <div class="status-title"><span>沿线天气检查</span><b :class="alignment ? `risk-${alignment.weather_risk.level}` : 'pending'">{{ alignment ? riskLabel(alignment.weather_risk.level, alignment.weather_risk.label) : '待评估' }}</b></div>
     <template v-if="alignment">
       <div class="weather-test-meta"><small>上次测试：{{ assessmentAgeLabel }}<span v-if="alignment.cache_reused"> · 已复用六小时缓存</span></small><button type="button" :disabled="pending" @click="requestAlignment">{{ pending ? '正在测试…' : '重新测试' }}</button></div>
-      <p class="plain-summary">{{ riskDescription(alignment.weather_risk.level, alignment.weather_risk.coverage_complete) }}</p>
       <div class="weather-mini-grid"><div :class="metricTone('wind')"><span>飞行高度风</span><strong>{{ alignment.weather_risk.summary.max_wind_m_s?.toFixed(1) ?? '—' }} m/s</strong><small>最高风速</small></div><div :class="metricTone('crosswind')"><span>侧风</span><strong>{{ alignment.weather_risk.summary.max_crosswind_m_s?.toFixed(1) ?? '—' }} m/s</strong><small>横向风力</small></div><div :class="metricTone('visibility')"><span>地面能见度</span><strong>{{ alignment.weather_risk.summary.min_surface_visibility_m?.toFixed(0) ?? '—' }} m</strong><small>最低值</small></div></div>
     </template>
     <p v-else>{{ pending ? '正在计算沿线高度风及风雨提示…' : error || '等待路线与天气资料就绪。' }}</p>
@@ -179,17 +159,5 @@ onBeforeUnmount(() => { controller?.abort(); if (timer) clearTimeout(timer); if 
       <small class="weather-threshold-note">高度风覆盖离地 10–100 米；地面能见度和阵风是地面指标。预报网格与时次有限，不代表放飞许可。</small>
     </details>
     <div v-if="!alignment && !pending && jobId && coordinates" class="weather-test-meta"><small>暂无六小时内的测试结果</small><button type="button" @click="requestAlignment">{{ error ? '重新测试' : '开始测试' }}</button></div>
-  </div>
-  <div class="status-block route-weather-panel" aria-label="任务时间和高度">
-    <div class="status-title"><span>任务时间和高度</span><b :class="alignment?.coverage.flight_height ? 'risk-no_trigger' : 'pending'">{{ pending ? '匹配中' : alignment?.coverage.flight_height ? '资料完整' : alignment?.coverage.surface_space_time ? '缺少高度资料' : '待匹配' }}</b></div>
-    <p v-if="error" role="alert">{{ error }}</p>
-    <p v-else-if="!alignment">{{ pending ? '正在匹配沿线经过时刻的天气…' : !coordinates ? '请先计算与当前起终点一致的道路路线。' : '等待区域天气预测完成。' }}</p>
-    <template v-else>
-      <p>出发 {{ beijing(alignment.departure_time_utc) }} → 到达 {{ beijing(alignment.arrival_time_utc) }}（北京时间）</p>
-      <small>{{ alignment.samples.length }}/{{ alignment.sample_count }} 个路线点有天气资料；预计飞行 {{ (alignment.duration_seconds / 60).toFixed(1) }} 分钟。</small>
-      <p v-if="alignment.missing.length || alignment.height_missing.length" class="weather-inline-warning" role="alert">部分路段缺少预测，结果不完整。</p>
-      <p v-else class="plain-summary">整条路线的时间和飞行高度都有对应天气资料。</p>
-      <button v-if="alignment.samples.length" type="button" class="weather-point-toggle" :aria-pressed="pointWeatherVisible" @click="togglePointWeather">{{ pointWeatherVisible ? '隐藏地图点位天气' : '查看沿线每个点的天气' }}</button>
-    </template>
   </div>
 </template>
