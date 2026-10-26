@@ -103,7 +103,6 @@ const isRemoteModel = computed(() => selectedModel.value === 'remote-glm-puddle'
 const selectedFrames = computed(() => props.frames.filter((_, index) => !excludedFrames.value.includes(index)))
 const canSubmit = computed(() => Boolean(health.value?.available && selectedModelOption.value?.available
   && props.taskId && selectedFrames.value.length && !busy.value))
-const interpretation = computed(() => job.value?.results?.interpretation ?? '')
 const selectedFileSummary = computed(() => {
   if (selectedFrames.value.length === 1) return selectedFrames.value[0].name
   if (selectedFrames.value.length > 1) return `${selectedFrames.value.length} 个关键帧已选择`
@@ -707,7 +706,6 @@ function onDocumentPointerdown(event: PointerEvent) {
             </div>
           </li>
         </ul>
-        <p class="photo-warning">{{ interpretation }}</p>
       </div>
     </div>
     <!-- 必须挂在 body 下：留在折叠的 details 里时 showModal 只画遮罩、
@@ -889,6 +887,7 @@ function onDocumentPointerdown(event: PointerEvent) {
 .photo-submit:hover:not(:disabled) { background: var(--ui-accent-hover) !important; }
 .photo-feedback { margin: 0 0 8px; padding: 6px 8px; border-radius: 6px; background: #eff6ff; color: #1d4ed8; line-height: 1.4; overflow-wrap: anywhere; }
 .photo-feedback.is-error { background: #fef2f2; color: #a4262c; }
+.photo-results { margin-top: 10px; }
 .photo-results-header { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 8px; }
 .photo-results-header small { color: var(--ui-muted); overflow-wrap: anywhere; text-align: right; }
 .photo-results-actions { display: flex; min-width: 0; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: wrap; }
@@ -910,7 +909,6 @@ function onDocumentPointerdown(event: PointerEvent) {
 .photo-result-remove { min-height: 24px !important; flex: 0 0 auto; padding: 2px 7px !important; border-color: #e2b8b8 !important; color: #a4262c !important; font-size: 12px !important; }
 .photo-result-remove:hover:not(:disabled) { border-color: #a4262c !important; background: #fff5f5 !important; }
 .photo-meta small { display: block; margin-top: 2px; color: var(--ui-muted); }
-.photo-warning { margin: 10px 0 0; padding: 6px 8px; border-radius: 6px; background: #fff7ed; color: #9a5b13; line-height: 1.4; }
 .photo-threshold-config { margin: 0 0 10px; }
 .photo-alert-summary { margin: 0 0 8px; padding: 6px 8px; border-radius: 6px; background: #f0f7f1; color: #16794c; line-height: 1.4; }
 .photo-alert-summary.is-elevated { background: #fef2f2; color: #a4262c; font-weight: 700; }
