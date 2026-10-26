@@ -284,6 +284,7 @@ watch(allAnchorsReady, ready => { if (!ready) pointWeatherRiskLevel.value = null
 const weatherRefreshVersion = ref(0)
 const routeAssessment = ref<RouteAssessment | null>(null)
 const showRouteWeatherPoints = ref(false)
+const thresholdsOpen = ref(false)
 const routePhase = ref({ pending: false, error: '' })
 const customLimitsEnabled = ref(false)
 const customLimits = reactive<WeatherLimits>({ name: '自定义阈值', max_wind_m_s: 12, max_crosswind_m_s: 8,
@@ -3291,14 +3292,14 @@ onBeforeUnmount(() => {
          <div class="decision" :class="decisionTone" aria-live="polite"><span class="decision-kicker"><span class="svg-icon icon-alert" aria-hidden="true"></span>气象初筛<InfoHint text="这里只反映已覆盖的天气指标，不等于放飞许可。" /></span><strong>{{ decisionTitle }}</strong><p v-if="decisionDescription">{{ decisionDescription }}</p><details v-if="routeAssessment"><summary><span class="svg-icon icon-eye" aria-hidden="true"></span>查看判断依据</summary><div v-for="check in weatherChecks" :key="check.key" class="decision-check"><b>{{ check.label }}</b><span :class="check.state === 'ready' ? 'check-ready' : 'check-pending'">{{ check.state === 'ready' ? '资料已就绪' : check.state === 'no_trigger' ? '未触发当前阈值' : check.state === 'elevated' ? '较强提示' : check.state === 'attention' ? '需要留意' : '资料待补齐' }}</span><small>{{ check.detail }}</small></div></details></div>
         </section>
          <details v-if="activeModule === 'status'" class="overview-group" open>
-           <summary><span><span class="svg-icon icon-cloud-rain" aria-hidden="true"></span>沿线天气检查</span><small>风、降雨、阵风和能见度</small></summary>
+           <summary><span><span class="svg-icon icon-cloud-rain" aria-hidden="true"></span>沿线天气检查</span><button type="button" class="weather-gear-toggle" :aria-pressed="thresholdsOpen" title="设置中点与沿线天气阈值" @click.stop.prevent="thresholdsOpen = !thresholdsOpen"><span class="svg-icon icon-settings" aria-hidden="true"></span>设置阈值</button></summary>
           <div class="overview-group-body overview-weather">
-            <WeatherPanels v-if="allAnchorsReady" :key="weatherRefreshVersion" :altitude-m="form.altitude_m" :start="form.start" :end="form.end" @job-ready="weatherJobId = $event" @state-changed="weatherState = $event" @point-risk-changed="pointWeatherRiskLevel = $event">
+            <WeatherPanels v-if="allAnchorsReady" :key="weatherRefreshVersion" :altitude-m="form.altitude_m" :start="form.start" :end="form.end" :config-open="thresholdsOpen" @job-ready="weatherJobId = $event" @state-changed="weatherState = $event" @point-risk-changed="pointWeatherRiskLevel = $event">
               <template #route-weather>
-                <RouteWeatherPanel :job-id="weatherJobId" :coordinates="weatherCoordinates" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" :limits="activeLimits" :saved-assessment="savedTaskAssessment" @assessed="recordTaskWeather" @phase="routePhase = $event" @limits-change="applyWeatherLimits" />
+                <RouteWeatherPanel :job-id="weatherJobId" :coordinates="weatherCoordinates" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" :limits="activeLimits" :saved-assessment="savedTaskAssessment" :config-open="thresholdsOpen" @assessed="recordTaskWeather" @phase="routePhase = $event" @limits-change="applyWeatherLimits" />
               </template>
             </WeatherPanels>
-            <RouteWeatherPanel v-else :job-id="weatherJobId" :coordinates="weatherCoordinates" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" :limits="activeLimits" :saved-assessment="savedTaskAssessment" @assessed="recordTaskWeather" @phase="routePhase = $event" @limits-change="applyWeatherLimits" />
+            <RouteWeatherPanel v-else :job-id="weatherJobId" :coordinates="weatherCoordinates" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" :limits="activeLimits" :saved-assessment="savedTaskAssessment" :config-open="thresholdsOpen" @assessed="recordTaskWeather" @phase="routePhase = $event" @limits-change="applyWeatherLimits" />
           </div>
         </details>
           <details v-if="activeModule === 'status'" class="overview-group"><summary><span><span class="svg-icon icon-layers" aria-hidden="true"></span>天气规则和技术状态</span><small>仅在需要核对时查看</small></summary><div class="overview-group-body"><p class="weather-threshold-note">中点温度、地面风、六小时降雨，以及沿线飞行高度风、侧风和地面能见度的报警阈值已移至对应天气卡片配置。未列出的逆风和阵风继续使用演示阈值；这些提示不代表放飞许可。</p><div class="pipeline"><h3>系统状态</h3><div><span>01</span><p>{{ alignmentProgress }}</p></div><div><span>02</span><p>{{ routeAssessment ? decisionTitle : '沿线初筛等待资料' }}</p></div><div><span>03</span><p>{{ routePhase.pending ? '正在匹配沿线天气' : routePhase.error || (routeAssessment ? '沿线天气已匹配' : '沿线初筛等待资料') }}</p></div></div></div></details>
