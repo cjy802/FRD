@@ -3293,10 +3293,10 @@ onBeforeUnmount(() => {
           <div class="overview-group-body overview-weather">
             <WeatherPanels v-if="allAnchorsReady" :key="weatherRefreshVersion" :altitude-m="form.altitude_m" :start="form.start" :end="form.end" @job-ready="weatherJobId = $event" @state-changed="weatherState = $event" @point-risk-changed="pointWeatherRiskLevel = $event">
               <template #route-weather>
-                <RouteWeatherPanel :job-id="weatherJobId" :coordinates="weatherCoordinates" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" :limits="activeLimits" :saved-assessment="savedTaskAssessment" @assessed="recordTaskWeather" @point-weather-toggle="showRouteWeatherPoints = $event" @phase="routePhase = $event" @limits-change="applyWeatherLimits" />
+                <RouteWeatherPanel :job-id="weatherJobId" :coordinates="weatherCoordinates" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" :limits="activeLimits" :saved-assessment="savedTaskAssessment" @assessed="recordTaskWeather" @phase="routePhase = $event" @limits-change="applyWeatherLimits" />
               </template>
             </WeatherPanels>
-            <RouteWeatherPanel v-else :job-id="weatherJobId" :coordinates="weatherCoordinates" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" :limits="activeLimits" :saved-assessment="savedTaskAssessment" @assessed="recordTaskWeather" @point-weather-toggle="showRouteWeatherPoints = $event" @phase="routePhase = $event" @limits-change="applyWeatherLimits" />
+            <RouteWeatherPanel v-else :job-id="weatherJobId" :coordinates="weatherCoordinates" :departure-beijing="departureBeijing" :speed-kmh="form.speed_kmh" :altitude-m="form.altitude_m" :limits="activeLimits" :saved-assessment="savedTaskAssessment" @assessed="recordTaskWeather" @phase="routePhase = $event" @limits-change="applyWeatherLimits" />
           </div>
         </details>
           <details v-if="activeModule === 'status'" class="overview-group"><summary><span><span class="svg-icon icon-layers" aria-hidden="true"></span>天气规则和技术状态</span><small>仅在需要核对时查看</small></summary><div class="overview-group-body"><p class="weather-threshold-note">中点温度、地面风、六小时降雨，以及沿线飞行高度风、侧风和地面能见度的报警阈值已移至对应天气卡片配置。未列出的逆风和阵风继续使用演示阈值；这些提示不代表放飞许可。</p><div class="pipeline"><h3>系统状态</h3><div><span>01</span><p>{{ alignmentProgress }}</p></div><div><span>02</span><p>{{ routeAssessment ? decisionTitle : '沿线初筛等待资料' }}</p></div><div><span>03</span><p>{{ routePhase.pending ? '正在匹配沿线天气' : routePhase.error || (routeAssessment ? '沿线天气已匹配' : '沿线初筛等待资料') }}</p></div></div></div></details>
@@ -3312,7 +3312,8 @@ onBeforeUnmount(() => {
             <h3>导入已连接的 DJI RC 2<InfoHint text="创建任务时会自动检查 RC 2 并尝试导入；无法确认可替换目标时会下载 KMZ。此操作只适用于 DJI Fly / RC 2，导入完成后仍需在遥控器上打开航线，核对航点与动作。" /></h3>
             <button type="button" :disabled="rc2Loading || rc2JobRunning" @click="refreshRc2Connection">{{ rc2Loading ? '检测中…' : '检测 / 刷新设备' }}</button>
           </div>
-          <p role="status">{{ rc2Loading ? '正在检查本机和遥控器…' : rc2Status?.message ?? '等待检查 RC 2 连接状态。' }}</p>
+          <p v-if="rc2Loading || rc2Status?.message" role="status">{{ rc2Loading ? '正在检查本机和遥控器…' : rc2Status?.message }}</p>
+          <p v-if="rc2Error" class="form-error" role="alert">{{ rc2Error }}</p>
           <template v-if="preview && djiModel === 'fly' && rc2Status?.available">
             <small v-if="rc2DeviceName">遥控器：{{ rc2DeviceName }}</small>
             <small v-if="rc2WaypointPath">占位航线目录：{{ rc2WaypointPath }}</small>
@@ -3476,7 +3477,7 @@ onBeforeUnmount(() => {
   .map-alert { top: 150px; }
 }
 .rc2-import-panel { display: grid; gap: 8px; margin: 0 0 18px; padding: 14px; border: 1px solid #c9dced; border-radius: 10px; background: #f7fbff; }
-.rc2-import-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; }
+.rc2-import-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
 .rc2-import-heading h3 { margin: 0; color: #173b5c; font-size: 14px; }
 .rc2-import-heading button { padding: 5px 8px; border: 1px solid #a9c8e4; border-radius: 6px; background: #fff; color: #1265a7; font-size: 12px; cursor: pointer; }
 .rc2-import-panel p, .rc2-import-panel small, .rc2-job span { display: block; margin: 0; color: #53677c; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
