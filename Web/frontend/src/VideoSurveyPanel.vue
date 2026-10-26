@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import CustomSelect from './CustomSelect.vue'
+import InfoHint from './InfoHint.vue'
 import {
-  addVideoCaptureTarget,
   createVideoSurveySrt,
   deleteVideoCaptureTarget,
   interpolateVideoPosition,
@@ -44,10 +44,8 @@ const videoElement = ref<HTMLVideoElement | null>(null)
 const currentPosition = ref<VideoTelemetryPoint | null>(null)
 const currentTime = ref(0)
 const videoDuration = ref(0)
-const targetLabel = ref('')
 const loading = ref(false)
 const busyTarget = ref(false)
-const capturingFrame = ref(false)
 const selectingFrames = ref(false)
 // 默认"边挨着边"：相邻帧零重叠，不重复浪费识别；需要留冗余时在界面调回。
 const straightOverlapPercent = ref(0)
@@ -155,8 +153,6 @@ function updateMapRect() {
 // 保险上限与后端 TaskStore.MAX_FRAMES_PER_TASK 保持一致；截图只增不删，满额后需手动移除旧帧。
 const FRAME_LIMIT = 300
 
-const canCaptureFrame = computed(() => Boolean(survey.value && currentPosition.value && videoElement.value?.videoWidth
-  && props.frameCount < FRAME_LIMIT && !capturingFrame.value))
 // 无 GPS 也能自动截帧：退化为固定时间间隔（坐标为空，地图不显示轨迹）。
 const canSelectAdaptiveFrames = computed(() => Boolean(props.taskId && survey.value
   && props.frameCount < FRAME_LIMIT && !selectingFrames.value && !loading.value && !extractingLocal.value))
@@ -366,34 +362,6 @@ async function capturePreviewFrame() {
 }
 
 watch(playSpeed, value => { if (previewVideo.value) previewVideo.value.playbackRate = value })
-
-async function captureCurrentFrame() {
-  const video = videoElement.value
-  const point = currentPosition.value
-  if (!video || !point || !video.videoWidth || capturingFrame.value) return
-  capturingFrame.value = true
-  error.value = ''
-  try {
-    const canvas = document.createElement('canvas')
-    const scale = Math.min(1, 1920 / Math.max(video.videoWidth, video.videoHeight))
-    canvas.width = Math.max(1, Math.round(video.videoWidth * scale))
-    canvas.height = Math.max(1, Math.round(video.videoHeight * scale))
-    const context = canvas.getContext('2d')
-    if (!context) throw new Error('浏览器无法读取视频画面。')
-    context.drawImage(video, 0, 0, canvas.width, canvas.height)
-    const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error('截取视频帧失败。')), 'image/jpeg', 0.92))
-    const totalSeconds = Math.max(0, Math.floor(currentTime.value))
-    const name = `frame-${String(Math.floor(totalSeconds / 60)).padStart(2, '0')}m${String(totalSeconds % 60).padStart(2, '0')}s.jpg`
-    const file = new File([blob], name, { type: 'image/jpeg' })
-    emit('frame-capture', { file, time_seconds: currentTime.value, latitude: point.latitude,
-      longitude: point.longitude, altitude_m: point.altitude_m, gimbal_pitch_deg: point.gimbal_pitch_deg })
-    status.value = `已把 ${formatVideoTime(currentTime.value)} 的画面加入当前任务分析队列。`
-  } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : '截取视频帧失败。'
-  } finally {
-    capturingFrame.value = false
-  }
-}
 
 async function selectAdaptiveFrames() {
   if (!props.taskId || !survey.value || !canSelectAdaptiveFrames.value) return
@@ -637,23 +605,6 @@ function seekVideo(event: Event) {
   updatePosition(value)
 }
 
-async function addTarget() {
-  if (!survey.value || !currentPosition.value || busyTarget.value) return
-  busyTarget.value = true
-  error.value = ''
-  try {
-    const target = await addVideoCaptureTarget(survey.value.job_id, currentTime.value, targetLabel.value)
-    survey.value = { ...survey.value, targets: [...survey.value.targets, target] }
-    targetLabel.value = ''
-    emit('targets-change', survey.value.targets)
-    status.value = `已保存 ${target.label}，可按地图坐标前往补拍。`
-  } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : '保存近拍点失败。'
-  } finally {
-    busyTarget.value = false
-  }
-}
-
 async function removeTarget(target: VideoCaptureTarget) {
   if (!survey.value || busyTarget.value) return
   busyTarget.value = true
@@ -752,25 +703,8 @@ watch(() => props.taskId, () => {
         使用「上传完整视频并自动筛帧」可启用服务器端逐帧分析。
       </p>
 
-      <div class="video-survey-position">
-        <strong>当前画面位置</strong>
-        <template v-if="currentPosition">
-          <span>{{ currentPosition.latitude.toFixed(6) }}, {{ currentPosition.longitude.toFixed(6) }}</span>
-          <small v-if="currentPosition.altitude_m !== null">飞行高度约 {{ currentPosition.altitude_m.toFixed(1) }} m</small>
-        </template>
-        <small v-else>此时刻没有可用的位置记录</small>
-      </div>
-
-      <div class="video-survey-target-entry">
-        <input v-model="targetLabel" type="text" maxlength="60" placeholder="近拍点名称（可选）" :disabled="!currentPosition || busyTarget" />
-        <button type="button" :disabled="!currentPosition || busyTarget" @click="addTarget">加入近拍清单</button>
-      </div>
-      <button class="video-survey-capture" type="button" :disabled="!canCaptureFrame" @click="captureCurrentFrame">
-        {{ capturingFrame ? '截取中…' : frameCount >= FRAME_LIMIT ? '关键帧已达上限' : '截取当前画面用于分析' }}
-      </button>
-
       <section class="adaptive-selector" aria-label="自适应筛选视频关键帧">
-        <header><strong>自适应筛选关键帧</strong><small>{{ hasGpsTelemetry ? '按画面重叠和 SRT 转弯状态选帧，不使用固定抽帧间隔。' : '当前视频无 GPS 轨迹：按固定时间间隔截帧，帧不带坐标。' }}</small></header>
+        <header><strong>自适应筛选关键帧<InfoHint :text="hasGpsTelemetry ? '按画面重叠和 SRT 转弯状态选帧，不使用固定抽帧间隔。' : '当前视频无 GPS 轨迹：按固定时间间隔截帧，帧不带坐标。'" /></strong></header>
         <details class="adaptive-settings-group overview-group">
           <summary><span>抽帧参数设置</span><small>{{ hasGpsTelemetry ? '重叠 / 转弯 / 扫描频率' : `每 ${fixedIntervalSeconds} 秒一帧` }}</small></summary>
           <div class="overview-group-body">
@@ -939,15 +873,14 @@ watch(() => props.taskId, () => {
 .video-survey-badge.is-ready { background: #e7f6ec; color: #16794c; }
 .video-survey-badge.is-warning { background: #fff4e5; color: #9a5b13; }
 .video-survey-picker-row { display: flex; min-width: 0; align-items: center; gap: 7px; margin: 5px 0; }
-.video-survey-picker-row button, .video-survey-target-entry button, .video-survey-target-list button, .video-survey-capture { min-height: 28px; padding: 4px 8px; border: 1px solid #d7dfe8; border-radius: 6px; background: #fff; color: #34506c; font-size: 12px; white-space: nowrap; }
-.video-survey-picker-row button:hover:not(:disabled), .video-survey-target-entry button:hover:not(:disabled), .video-survey-target-list button:hover:not(:disabled) { border-color: var(--ui-accent); color: var(--ui-accent); background: #eff6ff; }
-.video-survey-picker-row button:disabled, .video-survey-target-entry button:disabled, .video-survey-target-list button:disabled, .video-survey-capture:disabled { opacity: .5; cursor: not-allowed; }
+.video-survey-picker-row button, .video-survey-target-list button { min-height: 28px; padding: 4px 8px; border: 1px solid #d7dfe8; border-radius: 6px; background: #fff; color: #34506c; font-size: 12px; white-space: nowrap; }
+.video-survey-picker-row button:hover:not(:disabled), .video-survey-target-list button:hover:not(:disabled) { border-color: var(--ui-accent); color: var(--ui-accent); background: #eff6ff; }
+.video-survey-picker-row button:disabled, .video-survey-target-list button:disabled { opacity: .5; cursor: not-allowed; }
 .video-survey-file-name { min-width: 0; overflow: hidden; color: var(--ui-muted); text-overflow: ellipsis; white-space: nowrap; }
-.video-survey-capture { width: 100%; margin-top: 7px; border-color: var(--ui-accent); color: var(--ui-accent); }
 .adaptive-selector { display: grid; gap: 7px; margin-top: 9px; padding: 8px; border: 1px solid var(--ui-line); border-radius: 7px; background: #fbfcfe; }
 .adaptive-selector header { display: grid; gap: 3px; }
 .adaptive-selector header strong { color: #27364a; font-size: 12px; }
-.adaptive-selector header small { color: var(--ui-muted); font-size: 12px; line-height: 1.4; }
+.adaptive-selector header strong { display: inline-flex; align-items: center; }
 .adaptive-selector-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
 .adaptive-settings-group { border: 1px solid var(--ui-line); border-radius: 7px; background: #fff; }
 .adaptive-settings-group > summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 9px; cursor: pointer; font-size: 12px; }
@@ -962,6 +895,7 @@ watch(() => props.taskId, () => {
 .adaptive-selector-action { width: 100%; border-color: var(--ui-accent) !important; background: var(--ui-accent) !important; color: #fff !important; }
 .adaptive-selector-action:hover:not(:disabled) { background: var(--ui-accent-hover) !important; }
 .adaptive-selector-action:disabled { opacity: .5; cursor: not-allowed; }
+.adaptive-selector-action:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: -2px; box-shadow: none; }
 .adaptive-selector-action:not(.is-primary) { border-color: #d7dfe8 !important; background: #fff !important; color: #34506c !important; }
 .adaptive-selector-action:not(.is-primary):hover:not(:disabled) { border-color: var(--ui-accent) !important; color: var(--ui-accent) !important; background: #eff6ff !important; }
 .adaptive-selector-actions-row { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -980,12 +914,7 @@ watch(() => props.taskId, () => {
 .video-survey-timeline { display: flex; align-items: center; gap: 7px; margin-top: 5px; color: var(--ui-muted); font-size: 12px; }
 .video-survey-timeline input { flex: 1; min-width: 0; accent-color: var(--ui-accent); }
 .video-survey-timeline span { flex: 0 0 auto; }
-.video-survey-position { display: grid; gap: 3px; margin-top: 8px; padding: 7px 8px; border: 1px solid var(--ui-line); border-radius: 6px; background: #f9fafb; }
-.video-survey-position strong { color: #27364a; }
-.video-survey-position span { font-variant-numeric: tabular-nums; }
-.video-survey-position small { color: var(--ui-muted); }
-.video-survey-target-entry { display: flex; gap: 6px; margin-top: 7px; }
-.video-survey-target-entry input { flex: 1; min-width: 0; height: 30px; padding: 4px 7px; border: 1px solid #d1d5db; border-radius: 6px; background: #f9fafb; font-size: var(--font-caption); }
+.video-survey-review { margin-top: 9px; }
 .video-survey-target-list { display: grid; gap: 5px; max-height: 190px; margin: 7px 0 0; padding: 0; overflow-y: auto; list-style: none; }
 .video-survey-target-list li { display: flex; min-width: 0; align-items: center; gap: 5px; padding: 5px; border: 1px solid var(--ui-line); border-radius: 6px; background: #fbfcfe; }
 .video-survey-target-list .video-survey-target-summary { display: grid; min-width: 0; flex: 1; gap: 2px; border: 0; text-align: left; white-space: normal; }
