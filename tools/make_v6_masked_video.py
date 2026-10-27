@@ -76,10 +76,11 @@ def build_boxes() -> dict:
 def pixelate(frame, cx, cy, w, h, t: str):
     ch = max(9.0, h)
     pad_x = max(14, int(w * 0.9 if any(x in t for x in ("大学", "学院", "学校", "职业技术")) else w * 0.45))
+    extra_right = int(w * 0.7) if t.endswith("_uni") else 0
     pad_y = max(5, int(h * 0.55))
     x0 = max(0, int(cx - w / 2 - pad_x))
     y0 = max(0, int(cy - h / 2 - pad_y))
-    x1 = min(W, int(cx + w / 2 + pad_x))
+    x1 = min(W, int(cx + w / 2 + pad_x + extra_right))
     y1 = min(H, int(cy + h / 2 + pad_y))
     roi = frame[y0:y1, x0:x1]
     if roi.size == 0:
@@ -112,11 +113,27 @@ def main() -> None:
         (4699, 5076, 636, 408, 692, 555),   # 信息大道 竖排
         (4699, 5076, 345, 545, 480, 595),   # 9号楼
         (4699, 5076, 455, 550, 600, 750),   # 大泽路 竖排(左缘)
+        # 手柄大地图段(暗屏/地图画面)的固定标签位
+        (4909, 5076, 575, 360, 735, 415),   # 创业大道
+        (4909, 5076, 395, 468, 510, 522),   # 天泽楼
+        (4909, 5076, 335, 543, 488, 598),   # 9号楼
+        (4909, 5076, 830, 438, 980, 552),   # 软件与大数据学院(校名)
+        (4909, 5076, 850, 273, 978, 338),   # 行政楼
+        (4909, 5076, 915, 603, 1080, 652),  # 工业中心B区
+        (4909, 5076, 1175, 213, 1280, 268), # 音乐喷泉
     ]
     for a, b, x0, y0, x1, y1 in OVERLAY_FIXED:
         for f in range(max(FIRST, a), min(LAST, b) + 1):
             per_frame_boxes.setdefault(f, []).append(
                 ((x0 + x1) / 2, (y0 + y1) / 2, x1 - x0, y1 - y0, "fixed_overlay"))
+
+    # 校名专项框(原始帧检出,已含大幅右扩)
+    uni_json = Path(r"D:\低空经济\output\v6seg_uni_boxes.json")
+    if uni_json.exists():
+        uni = json.loads(uni_json.read_text(encoding="utf-8"))
+        for f, boxes in uni.items():
+            per_frame_boxes.setdefault(int(f), []).extend(
+                (cx, cy, w, h, t + "_uni") for cx, cy, w, h, t in boxes)
 
     ff = subprocess.Popen(
         ["ffmpeg", "-v", "error", "-y",
