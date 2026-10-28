@@ -12,6 +12,8 @@
 | `model/` | 水患图像分割原型（ponding / shoreline）：训练、评估、复现代码 | [model/README.md](model/README.md) |
 | `app/` | FuXi/GFS 气象数据准备、订正与预测脚本（被 Web 后端以子进程调用） | — |
 | `help/` | 历史数据回填辅助脚本 | — |
+| `tools/` | 演示视频打码/脱敏工具（mask、redact 系列一次性脚本） | — |
+| `docs/` | 竞赛材料：2026 AIC 智慧气象竞赛规则、作品方案模板、痛点分析 | — |
 
 ## 快速开始
 
