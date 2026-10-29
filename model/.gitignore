@@ -30,3 +30,10 @@ demo/outbox/
 !artifacts/onnx/abcdwavenet_ponding.onnx.json
 !output/4090_champions/yoloj_mix4_best.pt
 !output/4090_champions/report_*.json
+!output/rain_ft/
+output/rain_ft/*
+!output/rain_ft/rain3_mix/
+output/rain_ft/rain3_mix/*
+!output/rain_ft/rain3_mix/weights/
+output/rain_ft/rain3_mix/weights/*
+!output/rain_ft/rain3_mix/weights/best.pt

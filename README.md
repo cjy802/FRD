@@ -1,6 +1,6 @@
 # 积水风险智能识别与预警系统（AIC）
 
-气象驱动的低空飞行任务工作台：道路参考航线规划 → FuXi/GFS 沿线天气初筛与出发时次比较 → DJI KMZ 导出 → 飞行后视频关键帧积水分析（结合拍摄高度换算真实面积、按面积分级警报）。
+气象驱动的低空飞行任务工作台：道路参考航线规划 → FuXi/GFS 沿线天气初筛与动态决策 → DJI KMZ 导出 → 飞行后视频关键帧积水分析（结合拍摄高度换算真实面积、按面积分级警报）。
 
 本仓库包含除大模型文件外的全部代码、文档、小体积权重与配置模板。在一台已有大模型的机器上克隆本仓库、放置模型、填好密钥后即可运行。**系统输出均为待人工核查线索，不提供放飞许可。**
 
@@ -43,7 +43,8 @@ npm run dev
 
 | 文件 | 大小 | 用途 |
 | --- | --- | --- |
-| `model/output/4090_champions/yoloj_mix4_best.pt` | 6.8 MB | YOLOv8n-seg 混训微调权重（照片分析默认模型） |
+| `model/output/rain_ft/rain3_mix/weights/best.pt` | 6.8 MB | YOLOv8n-seg 雨天场景混训微调权重（照片分析默认模型） |
+| `model/output/4090_champions/yoloj_mix4_best.pt` | 6.8 MB | YOLOv8n-seg 通用混训微调权重（备选） |
 | `model/artifacts/onnx/registry.json` | <1 KB | ONNX 分割模型清单（模型名、water_class、输入尺寸） |
 | `Web/mode/output_production/corrector_ridge.npz` | 4 KB | 天气上线订正模型（含 `training_metadata.json`） |
 
