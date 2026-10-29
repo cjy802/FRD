@@ -1,7 +1,6 @@
 import { defineConfig, loadEnv, type Plugin } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { fileURLToPath } from 'node:url'
-import { resolve } from 'node:path'
 
 const frontendRoot = fileURLToPath(new URL('.', import.meta.url))
 
@@ -35,10 +34,7 @@ export default defineConfig(({ mode }) => {
     preview: { proxy },
     build: {
       rollupOptions: {
-        input: {
-          main: resolve(frontendRoot, 'index.html'),
-          baiduPreview: resolve(frontendRoot, 'baidu-preview.html'),
-        },
+        input: fileURLToPath(new URL('./index.html', import.meta.url)),
       },
     },
   }

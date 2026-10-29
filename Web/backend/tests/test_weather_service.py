@@ -3,17 +3,13 @@ import math
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 import numpy as np
-from fastapi.testclient import TestClient
 
-from main import app
 from weather_service import (
     DEFAULT_MODEL, DEFAULT_PAIRS, FEATURE_NAMES, FIELDS, TARGET_NAMES,
     PROJECT_ROOT, PointWeatherStore, WeatherUnavailable, point_risk,
 )
-from auth_test_support import login_admin
 
 VALIDATED_MODEL = PROJECT_ROOT / "Web/mode/output_year_transfer_2026/corrector_ridge.npz"
 
@@ -112,21 +108,15 @@ class WeatherServiceTests(unittest.TestCase):
         for wind, rain in [(0, 0), (8, 1), (12, 5)]:
             self.assertFalse(point_risk(wind, rain)["ready_for_route_risk"])
 
-    def test_weather_endpoints_share_policy_and_time(self):
+    def test_status_and_forecast_share_policy_and_time(self):
         store = self.store()
-        with patch("main.weather_store", return_value=store):
-            client = TestClient(app)
-            login_admin(client)
-            status = client.get("/api/weather/status").json()
-            forecast = client.get("/api/weather/forecast").json()
-            risk = client.get("/api/weather/risk").json()
-            missing = client.get("/api/weather/forecast", params={"init_time_utc": "2026-02-01T06:00:00Z"})
+        status = store.status()
+        forecast = store.forecast()
         self.assertEqual(status["state"], "corrected_archive")
-        self.assertEqual(forecast["valid_time_utc"], risk["valid_time_utc"])
-        self.assertEqual(forecast["sources"], risk["sources"])
-        self.assertEqual(forecast["derived"], risk["derived"])
-        self.assertFalse(risk["ready_for_route_risk"])
-        self.assertEqual(missing.status_code, 422)
+        self.assertEqual(status["valid_end_utc"], forecast["valid_time_utc"])
+        self.assertFalse(forecast["point_risk"]["ready_for_route_risk"])
+        with self.assertRaises(WeatherUnavailable):
+            store.forecast("2026-02-01T06:00:00Z")
 
     @unittest.skipUnless(
         DEFAULT_PAIRS.is_file() and VALIDATED_MODEL.is_file()

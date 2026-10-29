@@ -82,14 +82,14 @@ class TestApiGuard(AuthTestBase):
         response = self.client.patch("/api/tasks/20260101000000-00000000", json={})
         self.assertIn(response.status_code, (403, 404))
 
-    def test_field_role_cannot_call_admin_weather(self):
+    def test_field_role_cannot_call_admin_api(self):
         self.client.post("/api/auth/login", json={"username": "field", "password": "field-pass-2"})
-        response = self.client.get("/api/weather/status")
+        response = self.client.get("/api/route-templates")
         self.assertEqual(response.status_code, 403)
 
     def test_admin_role_passes_guard(self):
         self.client.post("/api/auth/login", json={"username": "boss", "password": "admin-pass-1"})
-        response = self.client.get("/api/weather/status")
+        response = self.client.get("/api/route-templates")
         self.assertIn(response.status_code, (200, 503))
 
 

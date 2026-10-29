@@ -24,12 +24,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 import auth
-from online_router import OnlineServiceUnavailable, plan_online_route, plan_online_alternatives
+from online_router import OnlineServiceUnavailable, plan_online_route
 from road_planner import CampusRoadNetwork, LOCAL_INDEX_FILE, LocalRoadStore, ROAD_KINDS, RouteUnavailable
-from weather_service import weather_store
 from live_weather import forecast_jobs
-from route_candidates import local_road_candidates
-from weather_routes import compare_road_weather
 from dji_kmz import KmzExportError, build_dji_kmz
 from dji_rc2 import Rc2Error, rc2_imports
 from place_search import PlaceSearchError, reverse_geocode, search_nearby_places, search_places
@@ -232,12 +229,6 @@ class RouteWeatherRequest(BaseModel):
     departure_time_utc: str
     speed_kmh: float = Field(default=10, gt=0, le=200, allow_inf_nan=False)
     altitude_m: float = Field(default=100, ge=0, le=1000, allow_inf_nan=False)
-    profile: WeatherLimits | None = None
-
-
-class WeatherRouteComparisonRequest(RouteRequest):
-    weather_job_id: str
-    departure_time_utc: str
     profile: WeatherLimits | None = None
 
 
@@ -590,50 +581,6 @@ def lookup_location_address(
         raise HTTPException(status_code=error.status_code, detail=str(error)) from None
 
 
-@app.get("/api/weather/status")
-def weather_status():
-    try:
-        return weather_store().status()
-    except (OSError, ValueError) as error:
-        message = str(error)
-    configured = os.getenv("WEATHER_GRID_PATH", "").strip()
-    path = Path(configured) if configured else None
-    exists = bool(path and path.is_file())
-    return {
-        "state": "file_detected" if exists else "awaiting_data",
-        "source": path.name if exists and path else None,
-        "ready_for_route_risk": False,
-        "message": (
-            f"{message} 已检测到网格文件，仍需解析时间、高度和空间覆盖。"
-            if exists
-            else message
-        ),
-        "options": [],
-    }
-
-
-@app.get("/api/weather/forecast")
-def weather_forecast(init_time_utc: str | None = None, lead_hours: int | None = None):
-    try:
-        return weather_store().forecast(init_time_utc, lead_hours)
-    except (OSError, ValueError) as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
-
-
-@app.get("/api/weather/risk")
-def weather_risk(init_time_utc: str | None = None, lead_hours: int | None = None):
-    forecast = weather_forecast(init_time_utc, lead_hours)
-    return {
-        "init_time_utc": forecast["init_time_utc"],
-        "valid_time_utc": forecast["valid_time_utc"],
-        "lead_hours": forecast["lead_hours"],
-        "point": forecast["point"],
-        "sources": forecast["sources"],
-        "derived": forecast["derived"],
-        **forecast["point_risk"],
-    }
-
-
 @app.post("/api/weather/predict")
 def start_weather_prediction(refresh: bool = Query(default=False)):
     return forecast_jobs.start(force_refresh=refresh)
@@ -687,36 +634,6 @@ def check_landing_point(request: LandingCheckRequest):
     except RouteUnavailable as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     return {**result, "landing_verified": False, "data_source": planner.data_source}
-
-
-@app.post('/api/weather/predictions/{job_id}/windows')
-def compare_weather_windows(job_id: str, request: RouteWeatherRequest):
-    try:
-        return forecast_jobs.windows(job_id, **request.model_dump())
-    except KeyError as error:
-        raise HTTPException(status_code=404, detail='天气预测任务不存在，请重新预测。') from error
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
-
-
-@app.post("/api/routes/preview")
-def preview_route(route: RouteRequest):
-    km = distance_km(route.start, route.end)
-    # This is a geometric preview, not a navigation or weather optimization result.
-    return {
-        "geometry": {
-            "type": "LineString",
-            "coordinates": [
-                [route.start.longitude, route.start.latitude],
-                [route.end.longitude, route.end.latitude],
-            ],
-        },
-        "distance_km": round(km, 2),
-        "estimated_minutes": round(km / route.speed_kmh * 60, 1),
-        "altitude_m": route.altitude_m,
-        "risk": {"level": "unassessed", "score": None, "reason": "尚未检查沿线建筑、禁飞区和天气"},
-        "optimization": {"state": "unavailable", "reason": "缺少建筑轮廓、高度、天气场和禁飞区约束"},
-    }
 
 
 @app.post("/api/routes/plan")
@@ -1166,34 +1083,6 @@ def route_response(route, result):
             ),
         },
     }
-
-
-@lru_cache(maxsize=32)
-def road_candidates_cached(source, start_lat, start_lon, end_lat, end_lon, clearance, data_epoch, bucket):
-    del data_epoch, bucket
-    if source == 'online': return plan_online_alternatives(start_lat, start_lon, end_lat, end_lon, clearance)
-    planner = local_road_store() if LOCAL_INDEX_FILE.is_file() else road_network()
-    return local_road_candidates(planner, start_lat, start_lon, end_lat, end_lon, clearance)
-
-
-@app.post('/api/routes/compare-weather')
-def compare_weather_routes(request: WeatherRouteComparisonRequest):
-    try:
-        grid, _, generated = forecast_jobs.regional_job(request.weather_job_id)
-        epoch = LOCAL_INDEX_FILE.stat().st_mtime_ns if LOCAL_INDEX_FILE.is_file() else 0
-        candidates = road_candidates_cached(request.road_source, request.start.latitude, request.start.longitude,
-                                            request.end.latitude, request.end.longitude, request.clearance_m, epoch, int(time.time() // 600))
-        result = compare_road_weather(candidates, grid, lambda coordinates: forecast_jobs.route(
-            request.weather_job_id, coordinates, request.departure_time_utc, request.speed_kmh, request.altitude_m,
-            request.profile.model_dump() if request.profile else None))
-        for candidate in result['candidates']: candidate['route'] = route_response(request, candidate['route'])
-        return {**result, 'job_id': request.weather_job_id, 'generated_at_utc': generated}
-    except KeyError as error:
-        raise HTTPException(status_code=404, detail='天气任务不存在，请重新预测。') from error
-    except OnlineServiceUnavailable as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 # ---- 同源前端托管（生产形态）----

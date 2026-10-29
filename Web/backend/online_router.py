@@ -112,18 +112,3 @@ def normalize_route(route, waypoints, start_lat, start_lon, end_lat, end_lon):
         "building_clearance_m": None,
         "data_source": "OSRM 在线路线（机动车道路，基于 OpenStreetMap）",
     }
-
-
-def plan_online_alternatives(start_lat, start_lon, end_lat, end_lon, clearance_m=2.):
-    del clearance_m
-    if straight_distance_m(start_lat, start_lon, end_lat, end_lon) > 10000:
-        raise RouteUnavailable('当前原型只支持两点相距 10 公里以内的道路规划。')
-    base_url = os.getenv('ONLINE_ROUTER_URL', 'https://router.project-osrm.org').rstrip('/')
-    coordinates = f'{start_lon:.7f},{start_lat:.7f};{end_lon:.7f},{end_lat:.7f}'
-    payload = _fetch_route(f'{base_url}/route/v1/driving/{coordinates}', int(time.time() // 600), True)
-    if payload.get('code') != 'Ok' or not payload.get('routes'):
-        raise RouteUnavailable('在线道路网络未找到可用路线。')
-    try:
-        return [normalize_route(route, payload['waypoints'], start_lat, start_lon, end_lat, end_lon) for route in payload['routes'][:3]]
-    except KeyError as error:
-        raise OnlineServiceUnavailable('在线道路服务缺少端点或道路几何。') from error
