@@ -8,6 +8,7 @@ import PhotoAnalysisPanel from './PhotoAnalysisPanel.vue'
 import VideoSurveyPanel from './VideoSurveyPanel.vue'
 import CustomSelect from './CustomSelect.vue'
 import InfoHint from './InfoHint.vue'
+import TaskMapPreview from './TaskMapPreview.vue'
 import { fetchSession, logout, type Session } from './auth'
 import type { VideoCaptureTarget, VideoTelemetryPoint } from './videoSurvey'
 import { osmBasemapUsesAnnotationFreeTiles, type CameraPose } from './baiduScene'
@@ -3184,11 +3185,16 @@ onBeforeUnmount(() => {
               <li v-for="task in savedTasks" :key="task.task_id">
                 <div class="saved-task-row" :class="{ 'is-current': activeTask?.task_id === task.task_id }">
                   <div class="saved-task-entry" :class="{ 'is-locked': taskBusy || !!deletingTaskId }" role="button" tabindex="0" :aria-disabled="taskBusy || !!deletingTaskId ? 'true' : undefined" @click="openSavedTask(task.task_id)" @keydown.enter.self.prevent="openSavedTask(task.task_id)" @keydown.space.self.prevent="openSavedTask(task.task_id)">
+                    <div class="saved-task-body">
+                      <TaskMapPreview v-if="(task.route_preview?.length ?? 0) >= 2" :coordinates="task.route_preview" />
+                      <div class="saved-task-copy">
                     <span class="saved-task-entry-title"><strong>{{ task.name || task.route_summary }}</strong><b>{{ activeTask?.task_id === task.task_id ? '当前' : taskStatusText(task.status) }}</b><b v-if="analysisBadge?.taskId === task.task_id" class="is-analysis">识别中 · {{ analysisBadge.text }}</b><b v-else-if="pipelineQueuedTaskIds.includes(task.task_id)" class="is-analysis">识别续跑排队中</b></span>
                     <small>{{ task.route_summary }}</small>
                     <small>{{ taskDateText(task.created_at) }} · {{ task.distance_km === null ? '距离待算' : `${task.distance_km.toFixed(2)} km` }}</small>
                     <small v-if="task.max_wind_m_s !== null || task.max_rain_6h_mm !== null">天气：{{ task.max_wind_m_s === null ? '风缺测' : `最大风 ${task.max_wind_m_s.toFixed(1)} m/s` }} · {{ task.max_rain_6h_mm === null ? '雨缺测' : `六小时雨 ${task.max_rain_6h_mm.toFixed(1)} mm` }}</small>
                     <small>机型 {{ task.drone_model ?? '未选' }} · 关键帧 {{ task.frame_count }} 张{{ task.video_survey_id ? ' · 已导入视频/SRT' : '' }}</small>
+                      </div>
+                    </div>
                     <div class="saved-task-actions">
                       <button type="button" class="saved-task-reuse" :disabled="taskBusy || !!deletingTaskId || !!reusingTaskId" :aria-label="`复用地图：${task.name || task.route_summary}`" title="把该任务的路线加载到当前地图；已关联的视频、关键帧与分析结果保持不变" @click.stop="reuseSavedTaskMap(task.task_id)">{{ reusingTaskId === task.task_id ? '复用中…' : '复用地图' }}</button>
                       <button type="button" class="saved-task-delete" :disabled="taskBusy || !!deletingTaskId" :aria-label="`删除任务：${task.name || task.route_summary}`" @click.stop="requestDeleteMissionTask(task.task_id)">{{ deletingTaskId === task.task_id ? '删除中…' : pendingDeleteTaskId === task.task_id ? '取消' : '删除' }}</button>

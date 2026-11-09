@@ -25,6 +25,8 @@ export type MissionTaskSummary = {
   updated_at: string
   status: MissionTask['status']
   route_summary: string
+  /** 抽稀后的 WGS84 路线 [经度, 纬度]，任务列表缩略图用；无路线为空数组。 */
+  route_preview: Array<[number, number]>
   distance_km: number | null
   departure_time: string | null
   weather_level: string | null

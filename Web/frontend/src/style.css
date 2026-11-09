@@ -127,6 +127,8 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .saved-task-row { display: grid; gap: 6px; padding: 9px 10px; border: 1px solid var(--ui-line); border-radius: 7px; background: #fff; }
 .saved-task-row:hover, .saved-task-row.is-current { border-color: #9cc3e4; background: #f4f9fd; }
 .saved-task-entry { display: grid; min-width: 0; gap: 4px; color: #344455; text-align: left; cursor: pointer; }
+.saved-task-body { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.saved-task-copy { display: grid; flex: 1; min-width: 0; gap: 4px; }
 .saved-task-entry:focus-visible { outline: 2px solid #9cc3e4; outline-offset: 2px; }
 .saved-task-entry.is-locked { opacity: .6; cursor: progress; }
 .saved-task-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 2px; }

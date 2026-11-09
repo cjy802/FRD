@@ -19,6 +19,27 @@ MAX_FRAME_BYTES = 40 * 1024 * 1024
 MAX_FRAMES_PER_TASK = 300
 
 
+def _route_preview_polyline(coordinates: Any, limit: int = 64) -> list[list[float]]:
+    """任务列表缩略图用的抽稀路线（WGS84 [经度, 纬度]）。
+
+    保首尾、按索引等距取样；原始折线动辄数千点，全量进列表响应没有意义。
+    """
+    valid: list[list[float]] = []
+    for point in coordinates if isinstance(coordinates, list) else []:
+        if (isinstance(point, (list, tuple)) and len(point) >= 2
+                and isinstance(point[0], (int, float)) and isinstance(point[1], (int, float))):
+            valid.append([float(point[0]), float(point[1])])
+    if len(valid) < 2:
+        return []
+    if len(valid) <= limit:
+        return valid
+    picked = [valid[0]]
+    step = (len(valid) - 1) / (limit - 1)
+    picked.extend(valid[round(index * step)] for index in range(1, limit - 1))
+    picked.append(valid[-1])
+    return picked
+
+
 class TaskError(Exception):
     def __init__(self, message: str, http_status: int = 400) -> None:
         super().__init__(message)
@@ -101,6 +122,7 @@ class TaskStore:
                     "updated_at": record.get("updated_at"),
                     "status": record.get("status", "planning"),
                     "route_summary": route_summary,
+                    "route_preview": _route_preview_polyline((route.get("geometry") or {}).get("coordinates")),
                     "distance_km": route.get("distance_km"),
                     "departure_time": record.get("departure_time"),
                     "weather_level": risk.get("level"),
