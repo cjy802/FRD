@@ -938,6 +938,28 @@ function applyMissionTask(task: MissionTask) {
   videoTelemetryTrack.value = []
   videoTelemetryPosition.value = null
   videoCaptureTargets.value = []
+  applyTaskRouteToPlanner(task)
+  taskFrames.value = []
+  analysisMapTargets.value = (task.analysis_targets ?? []) as unknown as VideoCaptureTarget[]
+  pendingReviewTargets.value = []
+  activeAnalysisJobId.value = task.analysis_job_ids?.length ? task.analysis_job_ids[task.analysis_job_ids.length - 1] : ''
+  analysisQueueOpen.value = false
+  // 切回任务自动续跑：流水线若在页面关闭/刷新期间断链（初筛 done 但 GLM 未提交）
+  // 则补交终审；仍在跑则由全局单例接管轮询；单槽被其他任务占用时自动排队。
+  if (task.task_id && (task.analysis_job_ids?.length ?? 0) > 0) {
+    void resumeTaskPipeline(task.task_id, task.analysis_job_ids ?? [])
+  }
+  if (task.aircraft?.drone_model === 'fly' || task.aircraft?.drone_model === 'm30' || task.aircraft?.drone_model === 'm3e') {
+    djiModel.value = task.aircraft.drone_model
+  }
+  departureAutoManaged.value = task.status !== 'in_flight' && task.status !== 'completed'
+  departureBeijing.value = departureAutoManaged.value ? currentDepartureBeijing() : task.departure_time
+  routeAssessment.value = task.weather as unknown as RouteAssessment | null
+}
+
+// 只把任务的规划/路线状态铺回当前工作台（区域或主点、路网源、高度/速度）。
+// 地图复用按钮单独调用它：不切换任务，关联视频、关键帧、分析结果都留在当前任务上。
+function applyTaskRouteToPlanner(task: MissionTask) {
   mapEditMode.value = 'route'
   selectedWaypointIndex.value = null
   preview.value = null
@@ -975,16 +997,6 @@ function applyMissionTask(task: MissionTask) {
     coverageEndSnapPoint.value = null
     coverageEndpointTarget.value = null
   }
-  taskFrames.value = []
-  analysisMapTargets.value = (task.analysis_targets ?? []) as unknown as VideoCaptureTarget[]
-  pendingReviewTargets.value = []
-  activeAnalysisJobId.value = task.analysis_job_ids?.length ? task.analysis_job_ids[task.analysis_job_ids.length - 1] : ''
-  analysisQueueOpen.value = false
-  // 切回任务自动续跑：流水线若在页面关闭/刷新期间断链（初筛 done 但 GLM 未提交）
-  // 则补交终审；仍在跑则由全局单例接管轮询；单槽被其他任务占用时自动排队。
-  if (task.task_id && (task.analysis_job_ids?.length ?? 0) > 0) {
-    void resumeTaskPipeline(task.task_id, task.analysis_job_ids ?? [])
-  }
   const route = task.route
   const savedAnchors = planningMode.value === 'area' && Array.isArray(savedCoverage?.point_anchors)
     ? savedCoverage.point_anchors : route.anchors
@@ -1005,12 +1017,6 @@ function applyMissionTask(task: MissionTask) {
   if (typeof route.altitude_m === 'number') form.altitude_m = route.altitude_m
   if (typeof route.speed_kmh === 'number') form.speed_kmh = route.speed_kmh
   if (typeof route.clearance_m === 'number') form.clearance_m = route.clearance_m
-  if (task.aircraft?.drone_model === 'fly' || task.aircraft?.drone_model === 'm30' || task.aircraft?.drone_model === 'm3e') {
-    djiModel.value = task.aircraft.drone_model
-  }
-  departureAutoManaged.value = task.status !== 'in_flight' && task.status !== 'completed'
-  departureBeijing.value = departureAutoManaged.value ? currentDepartureBeijing() : task.departure_time
-  routeAssessment.value = task.weather as unknown as RouteAssessment | null
 }
 
 async function refreshMissionTaskList() {
@@ -1046,6 +1052,38 @@ function requestDeleteMissionTask(taskId: string) {
 function openSavedTask(taskId: string) {
   if (taskBusy.value || deletingTaskId.value) return
   void selectSavedTask(taskId)
+}
+
+const reusingTaskId = ref('')
+
+function reuseSavedTaskMap(taskId: string) {
+  if (taskBusy.value || deletingTaskId.value || reusingTaskId.value) return
+  void applySavedTaskMap(taskId)
+}
+
+async function applySavedTaskMap(taskId: string) {
+  reusingTaskId.value = taskId
+  taskListError.value = ''
+  cancelCalculation()
+  stopFlight()
+  try {
+    const task = await fetchMissionTask(taskId)
+    applyTaskRouteToPlanner(task)
+    selectModule('route')
+    await nextTick()
+    await calculate(false)
+    // 逐点高度/视角随地图一并带回；点数对不上（路网变化）时静默跳过。
+    const savedSettings = Array.isArray(task.aircraft?.waypoint_settings) ? task.aircraft.waypoint_settings : null
+    if (savedSettings && savedSettings.length && savedSettings.length === waypointSettings.value.length) {
+      waypointSettings.value = waypointSettings.value.map((setting, index) => ({ ...setting, ...savedSettings[index] }))
+      scheduleWaypointRender()
+    }
+    closeTaskList()
+  } catch (cause) {
+    taskListError.value = cause instanceof Error ? cause.message : '复用任务地图失败。'
+  } finally {
+    reusingTaskId.value = ''
+  }
 }
 
 function requestDeleteAllMissionTasks() {
@@ -3151,7 +3189,10 @@ onBeforeUnmount(() => {
                     <small>{{ taskDateText(task.created_at) }} · {{ task.distance_km === null ? '距离待算' : `${task.distance_km.toFixed(2)} km` }}</small>
                     <small v-if="task.max_wind_m_s !== null || task.max_rain_6h_mm !== null">天气：{{ task.max_wind_m_s === null ? '风缺测' : `最大风 ${task.max_wind_m_s.toFixed(1)} m/s` }} · {{ task.max_rain_6h_mm === null ? '雨缺测' : `六小时雨 ${task.max_rain_6h_mm.toFixed(1)} mm` }}</small>
                     <small>机型 {{ task.drone_model ?? '未选' }} · 关键帧 {{ task.frame_count }} 张{{ task.video_survey_id ? ' · 已导入视频/SRT' : '' }}</small>
-                    <button type="button" class="saved-task-delete" :disabled="taskBusy || !!deletingTaskId" :aria-label="`删除任务：${task.name || task.route_summary}`" @click.stop="requestDeleteMissionTask(task.task_id)">{{ deletingTaskId === task.task_id ? '删除中…' : pendingDeleteTaskId === task.task_id ? '取消' : '删除' }}</button>
+                    <div class="saved-task-actions">
+                      <button type="button" class="saved-task-reuse" :disabled="taskBusy || !!deletingTaskId || !!reusingTaskId" :aria-label="`复用地图：${task.name || task.route_summary}`" title="把该任务的路线加载到当前地图；已关联的视频、关键帧与分析结果保持不变" @click.stop="reuseSavedTaskMap(task.task_id)">{{ reusingTaskId === task.task_id ? '复用中…' : '复用地图' }}</button>
+                      <button type="button" class="saved-task-delete" :disabled="taskBusy || !!deletingTaskId" :aria-label="`删除任务：${task.name || task.route_summary}`" @click.stop="requestDeleteMissionTask(task.task_id)">{{ deletingTaskId === task.task_id ? '删除中…' : pendingDeleteTaskId === task.task_id ? '取消' : '删除' }}</button>
+                    </div>
                   </div>
                   <div v-if="pendingDeleteTaskId === task.task_id" class="saved-task-confirm" role="group" :aria-label="`确认删除任务：${task.name || task.route_summary}`">
                     <span>将永久删除该任务及其视频、关键帧、分析结果和导出文件。</span>
