@@ -32,22 +32,29 @@ const settingsPage = ref<'points' | 'mission' | 'photos'>('points')
 type ModuleKey = 'route' | 'photos' | 'status' | 'dji'
 const activeModule = ref<ModuleKey>('route')
 
+const MODULE_ROUTE_NOT_READY_ERROR = '请先选定航点并生成当前路线，再继续后续步骤。'
+const MODULE_TASK_REQUIRED_ERROR = '请先在“命名 / 导出”阶段创建任务，再导入视频和分析照片。'
+
 function selectModule(module: ModuleKey) {
   if (module !== 'status') showRouteWeatherPoints.value = false
   const currentRouteReady = Boolean(preview.value && previewKey.value === routeKey.value)
   if ((module === 'status' || module === 'dji') && !currentRouteReady) {
-    taskError.value = '请先选定航点并生成当前路线，再继续后续步骤。'
+    taskError.value = MODULE_ROUTE_NOT_READY_ERROR
     activeModule.value = 'route'
     workspacePanel.value = 'settings'
     settingsPage.value = 'points'
     return
   }
   if (module === 'photos' && !taskRouteMatches.value) {
-    taskError.value = '请先在“命名 / 导出”阶段创建任务，再导入视频和分析照片。'
+    taskError.value = MODULE_TASK_REQUIRED_ERROR
     activeModule.value = currentRouteReady ? 'dji' : 'route'
     workspacePanel.value = currentRouteReady ? 'overview' : 'settings'
     settingsPage.value = 'points'
     return
+  }
+  // 守卫通过、真正切换模块后，导航类过期报错不再残留（任务创建等真实错误不受影响）。
+  if (taskError.value === MODULE_ROUTE_NOT_READY_ERROR || taskError.value === MODULE_TASK_REQUIRED_ERROR) {
+    taskError.value = ''
   }
   activeModule.value = module
   if (module === 'photos') {
@@ -86,6 +93,9 @@ const coveragePolygon = ref<number[][]>([])
 const defaultCoverageRoadClasses = ['motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'service']
 const coverageRoadClasses = ref<string[]>([...defaultCoverageRoadClasses])
 const coverageDrawEnabled = ref(false)
+// 快速编辑：暂停"范围/端点一变就自动重算路线"，连续拖动边界不再刷屏；
+// 再次点击按钮恢复并立即按当前 A/B 与范围计算一次。
+const coverageQuickEdit = ref(false)
 const coverageStartPoint = ref<Point | null>(null)
 const coverageEndPoint = ref<Point | null>(null)
 const coverageStartSnapPoint = ref<Point | null>(null)
@@ -155,6 +165,7 @@ function choosePlanningMode(mode: PlanningMode) {
     coverageStartSnapPoint.value = null
     coverageEndSnapPoint.value = null
     coverageEndpointTarget.value = null
+    coverageQuickEdit.value = false
   }
   planningMode.value = mode
 }
@@ -194,9 +205,21 @@ function clearCoveragePolygon() {
   coverageEndSnapPoint.value = null
   coverageEndpointTarget.value = 'start'
   coverageDrawEnabled.value = false
+  coverageQuickEdit.value = false
   preview.value = null
   previewKey.value = ''
   routeAssessment.value = null
+}
+function toggleCoverageQuickEdit() {
+  if (!coverageQuickEdit.value) {
+    coverageQuickEdit.value = true
+    // 冻结自动重算，同时取消仍在途/排队的计算，避免落后来的一发请求盖掉编辑结果。
+    if (routeRefreshTimer) { clearTimeout(routeRefreshTimer); routeRefreshTimer = null }
+    cancelCalculation()
+    return
+  }
+  coverageQuickEdit.value = false
+  if (routeDefinitionReady.value && !loading.value && !isBootstrappingRoute) void calculate(false)
 }
 function validMajorPoint(anchor: MajorPoint | undefined): anchor is MajorPoint & Point {
   return !!anchor && typeof anchor.latitude === 'number' && Number.isFinite(anchor.latitude)
@@ -1483,6 +1506,9 @@ const alignmentProgress = computed(() => routeAssessment.value?.coverage.flight_
   : routeAssessment.value?.coverage.surface_space_time ? '地面时空已匹配，高度资料不足' : '等待路线与天气资料匹配')
 
 watch(routeKey, () => {
+  // 快速编辑期间冻结联动：不清预览/吸附，也不排队重算，保持编辑现场稳定；
+  // 退出快速编辑时由 toggle 统一触发一次计算。
+  if (planningMode.value === 'area' && coverageQuickEdit.value) return
   clearBatchRange()
   if (planningMode.value === 'area') {
     coverageStartSnapPoint.value = null
@@ -3314,6 +3340,7 @@ onBeforeUnmount(() => {
             <div class="coverage-area-actions">
               <button type="button" class="major-point-add" :class="{ 'is-drawing': coverageDrawEnabled }" :disabled="loading" @click="startCoverageDraw">{{ coverageDrawEnabled ? '请在地图上拖动框选区域…' : coveragePolygon.length ? '重新框选道路巡查范围' : '在地图上框选道路巡查范围' }}</button>
               <button v-if="coveragePolygon.length" type="button" class="coverage-area-clear" :disabled="loading" @click="clearCoveragePolygon">清除范围</button>
+              <button v-if="coveragePolygon.length" type="button" class="coverage-quick-toggle" :class="{ active: coverageQuickEdit }" :disabled="loading" :aria-pressed="coverageQuickEdit" :title="coverageQuickEdit ? '结束快速编辑并按当前 A/B 与范围立即计算路线' : '暂停自动计算路线，连续拖动边界/端点不触发重算'" @click="toggleCoverageQuickEdit">{{ coverageQuickEdit ? '计算路径' : '快速编辑' }}</button>
             </div>
             <p v-if="coveragePolygon.length" class="coverage-area-note">已选 {{ coveragePolygon.length }} 个边界点。可拖动边界点调整范围，双击顶点删除，点击边线中点可增加顶点。</p>
           </div>
@@ -3352,7 +3379,7 @@ onBeforeUnmount(() => {
           <button v-if="flightActive" class="flight-exit" type="button" @click="stopFlight">退出模拟飞行</button>
            <span v-if="!flightTimeline" class="map-caption">{{ coverageDrawEnabled ? '拖动地图框选道路巡查区域' : planningMode === 'area' && coverageEndpointTarget ? `点击地图设置区域${coverageEndpointTarget === 'start' ? '起点 A' : '终点 B'}` : planningMode === 'area' ? '拖动边界点调整范围，双击删除，点击边线中点加点' : checkingPoint ? '正在检查点位…' : mapEditMode === 'node' ? '点击节点选中，拖动橙色镜头调整朝向' : `地图点击可设置 ${selectedAnchorChoice?.title} ${selectedAnchorChoice?.label}` }}</span>
         </div>
-        <div class="map-view-switch map-source-switch view-mode-switch" aria-label="地图视图"><button type="button" :class="{ active: mapViewMode === '2d' }" :aria-pressed="mapViewMode === '2d'" @click="chooseMapViewMode('2d')">2D 平面</button><button type="button" :class="{ active: mapViewMode === '3d' }" :aria-pressed="mapViewMode === '3d'" @click="chooseMapViewMode('3d')">3D 视角</button></div>
+        <div class="map-view-switch map-source-switch view-mode-switch" aria-label="地图视图"><button type="button" :class="{ active: mapViewMode === '2d' }" :aria-pressed="mapViewMode === '2d'" @click="chooseMapViewMode('2d')">2D 平面</button><button type="button" :class="{ active: mapViewMode === '3d' }" :aria-pressed="mapViewMode === '3d'" @click="chooseMapViewMode('3d')">3D 视角</button><span v-if="planningMode === 'area' && coverageQuickEdit" class="map-quick-edit-badge" aria-live="polite"><span class="svg-icon icon-rocket-launch" aria-hidden="true"></span>快速编辑</span></div>
         <div v-if="error" class="map-alert" role="alert">{{ error }}</div>
         <div v-if="activeModule !== 'photos'" class="map-bottom">
           <div ref="mapAnchorPicker" class="map-anchor-picker" :class="{ 'is-open': mapAnchorMenuOpen }">
@@ -3492,10 +3519,13 @@ onBeforeUnmount(() => {
  .coverage-endpoints strong, .coverage-endpoints small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
  .coverage-endpoints strong { font-size: 12px; }
  .coverage-endpoints small { color: var(--ui-muted); font-size: 12px; }
- .coverage-area-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px; }
+ .coverage-area-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 7px; }
  .coverage-area-actions .major-point-add { margin-top: 0; }
  .coverage-area-actions .major-point-add.is-drawing { border-color: #0f6cbd; background: #e9f4fd; }
  .coverage-area-clear { min-height: 36px; padding: 6px 9px; border: 1px solid #d7dfe8; border-radius: 6px; background: #fff; color: #526273; font-size: 12px; cursor: pointer; }
+ .coverage-quick-toggle { min-height: 36px; padding: 6px 11px; border: 1px solid #d7dfe8; border-radius: 6px; background: #fff; color: #526273; font-size: 12px; cursor: pointer; }
+ .coverage-quick-toggle.active { border-color: #0f6cbd; background: #0f6cbd; color: #fff; font-weight: 600; }
+ .map-quick-edit-badge { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; padding: 0 10px; min-height: 30px; border-radius: 6px; background: #0f6cbd; color: #fff; font-size: 12px; font-weight: 600; }
  .coverage-area-note { margin: 8px 0; color: var(--ui-muted); font-size: 12px; line-height: 1.5; }
  .coverage-map-hint { padding: 8px 10px; border: 1px solid #b7d4eb; border-radius: 7px; background: #fff; color: #1769aa; font-size: 12px; }
  .coverage-route-detail { display: grid; gap: 4px; margin: 6px 0; padding: 9px 10px; border: 1px solid #cfe0ee; border-radius: 7px; background: #f7fbff; color: #344455; font-size: 12px; }

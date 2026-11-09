@@ -67,6 +67,7 @@ button:focus-visible, input:focus-visible, fluent-button:focus-visible { outline
 .icon-alert { -webkit-mask-image: url('/svg/alert-circle.svg'); mask-image: url('/svg/alert-circle.svg'); }
 .icon-square-check { -webkit-mask-image: url('/svg/square-rounded-check.svg'); mask-image: url('/svg/square-rounded-check.svg'); }
 .icon-download { -webkit-mask-image: url('/svg/cloud-download.svg'); mask-image: url('/svg/cloud-download.svg'); }
+.icon-rocket-launch { -webkit-mask-image: url('/svg/rocket-launch.svg'); mask-image: url('/svg/rocket-launch.svg'); }
 .is-spinning { animation: map-loading-spin .8s linear infinite; }
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand-mark { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: #e8f3fc; color: var(--ui-accent); }
