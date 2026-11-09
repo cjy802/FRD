@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { createMapScene, osmBasemapCredit, type BaiduScene, type CameraPose, type MapProvider, type SceneView } from './baiduScene'
+import { createMapScene, osmBasemapCredit, type BaiduScene, type CameraPose, type CameraView, type MapProvider, type SceneView } from './baiduScene'
 
 const osmCredit = osmBasemapCredit()
 import type { VideoCaptureTarget, VideoTelemetryPoint } from './videoSurvey'
@@ -511,7 +511,7 @@ function finishDrag() {
 }
 function onNodeUp(event: PointerEvent) { if (event.pointerId === drag?.pointerId) finishDrag() }
 function onNodeClick(index: number) { if (!props.flightPose?.playing) emit('select-waypoint', index) }
-async function initialize() {
+async function initialize(savedCamera: CameraView | null = null) {
   status.value = props.provider === 'baidu' ? '正在加载地球模式…' : '正在加载地图模式…'; failed.value = false
   try {
     // The engine needs a center on startup, even when all user anchors are blank.
@@ -520,7 +520,10 @@ async function initialize() {
     scene = nextScene
     scene.onFrame(renderOverlay)
     applyViewMode()
-    if (props.coveragePolygon && props.coveragePolygon.length >= 3) {
+    if (savedCamera) {
+      // Basemap switch: put the pre-switch camera back instead of refitting.
+      scene.applyCameraView(savedCamera)
+    } else if (props.coveragePolygon && props.coveragePolygon.length >= 3) {
       scene.fit(props.coveragePolygon.map(([longitude, latitude]) => [longitude, latitude, 0]), props.viewMode)
     }
     scene.setActive(props.active)
@@ -542,9 +545,11 @@ watch(() => props.viewMode, () => { finishDrag(); finishCtrlRotate(); applyViewM
 watch(() => props.provider, async () => {
   finishDrag()
   finishCtrlRotate()
+  // 切底图重建引擎前记住当前视角，重建后原样恢复，缩放/位置不回跳。
+  const savedCamera = scene?.getCameraView() ?? null
   scene?.dispose(); scene = null
   await nextTick()
-  if (!unmounted) void initialize()
+  if (!unmounted) void initialize(savedCamera)
 })
 watch(() => [props.route, props.start, props.end, props.anchors, props.weatherSegments, props.showStartRange, props.showEndRange, props.rangeMeters], refreshRoute, { deep: true })
 watch(() => [props.coveragePolygon, props.coverageDrawEnabled], () => {
@@ -614,7 +619,7 @@ onBeforeUnmount(() => {
       <span v-if="overlay.drone" class="earth-flight-drone" role="img" aria-label="模拟无人机位置" :style="{ left: `${overlay.drone.x}px`, top: `${overlay.drone.y}px`, transform: `translate(-50%, -50%) rotate(${overlay.drone.angle}deg)` }"><img src="/svg/jiantou.svg" alt="" /></span>
     </div>
     <label v-if="viewMode === '3d' && !status" class="earth-tilt-control">观察角度 <input aria-label="地球 3D 观察角度" type="range" min="0" max="75" :value="tilt" @input="changeTilt" /><span>{{ tilt }}°</span></label>
-    <div v-if="status" class="earth-map-status" role="status"><span>{{ status }}</span><button v-if="failed" type="button" @click="initialize">重试</button></div>
+    <div v-if="status" class="earth-map-status" role="status"><span>{{ status }}</span><button v-if="failed" type="button" @click="initialize()">重试</button></div>
     <span class="earth-attribution">{{ provider === 'baidu' ? '© 百度地图' : osmCredit }}</span>
   </div>
 </template>

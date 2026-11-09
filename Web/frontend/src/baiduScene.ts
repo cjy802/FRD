@@ -3,6 +3,9 @@ import { BufferGeometry, DoubleSide, Float32BufferAttribute, Mesh, MeshBasicMate
 
 export type Coordinate = number[]
 export type CameraPose = { longitude: number; latitude: number; altitude: number; heading: number; pitch: number }
+// 底图切换会销毁重建引擎；重建前用 getCameraView 取走当前视角（WGS84），
+// 重建后 applyCameraView 原样放回，否则回到 createMapScene 固定的 range 900。
+export type CameraView = { center: number[]; heading: number; pitch: number; range: number }
 export type SceneView = '2d' | '3d'
 export type MapProvider = 'baidu' | 'osm' | 'tianditu-sat'
 
@@ -316,6 +319,30 @@ export class BaiduScene {
   }
 
   setTilt(degrees: number) { this.engine.map.setPitch(degrees); this.engine.requestRender() }
+
+  getCameraView(): CameraView | null {
+    const map = this.engine.map
+    const center = map.getCenter?.()
+    const heading = map.getHeading?.()
+    const pitch = map.getPitch?.()
+    const range = map.getRange?.()
+    if (!Array.isArray(center) || !Number.isFinite(center[0]) || !Number.isFinite(center[1]) || ![heading, pitch, range].every(Number.isFinite)) return null
+    const geographic = this.geoDatum === 'bd09' ? fromBaiduSceneCoordinate([center[0], center[1], 0]) : [center[0], center[1], 0]
+    return { center: geographic, heading, pitch, range }
+  }
+
+  applyCameraView(view: CameraView) {
+    const apply = () => {
+      if (this.disposed) return
+      const target = this.geoDatum === 'bd09' ? toBaiduSceneCoordinate(view.center) : [...view.center]
+      this.engine.map.lookAt(target, { heading: view.heading, pitch: view.pitch, range: view.range })
+      this.engine.requestRender()
+    }
+    apply()
+    // setProjection 异步重建会吞掉同 tick 写入的相机参数；晚一拍重放，晚于
+    // setView 的 450ms 倾角重放，保证恢复的是用户切底图前的真实视角。
+    setTimeout(apply, 475)
+  }
 
   getViewAngles(): { heading: number; pitch: number } {
     return { heading: this.engine.map.getHeading(), pitch: this.engine.map.getPitch() }
