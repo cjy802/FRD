@@ -202,6 +202,10 @@ const routeDefinitionReady = computed(() => planningMode.value === 'area'
   ? coveragePolygon.value.length >= 3 && coverageRoadClasses.value.length > 0 && coverageEndpointsReady.value
   : allAnchorsReady.value)
 const anchorChoices = computed(() => anchors.value.map((anchor, index) => ({ id: anchor.id, label: majorPointLabel(index), title: majorPointTitle(index) })))
+const coverageEndpointChoices = [
+  { id: 'coverage-start', label: 'A', title: '区域起点' },
+  { id: 'coverage-end', label: 'B', title: '区域终点' },
+]
 const mapAnchors = computed(() => planningMode.value === 'area'
   ? [
       [coverageStartSnapPoint.value ?? coverageStartPoint.value, 'coverage-start', 'A', 'start'] as const,
@@ -2445,16 +2449,25 @@ function toggleRange(point: 'start' | 'end') {
 }
 
 function chooseSearchedPoint(selection: { target: string; point: Point }) {
+  if (planningMode.value === 'area' && (selection.target === 'coverage-start' || selection.target === 'coverage-end')) {
+    chooseCoveragePoint(selection.point, selection.target === 'coverage-start' ? 'start' : 'end', true)
+    return
+  }
   placeSelectionFeedback.value = { message: '正在检查点位…', error: false }
   void chooseMapPoint(selection.point, selection.target, true)
 }
 
-function chooseCoveragePoint(point: Point, endpoint: CoverageEndpoint) {
-  if (loading.value || checkingPoint.value) return
-  if (!Number.isFinite(point.latitude) || Math.abs(point.latitude) > 90 || !Number.isFinite(point.longitude) || Math.abs(point.longitude) > 180) {
-    error.value = '区域端点经纬度无效，请重新选择。'
+function chooseCoveragePoint(point: Point, endpoint: CoverageEndpoint, fromPlaceSearch = false) {
+  if (loading.value || checkingPoint.value) {
+    if (fromPlaceSearch) placeSelectionFeedback.value = { message: '正在处理其他点位，请稍后重试。', error: true }
     return
   }
+  if (!Number.isFinite(point.latitude) || Math.abs(point.latitude) > 90 || !Number.isFinite(point.longitude) || Math.abs(point.longitude) > 180) {
+    if (fromPlaceSearch) placeSelectionFeedback.value = { message: '区域端点经纬度无效，请选择其他地点。', error: true }
+    else error.value = '区域端点经纬度无效，请重新选择。'
+    return
+  }
+  const otherMissing = endpoint === 'start' ? !coverageEndPoint.value : !coverageStartPoint.value
   const selected = { latitude: Number(point.latitude.toFixed(7)), longitude: Number(point.longitude.toFixed(7)) }
   if (endpoint === 'start') coverageStartPoint.value = selected
   else coverageEndPoint.value = selected
@@ -2464,7 +2477,11 @@ function chooseCoveragePoint(point: Point, endpoint: CoverageEndpoint) {
   error.value = ''
   routeAssessment.value = null
   settingsPage.value = 'points'
-  workspacePanel.value = 'map'
+  if (fromPlaceSearch) {
+    const setLabel = endpoint === 'start' ? '区域起点 A' : '区域终点 B'
+    const nextLabel = endpoint === 'start' ? '区域终点 B' : '区域起点 A'
+    placeSelectionFeedback.value = { message: otherMissing ? `已设置${setLabel}，继续设置${nextLabel}。` : `已设置${setLabel}。`, error: false }
+  } else workspacePanel.value = 'map'
 }
 
 async function chooseMapPoint(point: Point, target: string = selectedAnchorId.value, fromPlaceSearch = false) {
@@ -3149,7 +3166,7 @@ onBeforeUnmount(() => {
 
       <aside id="mission-sidebar" class="sidebar module-panel" :class="[{ 'panel-active': workspacePanel === 'settings', 'module-active': activeModule === 'route' || activeModule === 'photos' }, `module-mode-${activeModule}`]" aria-label="航线设置">
         <div v-if="activeModule === 'route'" class="section-heading"><span class="eyebrow"><span class="svg-icon icon-route" aria-hidden="true"></span>第 1 步 · 选定航线</span><h2>规划本次飞行</h2></div>
-        <PlaceSearch v-if="activeModule === 'route' && planningMode === 'anchors'" :disabled="loading || checkingPoint" :targets="anchorChoices" :selection-feedback="placeSelectionFeedback" @choose-point="chooseSearchedPoint" @clear-selection-feedback="placeSelectionFeedback = null" />
+        <PlaceSearch v-if="activeModule === 'route'" :disabled="loading || checkingPoint" :targets="planningMode === 'area' ? coverageEndpointChoices : anchorChoices" :allow-new="planningMode !== 'area'" :assignment-hint="planningMode === 'area' ? '选择要把此地点设为区域起点 A 还是区域终点 B。起终点会吸附到区域道路中心线，吸附距离超过 100 米或点位在区域外时路线不会生成。' : undefined" :selection-feedback="placeSelectionFeedback" @choose-point="chooseSearchedPoint" @clear-selection-feedback="placeSelectionFeedback = null" />
         <div v-if="activeModule === 'photos'" class="section-heading"><span class="eyebrow"><span class="svg-icon icon-layers" aria-hidden="true"></span>第 4 步 · 任务视频 / 分析</span><h2>分析任务视频关键帧</h2></div>
 
         <form class="route-form" @submit.prevent @invalid.capture="revealInvalidSetting">

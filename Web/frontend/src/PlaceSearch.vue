@@ -4,7 +4,7 @@ import { fetchLocationAddress, fetchNearbyPlaces, fetchPlaces, placeToPoint, typ
 
 type SearchCenter = { latitude: number; longitude: number }
 type PointChoice = { id: string; label: string; title: string }
-const props = defineProps<{ disabled?: boolean; selectionFeedback?: { message: string; error: boolean } | null; targets: PointChoice[] }>()
+const props = withDefaults(defineProps<{ disabled?: boolean; selectionFeedback?: { message: string; error: boolean } | null; targets: PointChoice[]; allowNew?: boolean; assignmentHint?: string }>(), { disabled: false, selectionFeedback: null, allowNew: true, assignmentHint: '选择要替换的主点，或将此地点添加为新的终点。起点和终点会检查候选起降位置。' })
 const emit = defineEmits<{
   (event: 'choose-point', selection: { target: string; point: SearchCenter }): void
   (event: 'clear-selection-feedback'): void
@@ -240,7 +240,7 @@ function coordinates(place: PlaceResult) {
             <span class="place-coordinates">{{ coordinates(place) }}</span>
             <span v-if="place.precision?.precise === 0" class="place-match-note">模糊匹配，请在地图上核对位置。</span>
           </div>
-          <button type="button" class="place-result-apply" :disabled="disabled" :aria-label="`选择 ${place.name} 作为主点`" :title="`选择 ${place.name} 作为主点`" @click="openAssignmentDialog(place, $event)"><span class="svg-icon place-result-action-icon" aria-hidden="true"></span></button>
+          <button type="button" class="place-result-apply" :disabled="disabled" :aria-label="`选择 ${place.name} 作为${allowNew ? '主点' : '区域端点'}`" :title="`选择 ${place.name} 作为${allowNew ? '主点' : '区域端点'}`" @click="openAssignmentDialog(place, $event)"><span class="svg-icon place-result-action-icon" aria-hidden="true"></span></button>
         </li>
       </ul>
       <small class="place-attribution">地点数据 © 百度地图</small>
@@ -251,11 +251,11 @@ function coordinates(place: PlaceResult) {
       <div v-if="selectedPlace" class="place-assignment-content">
         <div class="place-assignment-top"><span>应用搜索地点</span><button type="button" class="place-assignment-close" aria-label="关闭点位选择" @click="closeAssignmentDialog">×</button></div>
         <h2 id="place-assignment-title">将此地点设为哪个点位？</h2>
-        <p id="place-assignment-description">选择要替换的主点，或将此地点添加为新的终点。起点和终点会检查候选起降位置。</p>
+        <p id="place-assignment-description">{{ assignmentHint }}</p>
         <div class="place-assignment-place"><strong>{{ selectedPlace.name }}</strong><span v-if="selectedPlace.address">{{ selectedPlace.address }}</span><small>{{ coordinates(selectedPlace) }}</small></div>
         <p v-if="selectedPlace.precision?.precise === 0" class="place-assignment-warning">该地点为模糊匹配，请在地图上核对位置。</p>
         <div class="place-assignment-actions"><button v-for="(target, index) in targets" :key="target.id" type="button" :autofocus="index === 0" :disabled="disabled" @click="applySelectedPlace(target.id)"><b>{{ target.label }}</b><span>设为{{ target.title }} {{ target.label }}</span></button></div>
-        <button type="button" class="place-assignment-new" :disabled="disabled" @click="applySelectedPlace('new')">＋ 添加为新主点</button>
+        <button v-if="allowNew" type="button" class="place-assignment-new" :disabled="disabled" @click="applySelectedPlace('new')">＋ 添加为新主点</button>
         <button type="button" class="place-assignment-cancel" @click="closeAssignmentDialog">取消</button>
       </div>
     </dialog>
