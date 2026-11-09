@@ -159,8 +159,21 @@ function updateCoveragePolygon(polygon: number[][]) {
   coverageDrawEnabled.value = false
   coverageStartSnapPoint.value = null
   coverageEndSnapPoint.value = null
+  deriveCoverageEndpoints()
   coverageEndpointTarget.value = coverageStartPoint.value ? coverageEndPoint.value ? null : 'end' : 'start'
   clearBatchRange()
+}
+// 区域一旦确定（框选、拖动/增删边界点），起终点自动对齐到范围包围盒的对角：
+// 侧栏 A/B 坐标随之刷新，也保证 A/B 落在巡查范围内。要精确的 A/B，范围定
+// 好后拖动地图上的 A/B 标记微调（拖动只改端点，不再动范围）。
+function deriveCoverageEndpoints() {
+  const polygon = coveragePolygon.value
+  if (polygon.length < 3) return
+  const longitudes = polygon.map(([longitude]) => longitude)
+  const latitudes = polygon.map(([, latitude]) => latitude)
+  const round = (value: number) => Number(value.toFixed(7))
+  coverageStartPoint.value = { longitude: round(Math.min(...longitudes)), latitude: round(Math.min(...latitudes)) }
+  coverageEndPoint.value = { longitude: round(Math.max(...longitudes)), latitude: round(Math.max(...latitudes)) }
 }
 function syncAreaWeatherBounds(polygon: number[][]) {
   if (polygon.length < 3) return
@@ -2457,7 +2470,20 @@ function chooseSearchedPoint(selection: { target: string; point: Point }) {
   void chooseMapPoint(selection.point, selection.target, true)
 }
 
-function chooseCoveragePoint(point: Point, endpoint: CoverageEndpoint, fromPlaceSearch = false) {
+// 地图点选与锚点拖动的统一入口：拖动事件带 target（锚点 id），区域模式下的
+// A/B 标签直达对应端点；dragging 表示拖动进行中，跳过面板切换等收尾副作用。
+function onMapChoosePoint(point: Point, target?: string, dragging = false) {
+  if (planningMode.value === 'area') {
+    const endpoint = target === 'coverage-start' ? 'start' : target === 'coverage-end' ? 'end' : coverageEndpointTarget.value
+    if (endpoint) {
+      chooseCoveragePoint(point, endpoint, false, dragging)
+      return
+    }
+  }
+  void chooseMapPoint(point, target ?? selectedAnchorId.value)
+}
+
+function chooseCoveragePoint(point: Point, endpoint: CoverageEndpoint, fromPlaceSearch = false, dragging = false) {
   if (loading.value || checkingPoint.value) {
     if (fromPlaceSearch) placeSelectionFeedback.value = { message: '正在处理其他点位，请稍后重试。', error: true }
     return
@@ -2476,6 +2502,26 @@ function chooseCoveragePoint(point: Point, endpoint: CoverageEndpoint, fromPlace
   coverageEndpointTarget.value = endpoint === 'start' && !coverageEndPoint.value ? 'end' : endpoint === 'end' && !coverageStartPoint.value ? 'start' : null
   error.value = ''
   routeAssessment.value = null
+  // A/B 齐而范围未定：默认以 A/B 为对角线生成矩形范围（向外留约 10% 余量，
+  // 让端点落在范围内部），之后可框选或拖动边界点调整——范围一变，A/B 会
+  // 自动对齐回范围对角。
+  if (coverageStartPoint.value && coverageEndPoint.value && coveragePolygon.value.length < 3) {
+    const first = coverageStartPoint.value, second = coverageEndPoint.value
+    const minLongitude = Math.min(first.longitude, second.longitude), maxLongitude = Math.max(first.longitude, second.longitude)
+    const minLatitude = Math.min(first.latitude, second.latitude), maxLatitude = Math.max(first.latitude, second.latitude)
+    const padLongitude = Math.max((maxLongitude - minLongitude) * 0.1, 0.001)
+    const padLatitude = Math.max((maxLatitude - minLatitude) * 0.1, 0.001)
+    coveragePolygon.value = [
+      [minLongitude - padLongitude, minLatitude - padLatitude],
+      [maxLongitude + padLongitude, minLatitude - padLatitude],
+      [maxLongitude + padLongitude, maxLatitude + padLatitude],
+      [minLongitude - padLongitude, maxLatitude + padLatitude],
+    ].map(([longitude, latitude]) => [Number(longitude.toFixed(7)), Number(latitude.toFixed(7))])
+    syncAreaWeatherBounds(coveragePolygon.value)
+    coverageDrawEnabled.value = false
+    clearBatchRange()
+  }
+  if (dragging) return
   settingsPage.value = 'points'
   if (fromPlaceSearch) {
     const setLabel = endpoint === 'start' ? '区域起点 A' : '区域终点 B'
@@ -3243,7 +3289,7 @@ onBeforeUnmount(() => {
 
       <section id="route-map" class="map-panel" :class="{ 'panel-active': workspacePanel === 'map' }" aria-label="航线地图">
         <div ref="mapElement" class="cesium-map" aria-hidden="true"></div>
-        <EarthMap ref="earthMapRef" :active="true" :provider="baseMap === 'satellite' ? 'tianditu-sat' : 'osm'" :view-mode="mapViewMode" :start="form.start" :end="form.end" :anchors="mapAnchors" :selected-anchor-id="selectedAnchorId" :route="earthRoute" :coverage-polygon="planningMode === 'area' ? coveragePolygon : []" :coverage-draw-enabled="coverageDrawEnabled" :coverage-edit-enabled="planningMode === 'area' && coveragePolygon.length >= 3" :suppress-map-point-selection="activeModule === 'photos' || (planningMode === 'area' && !coverageEndpointTarget)" :selected-index="selectedWaypointIndex" :edit-mode="mapEditMode" :footprint="earthFootprint" :flight-pose="mapFlightPose" :flight-footprint="flightFootprint" :weather-segments="routeAssessment?.weather_risk.segments ?? []" :weather-samples="showRouteWeatherPoints ? routeAssessment?.samples : null" :weather-risk-points="showRouteWeatherPoints ? routeAssessment?.weather_risk.points : null" :weather-altitude-m="form.altitude_m" :show-start-range="showStartRange" :show-end-range="showEndRange" :range-meters="landingSearchRadiusM" :video-track="activeModule === 'photos' ? videoTelemetryTrack : []" :video-position="activeModule === 'photos' ? videoTelemetryPosition : null" :capture-targets="activeModule === 'photos' ? mapCaptureTargets : []" @select-waypoint="selectWaypoint" @choose-point="chooseMapPoint" @rotate-waypoint="setSelectedWaypointOrientation($event, undefined, true)" @coverage-polygon-created="updateCoveragePolygon" @coverage-polygon-updated="updateCoveragePolygon" />
+        <EarthMap ref="earthMapRef" :active="true" :provider="baseMap === 'satellite' ? 'tianditu-sat' : 'osm'" :view-mode="mapViewMode" :start="form.start" :end="form.end" :anchors="mapAnchors" :selected-anchor-id="selectedAnchorId" :route="earthRoute" :coverage-polygon="planningMode === 'area' ? coveragePolygon : []" :coverage-draw-enabled="coverageDrawEnabled" :coverage-edit-enabled="planningMode === 'area' && coveragePolygon.length >= 3" :suppress-map-point-selection="activeModule === 'photos' || (planningMode === 'area' && !coverageEndpointTarget)" :selected-index="selectedWaypointIndex" :edit-mode="mapEditMode" :footprint="earthFootprint" :flight-pose="mapFlightPose" :flight-footprint="flightFootprint" :weather-segments="routeAssessment?.weather_risk.segments ?? []" :weather-samples="showRouteWeatherPoints ? routeAssessment?.samples : null" :weather-risk-points="showRouteWeatherPoints ? routeAssessment?.weather_risk.points : null" :weather-altitude-m="form.altitude_m" :show-start-range="showStartRange" :show-end-range="showEndRange" :range-meters="landingSearchRadiusM" :video-track="activeModule === 'photos' ? videoTelemetryTrack : []" :video-position="activeModule === 'photos' ? videoTelemetryPosition : null" :capture-targets="activeModule === 'photos' ? mapCaptureTargets : []" @select-waypoint="selectWaypoint" @choose-point="onMapChoosePoint" @rotate-waypoint="setSelectedWaypointOrientation($event, undefined, true)" @coverage-polygon-created="updateCoveragePolygon" @coverage-polygon-updated="updateCoveragePolygon" />
         <div class="map-top">
           <div v-if="!flightActive" class="map-title-group"><span class="map-badge"><span class="svg-icon icon-layers" aria-hidden="true"></span>{{ (baseMap === 'satellite' ? '卫星底图' : '当前底图') + (mapViewMode === '3d' ? ' · 3D 航线' : ' · 2D 平面') }}</span><span class="map-mode-chip">{{ form.altitude_m }} m AGL</span><div class="map-source-switch base-map-switch" aria-label="底图"><button type="button" :class="{ active: baseMap === 'current' }" :aria-pressed="baseMap === 'current'" @click="chooseBaseMap('current')">当前底图</button><button v-if="tiandituSatelliteAvailable" type="button" :class="{ active: baseMap === 'satellite' }" :aria-pressed="baseMap === 'satellite'" @click="chooseBaseMap('satellite')">卫星底图</button></div><div class="map-edit-switch" aria-label="编辑对象"><button type="button" :class="{ active: mapEditMode === 'route' }" :aria-pressed="mapEditMode === 'route'" @click="mapEditMode = 'route'">路径 / 主点</button><button type="button" :class="{ active: mapEditMode === 'node' }" :aria-pressed="mapEditMode === 'node'" @click="mapEditMode = 'node'">节点 / 视角</button></div></div>
           <button v-if="!flightActive" class="flight-entry" type="button" :disabled="!flightTimeline" aria-label="开始模拟飞行" title="模拟飞行" @click="toggleFlight"><span class="svg-icon icon-drone" aria-hidden="true"></span></button>

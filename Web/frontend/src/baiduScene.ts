@@ -40,9 +40,19 @@ function createOsmBasemap(sdk: any, provider: MapProvider) {
   if (!tk) return new sdk.OSMImageryTileProvider()
   sdk.TiandituConfig.tk = tk
   // 默认 style 就是矢量底图;卫星底图切影像(img)。矢量/影像注记(cva/cia)是单独图层,均不叠加。
-  return new sdk.TiandituImageryTileProvider(provider === 'tianditu-sat'
+  const tianditu = new sdk.TiandituImageryTileProvider(provider === 'tianditu-sat'
     ? { style: sdk.mapViewConstants?.TIANDITU_MAP_STYLE_IMAGERY ?? 'img' }
     : {})
+  // SDK 的天地图 provider 继承基类默认并发 6（其他 provider 均为 24），且瓦片
+  // 固定打 t2 单节点；免费 TK 下单点 QPS 极易打满，连续缩放时卫星瓦片追平慢。
+  // 放开并发并按瓦片坐标在 t0-t7 官方子域间轮询。
+  tianditu.maxParallelRequestNum = 24
+  const originalGetTileURL = tianditu.getTileURL.bind(tianditu)
+  tianditu.getTileURL = (level: number, x: number, y: number, info: any) => {
+    const url = originalGetTileURL(level, x, y, info)
+    return typeof url === 'string' ? url.replace('//t2.', `//t${Math.abs(x + y) % 8}.`) : url
+  }
+  return tianditu
 }
 
 // All public inputs/outputs are WGS84. Reprojecting the Baidu tiles changes
@@ -89,6 +99,9 @@ export async function createBaiduScene(element: HTMLElement, center: Coordinate,
 //   0.14 个 zoom 单位 ≈ 10%）。当前底图与地球模式的 2D 共用此控制器。
 const GLOBE_WHEEL_ZOOM_FACTOR = 1.5
 const PLANAR_WHEEL_ZOOM_SPEED = 0.0014
+// 天地图影像/矢量原生瓦片只到 l=18；继续放大只是把低清瓦片拉伸，卫星图上
+// 表现为整片糊化、滚轮"看不出在动"。向内滚轮到此 zoom 封顶，向外始终放行。
+const MAX_WHEEL_IN_ZOOM = 20
 
 function pinWheelZoomSpeed(engine: any) {
   const seen = new Set<object>()
@@ -133,6 +146,15 @@ export class BaiduScene {
   // 2D 平面视图不经过 engine 的 beforeRender 管线，每帧钉住在那里不生效；
   // 在输入事件捕获阶段（早于 SDK 自己的监听器）钉一次，两种视图都覆盖。
   private pinOnInput = () => { if (this.interactive) pinWheelZoomSpeed(this.engine) }
+  // 捕获阶段拦截"顶到清晰度上限后的向内滚轮"，事件到不了 SDK 的画布监听器。
+  private clampWheel = (event: WheelEvent) => {
+    if (!this.interactive || event.deltaY >= 0) return
+    const zoom = this.engine.map?.getZoom?.()
+    if (Number.isFinite(zoom) && zoom >= MAX_WHEEL_IN_ZOOM) {
+      event.preventDefault()
+      event.stopImmediatePropagation()
+    }
+  }
 
   constructor(readonly engine: any, private sdk: any, private element: HTMLElement, private interactive = true, private geoDatum: 'bd09' | 'wgs84' = 'bd09', initialProjection: string | null = null) {
     // 记录出生投影：否则首次 setView 必判为切换而重复 setProjection，
@@ -141,6 +163,7 @@ export class BaiduScene {
     engine.addBeforeRenderListener(this.beforeRender)
     if (interactive) {
       this.element.addEventListener('wheel', this.pinOnInput, { capture: true, passive: true })
+      this.element.addEventListener('wheel', this.clampWheel, { capture: true, passive: false })
       this.element.addEventListener('pointerdown', this.pinOnInput, { capture: true, passive: true })
     }
   }
@@ -380,7 +403,10 @@ export class BaiduScene {
     this.engine.requestRender()
   }
 
-  project(coordinate: Coordinate) {
+  // margin 是 NDC 可见判定边界：标记类元素用默认 1.05（出屏即隐藏）；
+  // 区域覆盖层要传更大值，允许顶点落在屏幕外仍保留投影——覆盖层自身会
+  // 裁剪，而全有全无的丢弃会让深缩放时整框连同拖拽点一起消失。
+  project(coordinate: Coordinate, margin = 1.05) {
     // Before-render callbacks run after the SDK temporarily shifts the scene
     // origin for precision. Use its absolute camera for geographic positions.
     const camera = this.engine.rendering.rawCamera ?? this.engine.camera
@@ -402,7 +428,7 @@ export class BaiduScene {
       }
     }
     const pixel = world.project(camera)
-    if (![pixel.x, pixel.y, pixel.z].every(Number.isFinite) || pixel.z < -1 || pixel.z > 1 || Math.abs(pixel.x) > 1.05 || Math.abs(pixel.y) > 1.05) return null
+    if (![pixel.x, pixel.y, pixel.z].every(Number.isFinite) || pixel.z < -1 || pixel.z > 1 || Math.abs(pixel.x) > margin || Math.abs(pixel.y) > margin) return null
     const bounds = this.element.getBoundingClientRect()
     return { x: (pixel.x + 1) * bounds.width / 2, y: (1 - pixel.y) * bounds.height / 2 }
   }
@@ -434,6 +460,7 @@ export class BaiduScene {
     this.disposed = true
     if (this.interactive) {
       this.element.removeEventListener('wheel', this.pinOnInput, { capture: true })
+      this.element.removeEventListener('wheel', this.clampWheel, { capture: true })
       this.element.removeEventListener('pointerdown', this.pinOnInput, { capture: true })
     }
     this.engine.removeBeforeRenderListener(this.beforeRender)

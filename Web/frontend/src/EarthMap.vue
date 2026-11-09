@@ -38,7 +38,7 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   'select-waypoint': [index: number]
-  'choose-point': [point: Point]
+  'choose-point': [point: Point, target?: string, dragging?: boolean]
   'rotate-waypoint': [heading: number]
   'coverage-polygon-created': [polygon: number[][]]
   'coverage-polygon-updated': [polygon: number[][]]
@@ -64,6 +64,7 @@ let scene: BaiduScene | null = null
 let resizeObserver: ResizeObserver | null = null
 let unmounted = false
 let drag: { index: number; pointerId: number; x: number; y: number; element: HTMLElement; moved: boolean } | null = null
+let anchorDrag: { id: string; role: AnchorRole; pointerId: number; x: number; y: number; moved: boolean; pending: Point | null; element: HTMLElement } | null = null
 let ctrlRotate: { pointerId: number; x: number; y: number; heading: number; pitch: number } | null = null
 let mapPointerStart: { x: number; y: number } | null = null
 let mapPointerMoved = false
@@ -127,6 +128,9 @@ function anchorRole(point: Anchor, index: number, count: number): AnchorRole {
 }
 function coordinates() {
   if (props.route?.length) return props.route
+  // 区域模式未出路线前，用覆盖范围取景/定出生中心，选完 A/B 自动生成的
+  // 默认矩形能整体进入视野。
+  if (props.coveragePolygon?.length) return props.coveragePolygon
   return anchorPoints().map(point => [point.longitude, point.latitude, 0])
 }
 function circle(point: Point) {
@@ -160,7 +164,9 @@ function renderOverlay() {
   })
   const coverageSource = coverageDraft ?? props.coveragePolygon ?? []
   const projectedCoverage = coverageSource.map((point, index) => {
-    const pixel = scene!.project([point[0]!, point[1]!, 2])
+    // 宽裕度投影：顶点允许落在屏幕外（覆盖层会自己裁剪），深缩放时区域框
+    // 和拖拽点不再因某个角点出屏而整组消失——那曾让卫星图滚轮"看不出在动"。
+    const pixel = scene!.project([point[0]!, point[1]!, 2], 4)
     return pixel ? { ...pixel, index } : null
   })
   const coverageVertices = projectedCoverage.length >= 3 && projectedCoverage.every((point) => point !== null)
@@ -273,7 +279,8 @@ function refreshRoute() {
     ...(props.showStartRange && start ? [circle(start)] : []), ...(props.showEndRange && end ? [circle(end)] : []),
   ])
   const signature = JSON.stringify(coordinates().map(point => point.slice(0, 2)))
-  if (!props.flightPose?.follow && (!routeSignature || (signature !== routeSignature && props.editMode === 'route'))) scene.fit(coordinates(), props.viewMode)
+  // 拖动 A/B 或主点时不重新取景，否则相机每帧跳去 fit 两个锚点。
+  if (!props.flightPose?.follow && (!routeSignature || (signature !== routeSignature && props.editMode === 'route')) && !anchorDrag) scene.fit(coordinates(), props.viewMode)
   routeSignature = signature
   refreshFootprint()
   renderOverlay()
@@ -507,11 +514,44 @@ function onNodeMove(event: PointerEvent) {
 function finishDrag() {
   const previous = drag; drag = null
   if (previous?.element.hasPointerCapture(previous.pointerId)) previous.element.releasePointerCapture(previous.pointerId)
+  finishAnchorDrag()
   scene?.setInputs(props.active && !props.flightPose?.playing)
   mapPointerStart = null
 }
 function onNodeUp(event: PointerEvent) { if (event.pointerId === drag?.pointerId) finishDrag() }
 function onNodeClick(index: number) { if (!props.flightPose?.playing) emit('select-waypoint', index) }
+
+function onAnchorDown(event: PointerEvent, anchor: OverlayPoint) {
+  if (event.button !== 0 || !event.isPrimary || !props.active || props.flightPose?.playing || props.coverageDrawEnabled) return
+  event.preventDefault(); event.stopPropagation()
+  finishDrag()
+  const element = event.currentTarget as HTMLElement
+  anchorDrag = { id: anchor.id!, role: anchor.role ?? 'middle', pointerId: event.pointerId, x: event.clientX, y: event.clientY, moved: false, pending: null, element }
+  element.setPointerCapture(event.pointerId)
+  scene?.setInputs(false)
+}
+function onAnchorMove(event: PointerEvent) {
+  const current = anchorDrag
+  if (!current || current.pointerId !== event.pointerId) return
+  if (!current.moved && Math.hypot(event.clientX - current.x, event.clientY - current.y) < 5) return
+  current.moved = true
+  const picked = pickCoordinate(event.clientX, event.clientY)
+  if (!picked) return
+  const point = { longitude: Number(picked[0].toFixed(5)), latitude: Number(picked[1].toFixed(5)) }
+  // 区域端点与途经点没有后端校验，拖动即时生效；起降点要过落地检查，松手才提交。
+  if (current.id.startsWith('coverage-') || current.role === 'middle') emit('choose-point', point, current.id, true)
+  else current.pending = point
+  event.preventDefault()
+}
+function finishAnchorDrag(pointerId?: number) {
+  const current = anchorDrag
+  if (!current || (pointerId !== undefined && pointerId !== current.pointerId)) return
+  anchorDrag = null
+  if (current.element.hasPointerCapture(current.pointerId)) current.element.releasePointerCapture(current.pointerId)
+  scene?.setInputs(props.active && !props.flightPose?.playing)
+  if (current.moved && current.pending) emit('choose-point', current.pending, current.id)
+}
+function onAnchorUp(event: PointerEvent) { if (event.pointerId === anchorDrag?.pointerId) finishAnchorDrag() }
 async function initialize(savedCamera: CameraView | null = null) {
   // 底图切换重建不亮加载遮罩：旧画面原地替换，只换瓦片纹理，不闪文字。
   if (!savedCamera) status.value = props.provider === 'baidu' ? '正在加载地球模式…' : '正在加载地图模式…'
@@ -522,6 +562,8 @@ async function initialize(savedCamera: CameraView | null = null) {
     const nextScene = await createMapScene(earthElement.value!, coordinates()[0] ?? [props.start.longitude, props.start.latitude, 0], props.provider, false, savedCamera ?? undefined)
     if (unmounted) { nextScene.dispose(); return }
     scene = nextScene
+    // 调试探针：控制台可经 window.__earthScene 直接检查引擎/投影状态。
+    ;(window as any).__earthScene = nextScene
     scene.onFrame(renderOverlay)
     applyViewMode(!!savedCamera)
     if (savedCamera) {
@@ -605,7 +647,7 @@ onBeforeUnmount(() => {
         <button v-for="point in overlay.coverageVertices" :key="`coverage-vertex-${point.index}`" type="button" class="earth-coverage-vertex" :aria-label="`区域边界节点 ${point.index + 1}，双击删除`" title="拖动调整范围，双击删除节点" :style="{ left: `${point.x}px`, top: `${point.y}px` }" @pointerdown="onCoverageVertexDown($event, point.index)" @pointermove="onCoverageVertexMove" @pointerup="onCoverageVertexEnd" @pointercancel="onCoverageVertexEnd" @lostpointercapture="onCoverageVertexEnd" @dblclick="deleteCoverageVertex($event, point.index)" @click.stop></button>
       </template>
       <div v-if="videoTrack?.length" class="earth-video-legend" aria-label="视频轨迹图例"><span><i class="track-key"></i>SRT 轨迹</span><span><i class="position-key">V</i>当前画面</span><span><i class="target-key">拍</i>近拍点</span></div>
-      <span v-for="anchor in overlay.anchors" :key="anchor.id" class="earth-endpoint" :class="[anchor.role, { selected: anchor.selected }]" :style="{ left: `${anchor.x}px`, top: `${anchor.y}px` }">{{ anchor.label }}</span>
+      <span v-for="anchor in overlay.anchors" :key="anchor.id" class="earth-endpoint" :class="[anchor.role, { selected: anchor.selected }]" :style="{ left: `${anchor.x}px`, top: `${anchor.y}px` }" :title="anchor.id.startsWith('coverage-') ? `拖动调整区域${anchor.label === 'A' ? '起点' : '终点'} ${anchor.label}` : '拖动调整主点位置'" @pointerdown="onAnchorDown($event, anchor)" @pointermove="onAnchorMove" @pointerup="onAnchorUp" @pointercancel="onAnchorUp" @lostpointercapture="onAnchorUp">{{ anchor.label }}</span>
       <span v-for="target in overlay.captureTargets" :key="`video-target-${target.id}`" class="earth-capture-target" :title="`${target.label} · ${Math.floor(target.time_seconds / 60)}:${String(Math.floor(target.time_seconds % 60)).padStart(2, '0')}`" :aria-label="`${target.label} 拍摄位置`" :style="{ left: `${target.x}px`, top: `${target.y}px` }">{{ target.marker }}</span>
       <span v-if="overlay.weatherPoints.length" class="earth-weather-hint">点击编号查看该点天气</span>
       <button v-for="point in overlay.weatherPoints" :key="`weather-point-${point.index}`" type="button" class="earth-weather-marker" :class="[`is-${point.level}`, { selected: point.index === selectedWeatherPointIndex }]" :title="`查看航线点 ${point.index + 1} 天气`" :aria-label="`查看航线点 ${point.index + 1} 天气，${point.riskLabel}`" :aria-pressed="point.index === selectedWeatherPointIndex" :style="{ left: `${point.x}px`, top: `${point.y}px` }" @click.stop="selectedWeatherPointIndex = point.index">{{ point.index + 1 }}</button>
@@ -689,7 +731,7 @@ onBeforeUnmount(() => {
 .earth-capture-target { position: absolute; z-index: 2; display: grid; width: 24px; height: 24px; transform: translate(-50%, -50%); place-items: center; border: 2px solid #fff; border-radius: 50%; background: #d97706; box-shadow: 0 1px 5px rgb(18 52 59 / .4); color: #fff; font-size: 12px; font-weight: 700; pointer-events: none; }
 .earth-ground-node { position: absolute; width: 14px; height: 14px; transform: translate(-50%, -50%); display: grid; place-items: center; pointer-events: none; }
 .earth-ground-node span { width: 8px; height: 8px; border: 2px solid #fff; border-radius: 50%; background: #36dfba; box-shadow: 0 1px 4px #12343b; }
-.earth-endpoint { position: absolute; transform: translate(-50%, -100%); padding: 3px 6px; border-radius: 4px; color: #fff; font-size: 12px; font-weight: 700; }
+.earth-endpoint { position: absolute; transform: translate(-50%, -100%); padding: 3px 6px; border-radius: 4px; color: #fff; font-size: 12px; font-weight: 700; cursor: grab; touch-action: none; user-select: none; }
 .earth-endpoint.start { background: #0f6cbd; }
 .earth-endpoint.middle { background: #197b78; }
 .earth-endpoint.end { background: #5b5fc7; }
