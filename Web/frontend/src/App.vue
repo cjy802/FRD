@@ -164,21 +164,10 @@ function updateCoveragePolygon(polygon: number[][]) {
   coverageDrawEnabled.value = false
   coverageStartSnapPoint.value = null
   coverageEndSnapPoint.value = null
-  deriveCoverageEndpoints()
+  // 标准流程：框选范围 → 地图点选/搜索设置区域起点 A、终点 B → 生成路线。
+  // 范围变化不覆盖已设置的 A/B；target 指向尚未设置的端点继续引导。
   coverageEndpointTarget.value = coverageStartPoint.value ? coverageEndPoint.value ? null : 'end' : 'start'
   clearBatchRange()
-}
-// 区域一旦确定（框选、拖动/增删边界点），起终点自动对齐到范围包围盒的对角：
-// 侧栏 A/B 坐标随之刷新，也保证 A/B 落在巡查范围内。要精确的 A/B，范围定
-// 好后拖动地图上的 A/B 标记微调（拖动只改端点，不再动范围）。
-function deriveCoverageEndpoints() {
-  const polygon = coveragePolygon.value
-  if (polygon.length < 3) return
-  const longitudes = polygon.map(([longitude]) => longitude)
-  const latitudes = polygon.map(([, latitude]) => latitude)
-  const round = (value: number) => Number(value.toFixed(7))
-  coverageStartPoint.value = { longitude: round(Math.min(...longitudes)), latitude: round(Math.min(...latitudes)) }
-  coverageEndPoint.value = { longitude: round(Math.max(...longitudes)), latitude: round(Math.max(...latitudes)) }
 }
 function syncAreaWeatherBounds(polygon: number[][]) {
   if (polygon.length < 3) return
@@ -3591,9 +3580,6 @@ onBeforeUnmount(() => {
 .map-view-switch { position: absolute; top: 72px; left: 20px; z-index: 4; pointer-events: auto; }
 @media (max-width: 720px) {
   .map-view-switch { top: 112px; left: 14px; }
-}
-@media (max-width: 720px) {
-  .map-alert { top: 150px; }
 }
 .rc2-import-panel { display: grid; gap: 8px; margin: 0 0 18px; padding: 14px; border: 1px solid #c9dced; border-radius: 10px; background: #f7fbff; }
 .rc2-import-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
