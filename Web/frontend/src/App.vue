@@ -3310,13 +3310,6 @@ onBeforeUnmount(() => {
               <button v-if="coveragePolygon.length" type="button" class="coverage-area-clear" :disabled="loading" @click="clearCoveragePolygon">清除范围</button>
             </div>
             <p v-if="coveragePolygon.length" class="coverage-area-note">已选 {{ coveragePolygon.length }} 个边界点。可拖动边界点调整范围，双击顶点删除，点击边线中点可增加顶点。</p>
-            <div v-if="preview?.area_coverage && previewKey === routeKey" class="coverage-area-summary" aria-live="polite">
-              <strong>道路覆盖路线已生成 · {{ preview.area_coverage.route_closed ? '闭环' : 'A → B' }} · {{ (preview.area_coverage.coverage_ratio * 100).toFixed(0) }}% 覆盖</strong>
-              <div><span>目标道路</span><b>{{ (preview.area_coverage.target_road_m / 1000).toFixed(2) }} km · {{ preview.area_coverage.road_edge_count }} 段</b></div>
-              <div><span>重复经过</span><b>{{ (preview.area_coverage.repeated_road_m / 1000).toFixed(2) }} km</b></div>
-              <div><span>连接道路</span><b>{{ (preview.area_coverage.connector_m / 1000).toFixed(2) }} km</b></div>
-              <small>路线总长 {{ preview.distance_km.toFixed(2) }} km · 估计 {{ elapsed }} · A/B 吸附 {{ preview.start_snap_m.toFixed(1) }} / {{ preview.end_snap_m.toFixed(1) }} m</small>
-            </div>
           </div>
 
           <div class="settings-group" data-settings-page="mission" :class="{ 'settings-active': settingsPage === 'mission' }">
@@ -3498,10 +3491,6 @@ onBeforeUnmount(() => {
  .coverage-area-actions .major-point-add.is-drawing { border-color: #0f6cbd; background: #e9f4fd; }
  .coverage-area-clear { min-height: 36px; padding: 6px 9px; border: 1px solid #d7dfe8; border-radius: 6px; background: #fff; color: #526273; font-size: 12px; cursor: pointer; }
  .coverage-area-note { margin: 8px 0; color: var(--ui-muted); font-size: 12px; line-height: 1.5; }
- .coverage-area-summary { display: grid; gap: 7px; margin-top: 12px; padding: 10px; border: 1px solid #cfe0ee; border-radius: 8px; background: #f7fbff; color: #344455; font-size: 12px; }
- .coverage-area-summary > strong { color: #1769aa; font-size: 12px; }
- .coverage-area-summary > div { display: flex; justify-content: space-between; gap: 8px; }
- .coverage-area-summary > div span, .coverage-area-summary small { color: var(--ui-muted); }
  .coverage-map-hint { padding: 8px 10px; border: 1px solid #b7d4eb; border-radius: 7px; background: #fff; color: #1769aa; font-size: 12px; }
  .coverage-route-detail { display: grid; gap: 4px; margin: 6px 0; padding: 9px 10px; border: 1px solid #cfe0ee; border-radius: 7px; background: #f7fbff; color: #344455; font-size: 12px; }
  .coverage-route-detail strong { color: #1769aa; font-size: 12px; }
