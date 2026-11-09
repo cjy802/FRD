@@ -522,6 +522,9 @@ function onNodeUp(event: PointerEvent) { if (event.pointerId === drag?.pointerId
 function onNodeClick(index: number) { if (!props.flightPose?.playing) emit('select-waypoint', index) }
 
 function onAnchorDown(event: PointerEvent, anchor: OverlayPoint) {
+  // 区域 A/B 恒可拖(拖动微调端点)；其余主点在照片等抑制点选的模块不可拖，
+  // 避免查看视频时误改任务坐标。
+  if (props.suppressMapPointSelection && !anchor.id?.startsWith('coverage-')) return
   if (event.button !== 0 || !event.isPrimary || !props.active || props.flightPose?.playing || props.coverageDrawEnabled) return
   event.preventDefault(); event.stopPropagation()
   finishDrag()
@@ -731,7 +734,7 @@ onBeforeUnmount(() => {
 .earth-capture-target { position: absolute; z-index: 2; display: grid; width: 24px; height: 24px; transform: translate(-50%, -50%); place-items: center; border: 2px solid #fff; border-radius: 50%; background: #d97706; box-shadow: 0 1px 5px rgb(18 52 59 / .4); color: #fff; font-size: 12px; font-weight: 700; pointer-events: none; }
 .earth-ground-node { position: absolute; width: 14px; height: 14px; transform: translate(-50%, -50%); display: grid; place-items: center; pointer-events: none; }
 .earth-ground-node span { width: 8px; height: 8px; border: 2px solid #fff; border-radius: 50%; background: #36dfba; box-shadow: 0 1px 4px #12343b; }
-.earth-endpoint { position: absolute; transform: translate(-50%, -100%); padding: 3px 6px; border-radius: 4px; color: #fff; font-size: 12px; font-weight: 700; cursor: grab; touch-action: none; user-select: none; }
+.earth-endpoint { position: absolute; transform: translate(-50%, -100%); padding: 3px 6px; border-radius: 4px; color: #fff; font-size: 12px; font-weight: 700; cursor: grab; touch-action: none; user-select: none; pointer-events: auto; }
 .earth-endpoint.start { background: #0f6cbd; }
 .earth-endpoint.middle { background: #197b78; }
 .earth-endpoint.end { background: #5b5fc7; }

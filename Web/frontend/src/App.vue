@@ -137,6 +137,10 @@ function choosePlanningMode(mode: PlanningMode) {
     roadSource.value = 'local'
     mapEditMode.value = 'route'
     if (coveragePolygon.value.length >= 3) syncAreaWeatherBounds(coveragePolygon.value)
+    // 地图点选在区域模式下依赖 target 指向待设端点；进入时指向缺的那个，
+    // 否则 target 为空会抑制地图点击，表现为"点地图没反应"。
+    if (!coverageStartPoint.value) coverageEndpointTarget.value = 'start'
+    else if (!coverageEndPoint.value) coverageEndpointTarget.value = 'end'
   } else {
     const first = anchors.value[0]
     const last = anchors.value[anchors.value.length - 1]
@@ -198,7 +202,7 @@ function clearCoveragePolygon() {
   coverageEndPoint.value = null
   coverageStartSnapPoint.value = null
   coverageEndSnapPoint.value = null
-  coverageEndpointTarget.value = null
+  coverageEndpointTarget.value = 'start'
   coverageDrawEnabled.value = false
   preview.value = null
   previewKey.value = ''
