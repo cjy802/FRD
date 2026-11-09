@@ -50,6 +50,24 @@ def load_truth(truth_dir: Path) -> pd.DataFrame:
     return truth
 
 
+def load_forecast(forecast: Path) -> pd.DataFrame:
+    """Read one forecast CSV or every fuxi2_gfs_region_forecast*.csv beside it."""
+    if forecast.is_file():
+        paths = [forecast]
+    else:
+        paths = sorted(forecast.parent.glob(f"{forecast.stem}*.csv"))
+        if not paths:
+            raise SystemExit(f"no {forecast.stem}*.csv under {forecast.parent}; run backfill_gfs_fuxi.py first")
+    frames = []
+    for path in paths:
+        frame = pd.read_csv(path)
+        frames.append(frame)
+        print(f"forecast: {path.name} -> {len(frame)} rows")
+    table = pd.concat(frames, ignore_index=True)
+    return table.drop_duplicates(
+        subset=["init_time_utc", "lead_hours", "latitude_deg", "longitude_deg"], keep="first")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--forecast", type=Path, default=DEFAULT_FORECAST)
@@ -57,7 +75,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args()
 
-    forecast = pd.read_csv(args.forecast)
+    forecast = load_forecast(args.forecast)
     forecast["latitude_deg"] = forecast["latitude_deg"].round(2)
     forecast["longitude_deg"] = forecast["longitude_deg"].round(2)
     print(f"forecast: {len(forecast)} rows, "
