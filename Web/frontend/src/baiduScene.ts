@@ -48,23 +48,30 @@ function createOsmBasemap(sdk: any, provider: MapProvider) {
 // All public inputs/outputs are WGS84. Reprojecting the Baidu tiles changes
 // their projection, but does not convert their BD-09 geographic datum. Convert
 // once at each renderer boundary; keep mission data in WGS84.
-export async function createMapScene(element: HTMLElement, center: Coordinate, provider: MapProvider = 'baidu', preview = false) {
+export async function createMapScene(element: HTMLElement, center: Coordinate, provider: MapProvider = 'baidu', preview = false, initialView?: CameraView) {
   const { sdk, ak } = await loadSdk(provider === 'baidu')
   const geoDatum = provider === 'baidu' ? 'bd09' : 'wgs84'
+  const projection = provider === 'baidu' ? 'ecef' : 'EPSG:3857'
   const toScene = (coordinate: Coordinate) => geoDatum === 'bd09' ? toBaiduSceneCoordinate(coordinate) : [...coordinate]
+  // 底图切换重建时以旧视角出生，引擎第一帧就在目标位置，避免"默认 900 视角
+  // 闪现→lookAt 跳回"的抖动。
   const engine: any = new sdk.Engine(element, {
     map: {
       provider: provider === 'baidu'
         ? new sdk.Baidu09ImageryTileProvider({ ak, type: 'satellite' })
         : createOsmBasemap(sdk, provider),
-      projection: provider === 'baidu' ? 'ecef' : 'EPSG:3857', center: toScene(center), heading: 0, pitch: 52, range: 900,
+      projection,
+      center: toScene(initialView ? initialView.center : center),
+      heading: initialView?.heading ?? 0,
+      pitch: initialView?.pitch ?? 52,
+      range: initialView?.range ?? 900,
     },
     controller: { enabled: !preview, enableRotate: !preview, enableZoom: !preview, enablePan: !preview, enableTilt: !preview,
       inertiaTranslate: 0, inertiaZoom: 0, enableTerrainCollision: false },
     rendering: { enableAnimationLoop: true },
   } as any)
   if (preview) engine.map.fov = 58
-  const scene = new BaiduScene(engine, sdk, element, !preview, geoDatum)
+  const scene = new BaiduScene(engine, sdk, element, !preview, geoDatum, projection)
   scene.setInputs(!preview)
   return scene
 }
@@ -118,7 +125,7 @@ export class BaiduScene {
   private viewMeshes: Mesh<BufferGeometry, MeshBasicMaterial>[] = []
   private frameListeners = new Set<() => void>()
   private disposed = false
-  private activeProjection: string | null = null
+  private activeProjection: string | null
   private beforeRender = () => {
     if (this.interactive) pinWheelZoomSpeed(this.engine)
     for (const callback of this.frameListeners) callback()
@@ -127,7 +134,10 @@ export class BaiduScene {
   // 在输入事件捕获阶段（早于 SDK 自己的监听器）钉一次，两种视图都覆盖。
   private pinOnInput = () => { if (this.interactive) pinWheelZoomSpeed(this.engine) }
 
-  constructor(readonly engine: any, private sdk: any, private element: HTMLElement, private interactive = true, private geoDatum: 'bd09' | 'wgs84' = 'bd09') {
+  constructor(readonly engine: any, private sdk: any, private element: HTMLElement, private interactive = true, private geoDatum: 'bd09' | 'wgs84' = 'bd09', initialProjection: string | null = null) {
+    // 记录出生投影：否则首次 setView 必判为切换而重复 setProjection，
+    // 引擎异步重建会把相机重置回构造参数，底图切换时表现为视角抖动。
+    this.activeProjection = initialProjection
     engine.addBeforeRenderListener(this.beforeRender)
     if (interactive) {
       this.element.addEventListener('wheel', this.pinOnInput, { capture: true, passive: true })
@@ -251,7 +261,7 @@ export class BaiduScene {
     this.engine.requestRender()
   }
 
-  setView(view: SceneView, coordinates: Coordinate[]) {
+  setView(view: SceneView, coordinates: Coordinate[], keepPitch = false) {
     // Both OSM/WGS84 and Baidu/BD-09 scenes need the same projection switch.
     // Keeping WGS84 in EPSG:3857 made the 3D control change state without
     // changing the actual map projection, which was especially visible in
@@ -265,6 +275,9 @@ export class BaiduScene {
     if (switched) this.engine.map.setProjection(projection)
     this.engine.controller.enableTilt = view === '3d'
     this.engine.controller.enableRotate = view === '3d'
+    // 底图切换重建时相机带着旧 pitch 出生，再写固定倾角会与其后的视角恢复
+    // 重放打架，表现为一次可见抖动；keepPitch 路径跳过倾角写入。
+    if (keepPitch) return
     // 2D/3D 只切换摄像头角度（2D=0° 俯视，3D=52°），中心与缩放保持不动。
     // 倾角必须走 setPitch（观察角度滑杆同一接口）：lookAt 自带的 pitch 同样
     // 会被引擎静默丢弃。

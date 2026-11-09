@@ -296,20 +296,21 @@ function refreshFootprint() {
   if (!wait) apply()
   else footprintTimer = setTimeout(apply, wait)
 }
-function refreshVideoTrack() {
+function refreshVideoTrack(refit = true) {
   if (!scene) return
   const track = (props.videoTrack ?? []).filter(point => point.length >= 2
     && Number.isFinite(point[0]) && Number.isFinite(point[1])
     && Math.abs(point[0]) <= 180 && Math.abs(point[1]) <= 90)
   scene.setTelemetryTrack(track)
-  if (track.length > 1) scene.fit(track, props.viewMode)
+  // refit=false 用于底图切换：轨迹没变，只补画图层，不动相机。
+  if (refit && track.length > 1) scene.fit(track, props.viewMode)
   renderOverlay()
 }
-function applyViewMode() {
-  scene?.setView(props.viewMode, coordinates())
-  tilt.value = props.viewMode === '2d' ? 0 : 52
+function applyViewMode(keepPitch = false) {
+  scene?.setView(props.viewMode, coordinates(), keepPitch)
+  if (!keepPitch) tilt.value = props.viewMode === '2d' ? 0 : 52
   refreshRoute()
-  refreshVideoTrack()
+  refreshVideoTrack(!keepPitch)
   if (props.flightPose?.follow) scene?.followAt(props.flightPose, props.viewMode)
   renderOverlay()
 }
@@ -512,16 +513,20 @@ function finishDrag() {
 function onNodeUp(event: PointerEvent) { if (event.pointerId === drag?.pointerId) finishDrag() }
 function onNodeClick(index: number) { if (!props.flightPose?.playing) emit('select-waypoint', index) }
 async function initialize(savedCamera: CameraView | null = null) {
-  status.value = props.provider === 'baidu' ? '正在加载地球模式…' : '正在加载地图模式…'; failed.value = false
+  // 底图切换重建不亮加载遮罩：旧画面原地替换，只换瓦片纹理，不闪文字。
+  if (!savedCamera) status.value = props.provider === 'baidu' ? '正在加载地球模式…' : '正在加载地图模式…'
+  failed.value = false
   try {
     // The engine needs a center on startup, even when all user anchors are blank.
-    const nextScene = await createMapScene(earthElement.value!, coordinates()[0] ?? [props.start.longitude, props.start.latitude, 0], props.provider)
+    // Basemap switch: the engine is born at the saved camera, so no visible jump.
+    const nextScene = await createMapScene(earthElement.value!, coordinates()[0] ?? [props.start.longitude, props.start.latitude, 0], props.provider, false, savedCamera ?? undefined)
     if (unmounted) { nextScene.dispose(); return }
     scene = nextScene
     scene.onFrame(renderOverlay)
-    applyViewMode()
+    applyViewMode(!!savedCamera)
     if (savedCamera) {
-      // Basemap switch: put the pre-switch camera back instead of refitting.
+      // Deferred replay only: the engine may still rebuild internals (e.g. 3D
+      // projection) after birth and drop camera writes made in the same tick.
       scene.applyCameraView(savedCamera)
     } else if (props.coveragePolygon && props.coveragePolygon.length >= 3) {
       scene.fit(props.coveragePolygon.map(([longitude, latitude]) => [longitude, latitude, 0]), props.viewMode)
@@ -566,7 +571,7 @@ watch(() => props.coverageEditEnabled, enabled => {
 }, { flush: 'sync' })
 watch(() => props.selectedAnchorId, renderOverlay, { flush: 'sync' })
 watch(() => [props.footprint, props.selectedIndex, props.editMode], () => { refreshFootprint(); renderOverlay() }, { deep: true, flush: 'sync' })
-watch(() => props.videoTrack, refreshVideoTrack, { deep: true })
+watch(() => props.videoTrack, () => refreshVideoTrack(), { deep: true })
 watch(() => [props.videoPosition, props.captureTargets], renderOverlay, { deep: true, flush: 'sync' })
 watch(() => [props.weatherSamples, props.weatherRiskPoints], () => {
   selectedWeatherPointIndex.value = null
