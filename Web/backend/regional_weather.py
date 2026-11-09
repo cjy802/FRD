@@ -5,7 +5,7 @@ from datetime import timedelta
 
 import numpy as np
 
-from weather_service import FIELDS, WeatherUnavailable, assemble_forecast, utc_timestamp
+from weather_service import FIELDS, WeatherUnavailable, assemble_forecast, point_model, utc_timestamp
 
 
 FIELD_CHANNELS = dict(zip(FIELDS, ("T2M", "U10", "V10", "MSL", "TP")))
@@ -95,13 +95,21 @@ class RegionalWeather:
             raise WeatherUnavailable("任务时刻没有对应的六小时累计降水预报。")
         raw = {field: float(vector[self.channels.index(channel)]) for field, channel in FIELD_CHANNELS.items()}
         raw['tp_6h_mm'] = max(0., float(self.vector(latitude, longitude, rain)[self.channels.index('TP')]))
-        at_point = math.isclose(latitude, CALIBRATION_POINT[0], abs_tol=1e-6, rel_tol=0) and math.isclose(longitude, CALIBRATION_POINT[1], abs_tol=1e-6, rel_tol=0)
-        # Deployment training covers native leads 6/12/24, never lead 0/18 or
-        # intermediate times. Do not transfer a surface corrector into these.
-        applicable = at_point and left is right and left['lead_hours'] in (6, 12, 24)
         row = {"init": self.init, "valid": when, "lead_hours": (when - self.init).total_seconds() / 3600,
                "latitude_deg": latitude, "longitude_deg": longitude, "raw": raw}
-        result = assemble_forecast(row, model if applicable else None, historical=False)
+        regional = isinstance(model, dict) and "latitudes" in model
+        cell = point_model(model, latitude, longitude) if regional else None
+        if regional:
+            # Regional training covers every native box cell on its trained
+            # leads; never the lead-0 background or time-interpolated states.
+            applicable = cell is not None and left is right and left['lead_hours'] in model['trained_leads']
+            result = assemble_forecast(row, cell if applicable else None, historical=False)
+        else:
+            at_point = math.isclose(latitude, CALIBRATION_POINT[0], abs_tol=1e-6, rel_tol=0) and math.isclose(longitude, CALIBRATION_POINT[1], abs_tol=1e-6, rel_tol=0)
+            # Deployment training covers native leads 6/12/24, never lead 0/18 or
+            # intermediate times. Do not transfer a surface corrector into these.
+            applicable = at_point and left is right and left['lead_hours'] in (6, 12, 24)
+            result = assemble_forecast(row, model if applicable else None, historical=False)
         result.update({"input_source": self.input_source, "spatial_method": "bilinear_native_grid",
                        'initialization_frames': self.input_frames,
                        "native_resolution_deg": .25, "corrector_applicable": applicable,
@@ -115,6 +123,10 @@ class RegionalWeather:
                 result['sources'][field] = rain['source'] if field == 'tp_6h_mm' else (
                     left['source'] if left is right else 'temporal_interpolation_initial_fuxi' if left['lead_hours'] == 0 else 'temporal_interpolation_fuxi')
         if not applicable:
-            result["model_warning"] = ("单点订正模型未在该位置验证，当前使用区域原始预报。" if not at_point
-                                       else "订正模型不用于起报场、18h 或时间插值结果，当前使用未订正天气资料。")
+            if regional:
+                result["model_warning"] = ("该位置训练样本不足，当前使用区域原始预报。" if cell is None
+                                           else "订正模型不用于起报场或时间插值结果，当前使用未订正天气资料。")
+            else:
+                result["model_warning"] = ("单点订正模型未在该位置验证，当前使用区域原始预报。" if not at_point
+                                           else "订正模型不用于起报场、18h 或时间插值结果，当前使用未订正天气资料。")
         return result

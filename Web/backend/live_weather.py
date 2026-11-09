@@ -13,8 +13,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from weather_service import (
-    DEFAULT_MODEL, PROJECT_ROOT, WeatherUnavailable, assemble_forecast,
-    configured_path, iso_utc, load_corrector, point_risk, utc_timestamp,
+    PROJECT_ROOT, WeatherUnavailable, assemble_forecast,
+    configured_path, default_corrector_path, iso_utc, load_corrector, point_model, point_risk, utc_timestamp,
 )
 from regional_weather import RegionalWeather
 from route_weather import align_route
@@ -182,7 +182,7 @@ class ForecastJobs:
             grid = self._restore_grid(payload["grid"])
             height_payload = payload.get("height_grid")
             height_grid = self._restore_grid(height_payload, height=True) if height_payload else None
-            model = self.corrector(configured_path("WEATHER_CORRECTOR_PATH", DEFAULT_MODEL))
+            model = self.corrector(configured_path("WEATHER_CORRECTOR_PATH", default_corrector_path()))
             with self.lock:
                 self.jobs[job_id] = job
                 self.grids[job_id] = grid
@@ -333,7 +333,7 @@ class ForecastJobs:
             self.update(job_id, status="running", message="正在校验起报场时刻和网格。")
             metadata = self.worker(input_path, True)
             validate_metadata(metadata, self.clock())
-            model = self.corrector(configured_path("WEATHER_CORRECTOR_PATH", DEFAULT_MODEL))
+            model = self.corrector(configured_path("WEATHER_CORRECTOR_PATH", default_corrector_path()))
             self.update(job_id, message="FuXi 正在生成未来 6/12/18/24 小时区域天气。")
             predicted = self.worker(input_path, False)
             init, valid = validate_metadata(predicted, self.clock())
@@ -343,7 +343,8 @@ class ForecastJobs:
             )):
                 raise WeatherUnavailable("推理期间起报场发生变化，请重新预测。")
             row = {**predicted, "init": init, "valid": valid}
-            forecast = assemble_forecast(row, model, historical=False)
+            forecast = assemble_forecast(row, point_model(model, predicted["latitude_deg"], predicted["longitude_deg"]),
+                                         historical=False)
             forecast["input_source"] = predicted.get("input_source", "Configured weather initial field")
             forecast['initialization_frames'] = predicted.get('initialization_frames', [])
             forecast["generated_at_utc"] = iso_utc(self.clock())

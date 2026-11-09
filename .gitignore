@@ -49,6 +49,8 @@
 # 例外：上线订正模型很小且必需，随仓库分发
 !/Web/mode/output_production/corrector_ridge.npz
 !/Web/mode/output_production/training_metadata.json
+!/Web/mode/output_production/corrector_region_ridge.npz
+!/Web/mode/output_production/training_metadata_region.json
 
 # 本地视频素材与录屏产物
 /视频/

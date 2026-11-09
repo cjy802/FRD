@@ -20,6 +20,7 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PAIRS = PROJECT_ROOT / "app/point_data/fuxi_era5_pairs_6h.csv"
 DEFAULT_MODEL = PROJECT_ROOT / "Web/mode/output_production/corrector_ridge.npz"
+REGION_MODEL = PROJECT_ROOT / "Web/mode/output_production/corrector_region_ridge.npz"
 FIELDS = ("t2m_K", "u10_m_s", "v10_m_s", "msl_Pa", "tp_6h_mm")
 CORRECTED_FIELDS = frozenset(("t2m_K", "u10_m_s", "tp_6h_mm"))
 FEATURE_NAMES = tuple(f"fuxi_{field}" for field in FIELDS) + ("lead_hours", "doy_sin", "doy_cos")
@@ -45,12 +46,19 @@ def iso_utc(stamp: datetime) -> str:
     return stamp.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def default_corrector_path() -> Path:
+    """Prefer the regional per-cell model once it has been fitted."""
+    return REGION_MODEL if REGION_MODEL.is_file() else DEFAULT_MODEL
+
+
 def load_corrector(model_path: Path) -> dict:
     with np.load(model_path, allow_pickle=False) as artifact:
         if tuple(artifact["feature_names"].tolist()) != FEATURE_NAMES:
             raise WeatherUnavailable("模型不是当前公共 8 特征模型。")
         if tuple(artifact["target_names"].tolist()) != TARGET_NAMES:
             raise WeatherUnavailable("模型输出变量与天气接口不匹配。")
+        if "latitudes" in artifact:
+            return _load_region_corrector(artifact)
         expected = {
             "coefficients": (9, 5), "feature_mean": (8,), "feature_scale": (8,),
             "target_mean": (5,), "target_scale": (5,),
@@ -64,6 +72,54 @@ def load_corrector(model_path: Path) -> dict:
         if np.any(model["feature_scale"] <= 0) or np.any(model["target_scale"] <= 0):
             raise WeatherUnavailable("模型标准化尺度无效。")
         return model
+
+
+def _load_region_corrector(artifact) -> dict:
+    """Validate the per-cell regional artifact; NaN cells mean "not trained"."""
+    latitudes = np.asarray(artifact["latitudes"], dtype=np.float64)
+    longitudes = np.asarray(artifact["longitudes"], dtype=np.float64)
+    nlat, nlon = len(latitudes), len(longitudes)
+    if (latitudes.ndim != 1 or longitudes.ndim != 1 or nlat < 2 or nlon < 2
+            or not np.isfinite(latitudes).all() or not np.isfinite(longitudes).all()
+            or not np.all(np.diff(latitudes) < 0) or not np.all(np.diff(longitudes) > 0)):
+        raise WeatherUnavailable("区域订正模型网格无效。")
+    model = {"latitudes": latitudes, "longitudes": longitudes,
+             "trained_leads": tuple(int(value) for value in np.asarray(artifact["trained_leads"]).tolist())}
+    for name, shape in {
+        "coefficients": (nlat, nlon, 9, 5), "feature_mean": (nlat, nlon, 8),
+        "feature_scale": (nlat, nlon, 8), "target_mean": (nlat, nlon, 5),
+        "target_scale": (nlat, nlon, 5),
+    }.items():
+        values = np.asarray(artifact[name], dtype=np.float64)
+        if values.shape != shape:
+            raise WeatherUnavailable(f"区域模型参数 {name} 形状无效。")
+        model[name] = values
+    trained = np.isfinite(model["coefficients"]).all(axis=(2, 3))
+    for name in ("feature_mean", "feature_scale", "target_mean", "target_scale"):
+        cell_finite = np.isfinite(model[name]).all(axis=2)
+        if not np.array_equal(cell_finite, trained):
+            raise WeatherUnavailable(f"区域模型参数 {name} 与已训练格点不一致。")
+    if not trained.any():
+        raise WeatherUnavailable("区域订正模型没有任何已训练格点。")
+    if np.any(model["feature_scale"][trained] <= 0) or np.any(model["target_scale"][trained] <= 0):
+        raise WeatherUnavailable("区域模型标准化尺度无效。")
+    return model
+
+
+def point_model(model: dict | None, latitude: float, longitude: float) -> dict | None:
+    """Nearest-cell view of a regional corrector; single-point models pass through.
+
+    Returns None for untrained cells so callers fall back to raw FuXi.
+    """
+    if model is None or "latitudes" not in model:
+        return model
+    row = int(np.argmin(np.abs(model["latitudes"] - latitude)))
+    col = int(np.argmin(np.abs(model["longitudes"] - longitude)))
+    cell = {key: model[key][row, col] for key in
+            ("coefficients", "feature_mean", "feature_scale", "target_mean", "target_scale")}
+    if not np.isfinite(cell["coefficients"]).all():
+        return None
+    return cell
 
 
 def assemble_forecast(row: dict, model: dict | None, model_warning: str | None = None, historical: bool = True) -> dict:
