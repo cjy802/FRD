@@ -1,20 +1,20 @@
 <!-- 任务列表的静态路线缩略图：天地图矢量瓦片 + 矢量路线。
-     瓦片始终按原生 256px 1:1 贴图（不缩放），画布按 devicePixelRatio 放大后备分辨率，
-     路线是矢量描线——小尺寸下瓦片和线条都不会糊。瓦片加载失败时退化为纯底色+路线。 -->
+     瓦片始终按原生 256px 1:1 贴图（不缩放），画布后备分辨率跟随实际 CSS 尺寸 × devicePixelRatio，
+     路线是矢量描线——小尺寸与拉伸后都不会糊。高度随任务行文字列拉伸，底边与按钮组对齐。
+     瓦片加载失败时退化为纯底色+路线。 -->
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 const props = defineProps<{
   coordinates: Array<[number, number]>
 }>()
 
-const WIDTH = 148
-const HEIGHT = 104
 const PADDING = 14
 const TILE = 256
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 const renderToken = ref(0)
+let resizeObserver: ResizeObserver | null = null
 
 // 列表里相邻任务大多在同一片区域，模块级瓦片缓存让第二个缩略图起零请求。
 const tileCache = new Map<string, Promise<HTMLImageElement | null>>()
@@ -52,15 +52,19 @@ async function render(): Promise<void> {
   const canvas = canvasRef.value
   const coordinates = props.coordinates
   if (!canvas || coordinates.length < 2) return
+  const rect = canvas.getBoundingClientRect()
+  const viewWidth = Math.round(rect.width)
+  const viewHeight = Math.round(rect.height)
+  if (viewWidth < 40 || viewHeight < 40) return
   const token = ++renderToken.value
   const dpr = Math.min(window.devicePixelRatio || 1, 2)
-  canvas.width = Math.round(WIDTH * dpr)
-  canvas.height = Math.round(HEIGHT * dpr)
+  canvas.width = Math.round(viewWidth * dpr)
+  canvas.height = Math.round(viewHeight * dpr)
   const ctx = canvas.getContext('2d')
   if (!ctx) return
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   ctx.fillStyle = '#e6edf3'
-  ctx.fillRect(0, 0, WIDTH, HEIGHT)
+  ctx.fillRect(0, 0, viewWidth, viewHeight)
 
   let minLon = Infinity
   let maxLon = -Infinity
@@ -79,18 +83,18 @@ async function render(): Promise<void> {
   while (zoom > 3) {
     const spanX = lonToWorldX(maxLon, zoom) - lonToWorldX(minLon, zoom)
     const spanY = latToWorldY(minLat, zoom) - latToWorldY(maxLat, zoom)
-    if (spanX <= WIDTH - PADDING * 2 && spanY <= HEIGHT - PADDING * 2) break
+    if (spanX <= viewWidth - PADDING * 2 && spanY <= viewHeight - PADDING * 2) break
     zoom -= 1
   }
   const centerX = (lonToWorldX(minLon, zoom) + lonToWorldX(maxLon, zoom)) / 2
   const centerY = (latToWorldY(minLat, zoom) + latToWorldY(maxLat, zoom)) / 2
-  const originX = centerX - WIDTH / 2
-  const originY = centerY - HEIGHT / 2
+  const originX = centerX - viewWidth / 2
+  const originY = centerY - viewHeight / 2
 
   const tileX0 = Math.floor(originX / TILE)
-  const tileX1 = Math.floor((originX + WIDTH) / TILE)
+  const tileX1 = Math.floor((originX + viewWidth) / TILE)
   const tileY0 = Math.floor(originY / TILE)
-  const tileY1 = Math.floor((originY + HEIGHT) / TILE)
+  const tileY1 = Math.floor((originY + viewHeight) / TILE)
   const requests: Array<{ image: Promise<HTMLImageElement | null>; x: number; y: number }> = []
   for (let ty = tileY0; ty <= tileY1; ty += 1) {
     for (let tx = tileX0; tx <= tileX1; tx += 1) {
@@ -136,7 +140,16 @@ async function render(): Promise<void> {
   drawEndpoint(points[points.length - 1], '#a4262c')
 }
 
-onMounted(() => { void render() })
+onMounted(() => {
+  // 高度随文字列拉伸（与按钮组底边对齐），尺寸变化时按新尺寸全分辨率重绘。
+  resizeObserver = new ResizeObserver(() => { void render() })
+  if (canvasRef.value) resizeObserver.observe(canvasRef.value)
+  void nextTick(() => { void render() })
+})
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  resizeObserver = null
+})
 watch(() => props.coordinates, () => { void render() })
 </script>
 
@@ -153,8 +166,10 @@ watch(() => props.coordinates, () => { void render() })
 .task-map-preview {
   display: block;
   flex: none;
-  width: 148px;
-  height: 104px;
+  width: 168px;
+  height: auto;
+  align-self: stretch;
+  min-height: 104px;
   border: 1px solid var(--ui-line);
   border-radius: 6px;
   background: #e6edf3;
