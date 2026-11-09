@@ -4,6 +4,7 @@ export type WeatherLimits = {
 }
 export type WeatherAlert = {
   field: string; reason: string; point_index: number; coordinate: number[]; eta_utc: string; level: string
+  label?: string; value?: number | null; unit?: string; threshold?: number | null; operator?: string
 }
 export type WeatherRiskPoint = {
   index: number; coordinate: number[]; eta_utc: string; level: string; score_0_100: number

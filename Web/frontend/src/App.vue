@@ -1459,8 +1459,25 @@ const decisionDescription = computed(() => {
   if (!routeAssessment.value) return '结果出来后，这里会先告诉你是否有需要留意的天气因素。'
   if (decisionLevel.value === 'no_trigger') return ''
   if (decisionLevel.value === 'incomplete') return '部分路线缺少可用的高度或时间资料，当前判断不完整，不能把“没有提醒”理解为安全。'
+  const triggered = risk?.alerts ?? []
+  const problems = triggered.map((alert) => {
+    if (typeof alert.value !== 'number' || typeof alert.threshold !== 'number'
+      || !alert.label || !alert.unit) return null
+    const lineName = alert.level === 'elevated' ? '较强线' : '提醒线'
+    const verb = alert.operator === '≤' ? '低于' : '超过'
+    return `${alert.label} ${formatAlertNumber(alert.value, alert.unit)} ${alert.unit} ${verb}${lineName} ${formatAlertNumber(alert.threshold, alert.unit)} ${alert.unit}`
+  }).filter((part): part is string => part !== null)
+  if (problems.length) {
+    const count = risk?.triggered_point_count ?? 0
+    return `${problems.join('；')}。${count > 1 ? `${count} 个点位触发，` : ''}可展开沿线天气查看位置；这只是天气初筛。`
+  }
   return '较强提醒指标已用红框标出，接近提醒线的指标用橙框标出；可展开沿线天气查看地图点位。这个结果只是天气初筛。'
 })
+
+function formatAlertNumber(value: number, unit: string): string {
+  if (unit === 'm') return String(Math.round(value))
+  return Number(value.toFixed(1)).toString()
+}
 const weatherChecks = computed(() => routeAssessment.value ? weatherOnlyChecks(routeAssessment.value.decision) : [])
 const alignmentProgress = computed(() => routeAssessment.value?.coverage.flight_height ? '沿线位置、时间与高度风已匹配'
   : routeAssessment.value?.coverage.surface_space_time ? '地面时空已匹配，高度资料不足' : '等待路线与天气资料匹配')
