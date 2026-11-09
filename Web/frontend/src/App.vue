@@ -3193,11 +3193,11 @@ onBeforeUnmount(() => {
                     <small>{{ taskDateText(task.created_at) }} · {{ task.distance_km === null ? '距离待算' : `${task.distance_km.toFixed(2)} km` }}</small>
                     <small v-if="task.max_wind_m_s !== null || task.max_rain_6h_mm !== null">天气：{{ task.max_wind_m_s === null ? '风缺测' : `最大风 ${task.max_wind_m_s.toFixed(1)} m/s` }} · {{ task.max_rain_6h_mm === null ? '雨缺测' : `六小时雨 ${task.max_rain_6h_mm.toFixed(1)} mm` }}</small>
                     <small>机型 {{ task.drone_model ?? '未选' }} · 关键帧 {{ task.frame_count }} 张{{ task.video_survey_id ? ' · 已导入视频/SRT' : '' }}</small>
+                        <div class="saved-task-actions">
+                          <button type="button" class="saved-task-reuse" :disabled="taskBusy || !!deletingTaskId || !!reusingTaskId" :aria-label="`复用地图：${task.name || task.route_summary}`" title="把该任务的路线加载到当前地图；已关联的视频、关键帧与分析结果保持不变" @click.stop="reuseSavedTaskMap(task.task_id)">{{ reusingTaskId === task.task_id ? '复用中…' : '复用地图' }}</button>
+                          <button type="button" class="saved-task-delete" :disabled="taskBusy || !!deletingTaskId" :aria-label="`删除任务：${task.name || task.route_summary}`" @click.stop="requestDeleteMissionTask(task.task_id)">{{ deletingTaskId === task.task_id ? '删除中…' : pendingDeleteTaskId === task.task_id ? '取消' : '删除' }}</button>
+                        </div>
                       </div>
-                    </div>
-                    <div class="saved-task-actions">
-                      <button type="button" class="saved-task-reuse" :disabled="taskBusy || !!deletingTaskId || !!reusingTaskId" :aria-label="`复用地图：${task.name || task.route_summary}`" title="把该任务的路线加载到当前地图；已关联的视频、关键帧与分析结果保持不变" @click.stop="reuseSavedTaskMap(task.task_id)">{{ reusingTaskId === task.task_id ? '复用中…' : '复用地图' }}</button>
-                      <button type="button" class="saved-task-delete" :disabled="taskBusy || !!deletingTaskId" :aria-label="`删除任务：${task.name || task.route_summary}`" @click.stop="requestDeleteMissionTask(task.task_id)">{{ deletingTaskId === task.task_id ? '删除中…' : pendingDeleteTaskId === task.task_id ? '取消' : '删除' }}</button>
                     </div>
                   </div>
                   <div v-if="pendingDeleteTaskId === task.task_id" class="saved-task-confirm" role="group" :aria-label="`确认删除任务：${task.name || task.route_summary}`">
