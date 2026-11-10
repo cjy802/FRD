@@ -304,6 +304,19 @@ def remove_files(paths: list[Path]) -> None:
         Path(path).unlink(missing_ok=True)
 
 
+def date_cache_files(cache: Path, init: datetime) -> list[Path]:
+    files = []
+    for valid in (init - timedelta(hours=6), init):
+        files.append(cache / f"gfs_{valid:%Y%m%d%H}_f000_state.grib2")
+        files.append(cache / f"gfs_{valid - timedelta(hours=6):%Y%m%d%H}_f006_rain.grib2")
+    return files
+
+
+def purge_date_cache(cache: Path, init: datetime) -> None:
+    """Drop a date's cached GRIBs so a corrupt download cannot poison retries."""
+    remove_files(date_cache_files(cache, init))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--start", required=True, help="first UTC init date YYYY-MM-DD")
@@ -383,6 +396,7 @@ def main() -> int:
                     if attempt == 0:
                         print(f"prefetch retry for {day.isoformat()}: "
                               f"{type(failure).__name__}: {failure}", flush=True)
+                        purge_date_cache(args.cache_dir, init)
                         time.sleep(30)
             if error is not None:
                 ready.put((day, None, None, error))
@@ -429,6 +443,10 @@ def main() -> int:
             print(f"FAILED {day.isoformat()}: {type(error).__name__}: {error}", file=sys.stderr, flush=True)
             if input_path is not None:
                 Path(native_nc_path(input_path)).unlink(missing_ok=True)
+            purge_date_cache(
+                args.cache_dir,
+                datetime(day.year, day.month, day.day, args.init_hour, tzinfo=timezone.utc),
+            )
         finally:
             if not isinstance(produce_error, StopIteration):
                 slots.release()

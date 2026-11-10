@@ -1,27 +1,32 @@
 """Download ERA5 single-level truth for the live service region box.
 
-One calendar month produces three CDS requests (surface instants, wind
-instants, hourly precipitation) restricted to ``AREA`` = 116-122.5E /
-30-35.5N — the same 23x27 grid the live FuXi service crops, ~621 points —
-plus a small preceding-evening precipitation request so the six-hour totals
-at month start do not silently bridge the boundary. The extracted monthly
-CSV keeps only the four six-hourly boundary hours (00/06/12/18 UTC) that the
-training pairs need.
+One calendar month needs four CDS requests (surface instants, wind instants,
+hourly precipitation, preceding-evening precipitation) restricted to
+``AREA`` = 116-122.5E / 30-35.5N — the same 23x27 grid the live FuXi service
+crops, ~621 points. CDS queues a single request for up to an hour or more,
+so instead of one month at a time all missing requests are submitted through
+a small thread pool (each thread owns its ``cdsapi.Client``) and months are
+extracted as soon as their four ZIPs are on disk.
 
-Each monthly CSV is roughly 10 MB and holds ``valid_time_utc``,
-``latitude_deg``, ``longitude_deg`` and the five truth channels including
-``tp_6h_mm``. Join it with ``pair_gfs_region.py``. CDS needs the VPN up; the
-default is a dry run, add --execute to submit requests. Finished months are
-skipped on re-run.
+Finished months become ``era5_surface_box_YYYYMM.csv`` (~10 MB) holding
+``valid_time_utc``, ``latitude_deg``, ``longitude_deg`` and the five truth
+channels including ``tp_6h_mm`` at the four six-hourly boundary hours. Join
+with ``pair_gfs_region.py``. CDS needs the VPN up; the default is a dry run,
+add --execute to submit. Re-running skips finished months and valid ZIPs.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
+import shutil
 import sys
+import tempfile
+import threading
 import time
 import zipfile
-from datetime import date, datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import netCDF4 as nc
@@ -43,6 +48,12 @@ TRUTH_COLUMNS = (
     "valid_time_utc", "latitude_deg", "longitude_deg",
     "t2m_K", "msl_Pa", "u10_m_s", "v10_m_s", "tp_6h_mm",
 )
+KIND_VARIABLES = {
+    "surface": SURFACE_VARIABLES,
+    "wind": WIND_VARIABLES,
+    "precip": PRECIP_VARIABLES,
+    "evening": PRECIP_VARIABLES,
+}
 
 
 def month_list(start: str, end: str) -> list[tuple[int, int]]:
@@ -58,22 +69,6 @@ def month_list(start: str, end: str) -> list[tuple[int, int]]:
     return months
 
 
-def request(year: int, month: int, days: list[int], variables: list[str],
-            times: list[str], previous_month: tuple[int, int] | None = None) -> dict:
-    year, month = previous_month if previous_month else (year, month)
-    return {
-        "product_type": ["reanalysis"],
-        "variable": variables,
-        "year": [f"{year:04d}"],
-        "month": [f"{month:02d}"],
-        "day": [f"{day:02d}" for day in days],
-        "time": times,
-        "area": AREA,
-        "data_format": "netcdf",
-        "download_format": "zip",
-    }
-
-
 def month_days(year: int, month: int) -> list[int]:
     if month == 12:
         following = date(year + 1, 1, 1)
@@ -82,26 +77,73 @@ def month_days(year: int, month: int) -> list[int]:
     return list(range(1, (following - date(year, month, 1)).days + 1))
 
 
-def download(client, payload: dict, target: Path, attempts: int) -> Path:
-    partial = target.with_suffix(".part")
-    for attempt in range(1, attempts + 1):
-        try:
-            if partial.exists():
-                partial.unlink()
-            client.retrieve(DATASET, payload, str(partial))
-            if not partial.is_file() or not zipfile.is_zipfile(partial):
-                raise RuntimeError("CDS output is missing or not a ZIP")
-            partial.replace(target)
-            return target
-        except Exception as error:  # noqa: BLE001
-            if partial.exists():
-                partial.unlink()
-            if attempt == attempts:
-                raise
-            delay = min(60 * attempt, 300)
-            print(f"  transient failure ({type(error).__name__}: {error}); "
-                  f"retry in {delay}s", file=sys.stderr, flush=True)
-            time.sleep(delay)
+def build_payload(kind: str, year: int, month: int) -> dict:
+    """CDS request for one month/kind inside the region box."""
+    if kind in ("surface", "wind"):
+        payload_year, payload_month, days, times = year, month, month_days(year, month), INSTANT_TIMES
+    elif kind == "precip":
+        payload_year, payload_month, days, times = year, month, month_days(year, month), HOURLY_TIMES
+    else:  # evening: last day of the previous month, 18-23 UTC
+        if month == 1:
+            payload_year, payload_month = year - 1, 12
+        else:
+            payload_year, payload_month = year, month - 1
+        days, times = [month_days(payload_year, payload_month)[-1]], EVENING_TIMES
+    return {
+        "product_type": ["reanalysis"],
+        "variable": KIND_VARIABLES[kind],
+        "year": [f"{payload_year:04d}"],
+        "month": [f"{payload_month:02d}"],
+        "day": [f"{day:02d}" for day in days],
+        "time": times,
+        "area": AREA,
+        "data_format": "netcdf",
+        "download_format": "zip",
+    }
+
+
+def valid_zip(path: Path) -> bool:
+    return path.is_file() and path.stat().st_size > 0 and zipfile.is_zipfile(path)
+
+
+class CdsWorker:
+    """Thread-local cdsapi clients; one CDS request per submit call."""
+
+    def __init__(self, attempts: int):
+        self.attempts = attempts
+        self.local = threading.local()
+
+    def client(self):
+        if not hasattr(self.local, "client"):
+            import cdsapi
+
+            self.local.client = cdsapi.Client(quiet=True, progress=False)
+        return self.local.client
+
+    def submit(self, kind: str, year: int, month: int, target: Path) -> Path:
+        payload = build_payload(kind, year, month)
+        partial = target.with_suffix(".part")
+        for attempt in range(1, self.attempts + 1):
+            try:
+                if partial.exists():
+                    partial.unlink()
+                self.client().retrieve(DATASET, payload, str(partial))
+                if not valid_zip(partial):
+                    raise RuntimeError("CDS output is missing or not a ZIP")
+                partial.replace(target)
+                return target
+            except Exception as error:  # noqa: BLE001 - retried, then reported
+                if partial.exists():
+                    try:
+                        partial.unlink()
+                    except OSError:
+                        pass
+                if attempt == self.attempts:
+                    raise
+                delay = min(60 * attempt, 300)
+                print(f"  {year}-{month:02d}/{kind} attempt {attempt} failed "
+                      f"({type(error).__name__}); retry in {delay}s", flush=True)
+                time.sleep(delay)
 
 
 def extract_zip(zip_path: Path, work_dir: Path) -> Path:
@@ -181,15 +223,30 @@ def truth_frame(surface_nc: Path, wind_nc: Path, precip_ncs: list[Path]) -> pd.D
     lon_round = np.round(longitudes, 3)
     arrays = {name: np.asarray(result[name], dtype=np.float64) for name in TRUTH_COLUMNS[3:]}
     for time_index, stamp in enumerate(result.index):
-        flat = time_index
         for lat_index, latitude in enumerate(lat_round):
             for lon_index, longitude in enumerate(lon_round):
                 offset = lat_index * len(lon_round) + lon_index
                 rows.append((
                     stamp.strftime("%Y-%m-%dT%H:%M:%SZ"), latitude, longitude,
-                    *(array[flat, offset] for array in arrays.values()),
+                    *(array[time_index, offset] for array in arrays.values()),
                 ))
     return pd.DataFrame(rows, columns=TRUTH_COLUMNS)
+
+
+def extract_month(year: int, month: int, zips: dict[str, Path], target: Path) -> int:
+    with tempfile.TemporaryDirectory(prefix=f"era5_box_{year}{month:02d}_") as work:
+        work_dir = Path(work)
+        surface_nc = extract_zip(zips["surface"], work_dir)
+        wind_nc = extract_zip(zips["wind"], work_dir)
+        precip_nc = extract_zip(zips["precip"], work_dir)
+        evening_nc = extract_zip(zips["evening"], work_dir)
+        validate_finite(surface_nc, ("t2m", "msl"))
+        validate_finite(wind_nc, ("u10", "v10"))
+        validate_finite(precip_nc, ("tp",))
+        validate_finite(evening_nc, ("tp",))
+        frame = truth_frame(surface_nc, wind_nc, [evening_nc, precip_nc])
+    frame.to_csv(target, index=False, encoding="utf-8-sig", float_format="%.9g")
+    return len(frame)
 
 
 def main() -> int:
@@ -197,6 +254,9 @@ def main() -> int:
     parser.add_argument("--start", required=True, help="first month YYYY-MM")
     parser.add_argument("--end", required=True, help="last month YYYY-MM (inclusive)")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--workers", type=int, default=4,
+                        help="concurrent CDS requests (default 4; the queue cap "
+                             "rejects larger bursts)")
     parser.add_argument("--execute", action="store_true", help="submit CDS requests")
     parser.add_argument("--retry-attempts", type=int, default=4)
     args = parser.parse_args()
@@ -206,71 +266,76 @@ def main() -> int:
     except ValueError as error:
         parser.error(str(error))
 
-    pending = []
+    zip_dir = args.output_dir / "zips"
+    jobs: list[tuple[str, int, int, Path]] = []
+    pending_months = []
     for year, month in months:
         target = args.output_dir / f"era5_surface_box_{year}{month:02d}.csv"
         if target.is_file():
-            print(f"{year}-{month:02d}: {target.name} exists; skip.")
-        else:
-            pending.append(((year, month), target))
-    print(f"{len(pending)} month(s) pending out of {len(months)}.")
+            continue
+        pending_months.append((year, month))
+        for kind in KIND_VARIABLES:
+            zip_target = zip_dir / f"{year}{month:02d}_{kind}.zip"
+            if not valid_zip(zip_target):
+                jobs.append((kind, year, month, zip_target))
+    print(f"{len(months)} month(s) in range, {len(pending_months)} pending, "
+          f"{len(jobs)} CDS request(s) to submit.", flush=True)
+    if not pending_months:
+        return 0
     if not args.execute:
         print("DRY RUN: no requests submitted. Add --execute (VPN required).")
         return 0
 
     try:
-        import cdsapi
+        import cdsapi  # noqa: F401
     except ImportError:
         print('python -m pip install "cdsapi>=0.7.7"', file=sys.stderr)
         return 2
-    client = cdsapi.Client()
 
-    import tempfile
-    failures = []
-    for (year, month), target in pending:
-        started = time.time()
+    worker = CdsWorker(args.retry_attempts)
+    failures: list[tuple[str, int, int]] = []
+    if jobs:
+        with ThreadPoolExecutor(max_workers=args.workers) as pool:
+            futures = {
+                pool.submit(worker.submit, kind, year, month, target): (kind, year, month)
+                for kind, year, month, target in jobs
+            }
+            for future in as_completed(futures):
+                kind, year, month = futures[future]
+                try:
+                    future.result()
+                    print(f"downloaded {year}-{month:02d}/{kind}", flush=True)
+                except Exception as error:  # noqa: BLE001
+                    failures.append((kind, year, month))
+                    print(f"FAILED {year}-{month:02d}/{kind}: "
+                          f"{type(error).__name__}: {error}", file=sys.stderr, flush=True)
+
+    completed = 0
+    for year, month in pending_months:
+        target = args.output_dir / f"era5_surface_box_{year}{month:02d}.csv"
+        zips = {kind: zip_dir / f"{year}{month:02d}_{kind}.zip" for kind in KIND_VARIABLES}
+        if target.is_file():
+            continue
+        if not all(valid_zip(path) for path in zips.values()):
+            continue
         try:
-            with tempfile.TemporaryDirectory(prefix="era5_box_") as work:
-                work_dir = Path(work)
-                days = month_days(year, month)
-                if month == 1:
-                    previous = (year - 1, 12)
-                else:
-                    previous = (year, month - 1)
-                last_evening_day = month_days(*previous)[-1]
-
-                surface_zip = download(client, request(year, month, days, SURFACE_VARIABLES, INSTANT_TIMES),
-                                       work_dir / "surface.zip", args.retry_attempts)
-                wind_zip = download(client, request(year, month, days, WIND_VARIABLES, INSTANT_TIMES),
-                                    work_dir / "wind.zip", args.retry_attempts)
-                precip_zip = download(client, request(year, month, days, PRECIP_VARIABLES, HOURLY_TIMES),
-                                      work_dir / "precip.zip", args.retry_attempts)
-                evening_zip = download(
-                    client, request(year, month, [last_evening_day], PRECIP_VARIABLES, EVENING_TIMES,
-                                    previous_month=previous),
-                    work_dir / "evening.zip", args.retry_attempts,
-                )
-                surface_nc = extract_zip(surface_zip, work_dir)
-                wind_nc = extract_zip(wind_zip, work_dir)
-                precip_nc = extract_zip(precip_zip, work_dir)
-                evening_nc = extract_zip(evening_zip, work_dir)
-                validate_finite(surface_nc, ("t2m", "msl"))
-                validate_finite(wind_nc, ("u10", "v10"))
-                validate_finite(precip_nc, ("tp",))
-                validate_finite(evening_nc, ("tp",))
-                frame = truth_frame(surface_nc, wind_nc, [evening_nc, precip_nc])
-            args.output_dir.mkdir(parents=True, exist_ok=True)
-            frame.to_csv(target, index=False, encoding="utf-8-sig", float_format="%.9g")
-            print(f"{year}-{month:02d}: {len(frame)} rows -> {target.name} "
-                  f"({time.time() - started:.0f}s)", flush=True)
+            started = time.time()
+            rows = extract_month(year, month, zips, target)
+            completed += 1
+            print(f"extracted {year}-{month:02d}: {rows} rows ({time.time() - started:.0f}s)",
+                  flush=True)
+            for path in zips.values():
+                path.unlink(missing_ok=True)
         except Exception as error:  # noqa: BLE001
-            failures.append((year, month))
-            print(f"FAILED {year}-{month:02d}: {type(error).__name__}: {error}",
-                  file=sys.stderr, flush=True)
+            print(f"EXTRACT FAILED {year}-{month:02d}: "
+                  f"{type(error).__name__}: {error}", file=sys.stderr, flush=True)
+
+    print(f"Done: {completed} month(s) extracted this run; "
+          f"{len(failures)} request(s) failed.", flush=True)
     if failures:
-        print("Failed months (re-run the same command to retry):", file=sys.stderr)
-        for year, month in failures:
-            print(f"  {year}-{month:02d}", file=sys.stderr)
+        print("Failed requests (re-run the same command to retry):", file=sys.stderr)
+        for kind, year, month in sorted(failures, key=lambda item: (item[1], item[2], item[0])):
+            print(f"  {year}-{month:02d}/{kind}", file=sys.stderr)
         return 1
     return 0
 
