@@ -129,6 +129,10 @@ class CdsWorker:
 
     def submit(self, name: str, payload: dict, target: Path) -> Path:
         partial = target.with_suffix(".part")
+        # CDS enforces a small per-dataset queue cap and rejects extra
+        # submissions ("request data sequentially"); rejections are loud but
+        # transient, so retry patiently with long backoff.
+        delays = (300, 600, 900, 900, 1200, 1200, 1800, 1800)
         for attempt in range(1, self.attempts + 1):
             try:
                 if partial.exists():
@@ -146,9 +150,9 @@ class CdsWorker:
                         pass
                 if attempt == self.attempts:
                     raise
-                delay = min(120 * attempt, 600)
-                print(f"  {name} attempt {attempt} failed "
-                      f"({type(error).__name__}: {str(error)[:120]}); retry in {delay}s", flush=True)
+                delay = delays[min(attempt - 1, len(delays) - 1)]
+                print(f"  {name} attempt {attempt} rejected/failed "
+                      f"({type(error).__name__}); retry in {delay}s", flush=True)
                 time.sleep(delay)
 
 
@@ -255,11 +259,11 @@ def main() -> int:
     parser.add_argument("--start", required=True, help="first month YYYY-MM")
     parser.add_argument("--end", required=True, help="last month YYYY-MM (inclusive)")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--workers", type=int, default=2,
-                        help="concurrent CDS requests (default 2; the queue cap "
-                             "rejects larger bursts)")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="concurrent CDS requests (default 1; the dataset queue cap "
+                             "rejects anything but sequential requests)")
     parser.add_argument("--execute", action="store_true", help="submit CDS requests")
-    parser.add_argument("--retry-attempts", type=int, default=4)
+    parser.add_argument("--retry-attempts", type=int, default=8)
     args = parser.parse_args()
 
     try:
