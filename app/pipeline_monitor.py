@@ -198,7 +198,11 @@ def check(name: str) -> tuple[str, str]:
     if alive > 0:
         if age > HUNG_MIN:
             # A silently wedged process (no log, no sockets) never recovers by
-            # itself; kill and relaunch rather than only alerting.
+            # itself; kill and relaunch rather than only alerting. ERA5 is
+            # exempt: cdsapi polls an accepted queue job silently for hours,
+            # and a restart would waste that queued slot.
+            if name == "era5_truth":
+                return "HUNG", f"进程存活但日志 {age:.0f} 分钟无更新（CDS 队列轮询中，不自动重启）"
             if rerun_count(name) < RERUN_CAP:
                 bump_rerun(name)
                 kill_pipeline(spec["pattern"])
