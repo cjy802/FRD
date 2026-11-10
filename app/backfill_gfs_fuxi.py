@@ -46,6 +46,11 @@ DEFAULT_CACHE = PROJECT_ROOT / "FuXi/DATA/gfs_cache"
 DEFAULT_INPUTS = APP_ROOT / "prepared/backfill_inputs"
 DEFAULT_MODEL_DIR = PROJECT_ROOT / "FuXi_EC"
 DEFAULT_PYTHON = Path("D:/anaconda/envs/fuxi_onnx/python.exe")
+if not DEFAULT_PYTHON.is_file():
+    # Non-Windows hosts (cloud GPU boxes) run the worker with this interpreter.
+    import sys as _sys
+
+    DEFAULT_PYTHON = Path(_sys.executable)
 MODEL_NAME = "FuXi-2.1-short"
 RECORDED_LEADS = (6, 12, 18, 24)
 FORECAST_COLUMNS = (

@@ -1,48 +1,53 @@
 """Self-healing monitor for the regional-corrector data pipelines.
 
-Checks the three detached pipelines (backfill A, backfill B, ERA5 truth
-download): log freshness plus live python processes decide health. A pipeline
-whose process is gone gets relaunched (resume is built into every script); a
-process that is alive but has produced no log output for two hours is
-reported as hung and left alone. When all pipelines finish cleanly the
-monitor runs the pair join and fits the regional corrector into the staging
-directory ``Web/mode/output_region`` — production only activates once the
-artifact is copied to ``output_production`` by hand.
+Runs on Windows (local) or Linux (cloud GPU box, /root/autodl-tmp/backfill).
+Checks the three pipelines (backfill A, backfill B, ERA5 truth download) by
+log freshness plus live python processes: a pipeline whose process is gone
+gets relaunched (resume is built into every script); a process that is alive
+but silent for two hours is reported as hung and left alone. When all
+pipelines finish cleanly the monitor runs the pair join and fits the regional
+corrector into the staging directory ``Web/mode/output_region`` — production
+only activates once the artifact is copied to ``output_production`` by hand.
 
-Exit prints one status block per pipeline plus the completion phase; designed
-to be invoked every 30 minutes by a scheduler.
+Prints one status block per pipeline plus the completion phase; designed to
+be invoked every 30 minutes by a scheduler.
 """
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-APP = Path(__file__).resolve().parent
+POSIX = os.name == "posix"
+if POSIX:
+    APP = Path("/root/autodl-tmp/backfill/app")
+    PY = "/root/miniconda3/bin/python"
+    STAGING = APP.parent / "Web/mode/output_region"
+else:
+    APP = Path(__file__).resolve().parent
+    PY = r"D:\anaconda\envs\fuxi_onnx\python.exe"
+    STAGING = APP.parents[1] / "Web/mode/output_region"
 PROJECT = APP.parent
 DATA = PROJECT / "FuXi/DATA"
 ERA5_DIR = DATA / "era5_region"
-STAGING = PROJECT / "Web/mode/output_region"
-PY = r"D:\anaconda\envs\fuxi_onnx\python.exe"
 STALE_MIN = 45          # no log write for this long -> suspicious
 HUNG_MIN = 120          # alive but silent this long -> alert only
 RERUN_CAP = 3           # max automatic reruns per pipeline after failures
-DETACHED = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-            | getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 PIPELINES = {
     "backfill_a": {
         "script": "backfill_gfs_fuxi.py",
-        "args": ["--start", "2024-01-01", "--end", "2025-05-31", "--fetch-workers", "10",
+        "args": ["--start", "2024-01-17", "--end", "2025-05-31", "--fetch-workers", "12",
                  "--output", str(DATA / "fuxi2_gfs_region_forecast_a.csv"), "--execute"],
         "log": DATA / "backfill_a.log", "err": DATA / "backfill_a.err.log",
         "pattern": "fuxi2_gfs_region_forecast_a.csv",
     },
     "backfill_b": {
         "script": "backfill_gfs_fuxi.py",
-        "args": ["--start", "2025-06-01", "--end", "2026-09-05", "--fetch-workers", "10",
+        "args": ["--start", "2025-06-01", "--end", "2026-09-05", "--fetch-workers", "12",
                  "--output", str(DATA / "fuxi2_gfs_region_forecast_b.csv"), "--execute"],
         "log": DATA / "backfill_b.log", "err": DATA / "backfill_b.err.log",
         "pattern": "fuxi2_gfs_region_forecast_b.csv",
@@ -57,6 +62,12 @@ PIPELINES = {
 
 
 def process_count(pattern: str) -> int:
+    if POSIX:
+        try:
+            completed = subprocess.run(["pgrep", "-fc", pattern], capture_output=True, text=True, timeout=30)
+            return int(completed.stdout.strip() or 0)
+        except (ValueError, subprocess.SubprocessError):
+            return -1
     command = (
         "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
         f"Where-Object {{ $_.CommandLine -like '*{pattern}*' }} | Measure-Object | "
@@ -84,12 +95,35 @@ def age_minutes(path: Path) -> float:
         return float("inf")
 
 
+def posix_nvidia_libs() -> str:
+    """LD_LIBRARY_PATH covering pip nvidia wheels and conda's own lib dir."""
+    import glob
+
+    candidates = sorted(glob.glob(os.path.join(os.path.dirname(PY), "..", "lib", "python*", "site-packages", "nvidia", "*", "lib")))
+    conda_lib = os.path.join(os.path.dirname(PY), "..", "lib")
+    paths = [os.path.normpath(path) for path in candidates]
+    if os.path.isdir(conda_lib):
+        paths.append(os.path.normpath(conda_lib))
+    return os.pathsep.join(paths)
+
+
 def launch(name: str) -> None:
     spec = PIPELINES[name]
-    with open(spec["log"], "wb") as out, open(spec["err"], "wb") as err:
-        subprocess.Popen([PY, "-B", str(APP / spec["script"]), *spec["args"]],
-                         cwd=str(APP), stdout=out, stderr=err, stdin=subprocess.DEVNULL,
-                         creationflags=DETACHED)
+    out = open(spec["log"], "wb")
+    err = open(spec["err"], "wb")
+    env = None
+    kwargs = {}
+    if POSIX:
+        kwargs["start_new_session"] = True
+        libs = posix_nvidia_libs()
+        if libs:
+            env = os.environ.copy()
+            env["LD_LIBRARY_PATH"] = libs + os.pathsep + env.get("LD_LIBRARY_PATH", "")
+    else:
+        kwargs["creationflags"] = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+                                   | getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    subprocess.Popen([PY, "-B", str(APP / spec["script"]), *spec["args"]],
+                     cwd=str(APP), stdout=out, stderr=err, stdin=subprocess.DEVNULL, env=env, **kwargs)
 
 
 def rerun_count(name: str) -> int:
@@ -101,13 +135,11 @@ def rerun_count(name: str) -> int:
 
 
 def bump_rerun(name: str) -> None:
-    marker = DATA / f"monitor_reruns_{name}.txt"
-    marker.write_text(str(rerun_count(name) + 1), encoding="utf-8")
+    (DATA / f"monitor_reruns_{name}.txt").write_text(str(rerun_count(name) + 1), encoding="utf-8")
 
 
 def reset_rerun(name: str) -> None:
-    marker = DATA / f"monitor_reruns_{name}.txt"
-    marker.unlink(missing_ok=True)
+    (DATA / f"monitor_reruns_{name}.txt").unlink(missing_ok=True)
 
 
 def parse_done(text: str) -> tuple[bool, int]:
@@ -181,7 +213,7 @@ def completion_phase(statuses: dict[str, str]) -> str:
     print(pair.stdout[-1500:])
     if pair.returncode:
         return "配对失败：" + (pair.stderr or "")[-500:]
-    fit = subprocess.run([PY, "-B", str(PROJECT / "Web/mode/fit_region_corrector.py"),
+    fit = subprocess.run([PY, "-B", str(APP.parent / "Web/mode/fit_region_corrector.py"),
                           "--test-year", "2026", "--output-dir", str(STAGING)],
                          cwd=str(APP), capture_output=True, text=True, encoding="utf-8",
                          errors="replace", timeout=3600)
