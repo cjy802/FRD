@@ -154,6 +154,18 @@ def parse_done(text: str) -> tuple[bool, int]:
     return False, 0
 
 
+def kill_pipeline(pattern: str) -> None:
+    if POSIX:
+        subprocess.run(["pkill", "-f", pattern], capture_output=True, timeout=30)
+    else:
+        command = (
+            "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+            f"Where-Object {{ $_.CommandLine -like '*{pattern}*' }} | "
+            "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+        )
+        subprocess.run(["powershell", "-NoProfile", "-Command", command], capture_output=True, timeout=90)
+
+
 def check(name: str) -> tuple[str, str]:
     spec = PIPELINES[name]
     text = log_text(spec["log"])
@@ -185,7 +197,15 @@ def check(name: str) -> tuple[str, str]:
     alive = process_count(spec["pattern"])
     if alive > 0:
         if age > HUNG_MIN:
-            return "HUNG", f"进程存活但日志 {age:.0f} 分钟无更新，需人工查看"
+            # A silently wedged process (no log, no sockets) never recovers by
+            # itself; kill and relaunch rather than only alerting.
+            if rerun_count(name) < RERUN_CAP:
+                bump_rerun(name)
+                kill_pipeline(spec["pattern"])
+                time.sleep(5)
+                launch(name)
+                return "HUNG-RESTARTED", f"日志 {age:.0f} 分钟无更新，已杀掉重启（断点续传）"
+            return "HUNG", f"进程存活但日志 {age:.0f} 分钟无更新，且重试上限已到，需人工介入"
         progress = ""
         appended = sum(1 for line in text.splitlines() if "rows appended" in line)
         if appended:
