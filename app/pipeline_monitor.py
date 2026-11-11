@@ -56,7 +56,7 @@ PIPELINES = {
         "script": "download_era5_region.py",
         "args": ["--start", "2024-01", "--end", "2026-09", "--execute"],
         "log": DATA / "era5_download.log", "err": DATA / "era5_download.err.log",
-        "pattern": "download_era5_region.py",
+        "pattern": "python -B download_era5_region.py",
     },
 }
 
