@@ -102,7 +102,7 @@ def main():
     ax.text(cx + 18.5, 25.7, "否", ha="center", va="center", fontsize=10.5, color=GRAY, weight="bold")
     rounded_box(ax, 72, 20, 25, 7, SKIP, "过滤为误报", tcolor="#3a4353", fs=10.5)
 
-    fig.savefig(OUT, bbox_inches="tight", facecolor="white", pad_inches=0.12)
+    fig.savefig(OUT, bbox_inches="tight", pad_inches=0.12, transparent=True)
     plt.close(fig)
     print("已生成", OUT)
 

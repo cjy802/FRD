@@ -72,7 +72,7 @@ def main():
     arrow(ax, 53 + CW / 2, 41 - 1.2, 53 + CW / 2, 7 + CH + 1.2)  # 2 → 3
     arrow(ax, 53 - 1.2, mid_bot, 4 + CW + 1.2, mid_bot)          # 3 → 4
 
-    fig.savefig(OUT, bbox_inches="tight", facecolor="white", pad_inches=0.12)
+    fig.savefig(OUT, bbox_inches="tight", pad_inches=0.12, transparent=True)
     plt.close(fig)
     print("已生成", OUT)
 
