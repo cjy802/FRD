@@ -6,14 +6,16 @@
 
 # Local datasets and generated output
 /.playwright-cli/
-/output/
+/output/**
+!/output/*.json
+!/output/probe_height_crash.py
 /app/point_data/
-/app/prepared/gfs_cache/
-/app/prepared/gfs_aux_cache/
+/app/prepared/
+/app/runs/
+/app/sample_output/
 /Web/mode/output_year_transfer_*/
 /Web/mode/output_production/*
 /help/backfill/
-/help/data/
 /help/output/
 /help/FuXi_EC/short
 *.pbf
@@ -39,9 +41,11 @@
 **/.env.*
 !**/.env.example
 
-# Local test images and model evaluation outputs
+# Local browser automation and internal recovery artifacts
 /Web/.playwright-mcp/
-/Test_image/
+/Web/.dsh-acl-recovery/
+
+# Model evaluation outputs (local only)
 /model/测试成效/
 /model/.zcode/
 /app/backfill_batches - 副本.py
@@ -52,11 +56,17 @@
 !/Web/mode/output_production/corrector_region_ridge.npz
 !/Web/mode/output_production/training_metadata_region.json
 
-# 本地视频素材与录屏产物
+# 本地视频素材与录屏产物（超过 GitHub 单文件 100MB 限制的大视频不入库）
 /视频/
 /测试视频/
+/最终提交材料/*.mp4
+/最终提交材料/PPT内视频/AIC-*.mp4
 
-# 竞赛网盘材料打包产物（本地生成后上传百度网盘，不入库）
+# 竞赛网盘材料打包产物（本地生成后上传百度网盘；仅 03 演示视频随 GitHub 备份）
 /网盘材料/
-/网盘材料-新版/
+/网盘材料-新版/**
+!/网盘材料-新版/AIC-2026-77692811-智慧气象-低空巡飞决策积水风险智能识别与预警系统-03（演示视频）.mp4
 /.zcode/
+
+# 超过 GitHub 100MB 限制的 PPT 源文件（PDF 版已入库）
+/AIC-2026-77692811-智慧气象-低空巡飞决策积水风险智能识别与预警系统-演示PPT.pptx
